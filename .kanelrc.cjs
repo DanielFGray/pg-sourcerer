@@ -23,7 +23,7 @@ module.exports = {
   customTypeMap: {
     "pg_catalog.tsvector": "string",
     "pg_catalog.bpchar": "string",
-    "public.citext": "citext",
+    "public.citext": "string",
   },
 
   tableNames: [
