@@ -41,10 +41,7 @@ function getOperatorFromColumn(column: TableColumn) {
   }
 }
 
-function processTable(
-  table: TableDetails,
-  { schema }: { schema: Schema },
-) {
+function processTable(table: TableDetails, { schema }: { schema: Schema }) {
   const tableName =
     schema.name === "public" ? table.name : `${schema.name}.${table.name}`;
   debug(`found table ${tableName}`);
@@ -130,14 +127,17 @@ const adapters = {
 }`;
   },
   postgres: (e: QueryData) => {
-    return `return sql\`${e.query.replace(/\$(\d)/g, (line, match) => {
-      return `\${${e.args[match - 1]?.[0]}}`;
-    })}\``;
+    return `return sql\`${e.query.replace(
+      /\$(\d)/g,
+      (line, match) => `\${${e.args[match - 1]?.[0]}}`,
+    )}\``;
   },
-  pg: (e: QueryData) => `const { rows } = await pool.query('${
-    e.query
-  }', [${e.args.map((a) => a[0]).join(", ")}])
-  return rows`,
+  pg: (e: QueryData) => {
+    return `const { rows } = await pool.query('${e.query}', [${e.args
+      .map((a) => a[0])
+      .join(", ")}])
+  return rows`;
+  },
 };
 
 async function main() {
