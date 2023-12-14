@@ -42,7 +42,7 @@ function getOperatorFromColumn(column: TableColumn) {
 
 function processTable(
   table: TableDetails,
-  { schema, config }: { schema: Schema },
+  { schema }: { schema: Schema },
 ) {
   const tableName =
     schema.name === "public" ? table.name : `${schema.name}.${table.name}`;
@@ -106,10 +106,10 @@ function processTable(
   return qs;
 }
 
-function processSchema(schema, { tableNames, config }) {
+function processSchema(schema, { tableNames }) {
   return schema.tables
     .filter((t) => tableNames.includes(t.name))
-    .flatMap((t) => processTable(t, { schema, config }));
+    .flatMap((t) => processTable(t, { schema }));
 }
 
 const adapters = {
