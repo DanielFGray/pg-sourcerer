@@ -146,8 +146,8 @@ async function main() {
 
   await processDatabase(config);
 
-  const processed = Object.entries(result)
-    .flatMap(([name, schema]) =>
+  const processed = Object.values(result)
+    .flatMap((schema) =>
       processSchema(schema, { tableNames: config.tableNames, config }),
     )
     .map((e) => adapters.toFunction(e, adapters[config.adapter](e)))
