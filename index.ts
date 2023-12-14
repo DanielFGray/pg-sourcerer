@@ -20,6 +20,7 @@ type QueryData = {
   returnType: string;
 };
 
+// FIXME: kanel also these mappings, can we re-use them?
 function getTSType(columnType: TableColumnType) {
   switch (columnType.fullName) {
     case "int4":
