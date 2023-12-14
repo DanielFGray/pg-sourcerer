@@ -46,7 +46,7 @@ function processTable(table: TableDetails, { schema }: { schema: Schema }) {
     schema.name === "public" ? table.name : `${schema.name}.${table.name}`;
   debug(`found table ${tableName}`);
   const singularTableName = table.name.replace(/s$/, "");
-  const typeName = singularTableName[0]
+  const returnType = singularTableName[0]
     .toUpperCase()
     .concat(singularTableName.slice(1));
   const qs: Array<QueryData> = [
@@ -57,7 +57,7 @@ function processTable(table: TableDetails, { schema }: { schema: Schema }) {
         ["limit", { default: 100, type: "number" }],
         ["offset", { default: 0, type: "number" }],
       ],
-      returnType: `Array<${typeName}>`,
+      returnType,
     },
   ];
   const indices = table.columns
@@ -74,7 +74,7 @@ function processTable(table: TableDetails, { schema }: { schema: Schema }) {
             ["limit", { default: 100, type: "number" }],
             ["offset", { default: 0, type: "number" }],
           ],
-          returnType: `Array<${typeName}>`,
+          returnType,
         };
       }
       return {
@@ -87,7 +87,7 @@ function processTable(table: TableDetails, { schema }: { schema: Schema }) {
           ["limit", { default: 100, type: "number" }],
           ["offset", { default: 0, type: "number" }],
         ],
-        returnType: `Array<${typeName}>`,
+        returnType,
       };
     }) satisfies QueryData[];
   indices.forEach((e) => qs.push(e));
@@ -104,9 +104,9 @@ function processTable(table: TableDetails, { schema }: { schema: Schema }) {
   return qs;
 }
 
-function processSchema(schema, { tableNames }) {
+function processSchema(schema) {
   return schema.tables
-    .filter((t) => tableNames.includes(t.name))
+    .filter((t) => config.tableNames.includes(t.name))
     .flatMap((t) => processTable(t, { schema }));
 }
 
@@ -122,7 +122,7 @@ const adapters = {
             .join(", ")} }: { ${e.args
             .map(([a, d]) => `${a}: ${d.type}`)
             .join(", ")} }`;
-    return `export async function ${e.name}(${params}): Promise<${e.returnType}> {
+    return `export async function ${e.name}(${params}): Promise<Array<${e.returnType}>> {
   ${body}
 }`;
   },
@@ -147,12 +147,21 @@ async function main() {
 
   await processDatabase(config);
 
-  const processed = Object.values(result)
-    .flatMap((schema) =>
-      processSchema(schema, { tableNames: config.tableNames, config }),
-    )
-    .map((e) => adapters.toFunction(e, adapters[config.adapter](e)))
-    .join("\n\n");
+  const { queries, imports } = Object.values(result)
+    .flatMap((schema) => {
+      return processSchema(schema);
+    })
+    .reduce(
+      ({ queries, imports }, c) => {
+        queries.push(adapters.toFunction(c, adapters[config.adapter](c)));
+        imports.add(c.returnType);
+        return { queries, imports };
+      },
+      { queries: [], imports: new Set() },
+    );
+  const processed = `import { ${Array.from(imports).join(
+    ", ",
+  )} } from '.'`.concat("\n\n", queries.join("\n\n"));
 
   await fs.writeFile(path.join(config.outputPath, "db-queries.ts"), processed);
   console.log(processed);
