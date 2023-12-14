@@ -1,0 +1,31 @@
+{
+  "name": "@danielfgray/pg-query-gen",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "DEBUG=pg-gen-query tsnd --rs --watch --respawn -T -r dotenv/config index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "DanielFGray <DanielFGray@gmail.com>",
+  "license": "Unlicense",
+  "dependencies": {
+    "extract-pg-schema": "^4.3.1",
+    "kanel": "^3.8.2"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12",
+    "@types/node": "^20.10.4",
+    "@types/nodemon": "^1.19.6",
+    "@types/pg": "^8.10.9",
+    "bun-types": "^1.0.17",
+    "debug": "^4.3.4",
+    "dotenv": "^16.3.1",
+    "nodemon": "^3.0.2",
+    "ts-node-dev": "^2.0.0"
+  },
+  "peerDependencies": {
+    "pg": "^8.11.3"
+  }
+}
