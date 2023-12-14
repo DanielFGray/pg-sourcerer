@@ -119,8 +119,7 @@ const adapters = {
             .map(([a, d]) =>
               d.default === undefined ? a : `${a} = ${d.default}`,
             )
-            .join(", ")} }: { ${e.args
-            .map(([a, d]) => `${a}: ${d.type}`)
+            .join(", ")} }: { ${e.args.map(([a, d]) => `${a}${d.default != null ? '?' : ''}: ${d.type}`)
             .join(", ")} }`;
     return `export async function ${e.name}(${params}): Promise<Array<${e.returnType}>> {
   ${body}
