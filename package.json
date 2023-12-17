@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "DEBUG=pg-gen-query tsnd --rs --watch --respawn -T -r dotenv/config index.ts",
+    "dev": "DEBUG=pg-gen-query nodemon -w hook.js -w .kanelrc.cjs -x 'bun kanel -c .kanelrc.cjs'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,7 +12,9 @@
   "license": "Unlicense",
   "dependencies": {
     "extract-pg-schema": "^4.3.1",
-    "kanel": "^3.8.2"
+    "inflection": "^3.0.0",
+    "kanel": "^3.8.2",
+    "recast": "^0.23.4"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
