@@ -1,4 +1,5 @@
-const { generateIndexFile } = require('kanel');
+const { generateIndexFile } = require("kanel");
+const makeQueriesHook = require("./hook");
 
 /** @type {import('kanel').Config} */
 module.exports = {
@@ -13,23 +14,26 @@ module.exports = {
 
   resolveViews: true,
   preDeleteOutputFolder: true,
-  outputPath: "./generated/db",
+  outputPath: "generated/db",
 
   schemas: ["app_public", "app_private"],
   enumStyle: "type",
 
-  preRenderHooks: [generateIndexFile],
+  preRenderHooks: [
+    makeQueriesHook({
+      // tableNames: [
+      //   "users",
+      //   "comments",
+      //   "posts"
+      // ],
+      adapter: "pg",
+    }),
+    generateIndexFile,
+  ],
 
   customTypeMap: {
     "pg_catalog.tsvector": "string",
     "pg_catalog.bpchar": "string",
     "public.citext": "string",
   },
-
-  tableNames: [
-    "users",
-    "comments",
-    "posts"
-  ],
-  adapter: "postgres",
 };
