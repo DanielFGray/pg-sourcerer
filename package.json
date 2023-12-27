@@ -1,33 +1,33 @@
 {
-  "name": "@danielfgray/pg-query-gen",
+  "name": "@danielfgray/pg-codeforge",
   "version": "0.1.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "DEBUG=pg-gen-query nodemon -w hook.js -w .kanelrc.cjs -x 'bun kanel -c .kanelrc.cjs'",
+    "dev": "DEBUG=pg-codeforge nodemon -w index.mjs -w codeforge.config.mjs -x 'bun index.mjs'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "DanielFGray <DanielFGray@gmail.com>",
   "license": "Unlicense",
   "dependencies": {
-    "extract-pg-schema": "^4.3.1",
+    "cosmiconfig": "^9.0.0",
+    "debug": "^4.3.4",
     "inflection": "^3.0.0",
-    "kanel": "^3.8.2",
+    "pg-introspection": "beta",
     "recast": "^0.23.4"
   },
   "devDependencies": {
+    "@total-typescript/ts-reset": "^0.5.1",
     "@types/debug": "^4.1.12",
     "@types/node": "^20.10.4",
     "@types/nodemon": "^1.19.6",
     "@types/pg": "^8.10.9",
-    "bun-types": "^1.0.17",
-    "debug": "^4.3.4",
     "dotenv": "^16.3.1",
-    "nodemon": "^3.0.2",
-    "ts-node-dev": "^2.0.0"
+    "nodemon": "^3.0.2"
   },
   "peerDependencies": {
+    "postgres": "^3.4.3",
     "pg": "^8.11.3"
   }
 }
