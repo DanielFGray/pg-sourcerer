@@ -11,6 +11,7 @@ import {
 } from "pg-introspection";
 import recast from "recast";
 import { cosmiconfig } from "cosmiconfig";
+import { z } from "zod";
 
 const debug = _debug("pg-codeforge");
 
@@ -19,6 +20,73 @@ const camelCase = (str) => camelize(str, true);
 
 /** @param {string} str */
 const PascalCase = (str) => camelize(str, false);
+
+export const userConfig = z.object({
+  connectionString: z.string(),
+  adapter: z.union([z.literal("pg"), z.literal("postgres")]),
+  outputDir: z.string(),
+  inflections: z
+    .object({
+      tableNames: z.function().args(z.string()).returns(z.string()).optional(),
+      columnNames: z.function().args(z.string()).returns(z.string()).optional(),
+    })
+    .optional(),
+  typeMap: z.record(z.string()).optional(),
+  plugins: z.array(
+    z.function().returns(
+      z.array(
+        z.object({
+          content: z.any(), // ast builder can take care of itself
+          path: z.string(),
+          imports: z
+            .array(
+              z.object({
+                type: z.boolean().optional(),
+                identifier: z.string(),
+                default: z.boolean().optional(),
+                path: z.string(),
+              }),
+            )
+            .optional(),
+        }),
+      ),
+    ),
+  ),
+  role: z.string().optional(),
+});
+
+/** @typedef {z.infer<typeof userConfig>} UserConfig */
+/** @typedef {UserConfig & { inflections: Required<NonNullable<UserConfig['inflections']>> }} Config */
+
+export async function parseConfig() {
+  let configSearch = await cosmiconfig("pgcodeforge").search();
+  if (!configSearch) {
+    // TODO what if we codegen an empty config
+    console.error("a codeforge config is required");
+    process.exit(1);
+  }
+  let config;
+  try {
+    config = userConfig.parse(configSearch.config);
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      console.error(e.format());
+    } else {
+      console.error(e);
+    }
+    process.exit(1);
+  }
+
+  config.inflections = Object.assign(
+    {
+      tableNames: (t) => PascalCase(singularize(t)),
+      columnNames: (t) => t,
+    },
+    config.inflections ?? {},
+  );
+
+  return config;
+}
 
 /** @param {any} data */
 function serialize(data) {
@@ -34,39 +102,91 @@ function serialize(data) {
 }
 
 /**
+ * @template T
+ * @template {string} K
+ * @param {Array<T>} values
+ * @param {(a: T) => K} keyFinder
+ */
+// function groupBy<T, K extends string>(values: Array<T>, keyFinder: (a: T) => K): Record<string, Array<T>> {
+function groupBy(values, keyFinder) {
+  const result = /** @@type Record<K, Array<T>> */ ({});
+  for (let i = 0; i < values.length; i++) {
+    const val = values[i];
+    const key = keyFinder(val);
+    if (!(key in result)) {
+      result[key] = [val];
+    } else {
+      result[key].push(val);
+    }
+  }
+  return result;
+}
+
+/**
  * @param {Parameters<typeof entityPermissions>[1]} entity
  * @param {{
  *   introspection: import("pg-introspection").Introspection,
  *   role: import("pg-introspection").PgRoles,
- *   parent?: Array<Parameters<typeof entityPermissions>[1]>
  * }}
  */
-function getPermissions(entity, { introspection, parent, role }) {
+function getPermissions(entity, { introspection, role }) {
   const perms = entityPermissions(introspection, entity, role, true);
-  const canSelect = perms.select ?? false;
-  const canInsert = perms.insert ?? false;
-  const canUpdate = perms.update ?? false;
-  const canDelete = perms.delete ?? false;
-  // if (!canInsert || !canUpdate || !canSelect) {
-  //   const attributePermissions = entity
-  //   .filter((att) => att.attnum > 0)
-  //   .map((att) =>
-  //     entityPermissions(introspection, att, role, true),
-  //   );
-  //   for (const attributePermission of attributePermissions) {
-  //     canSelect = canSelect || attributePermission.select;
-  //     canInsert = canInsert || attributePermission.insert;
-  //     canUpdate = canUpdate || attributePermission.update;
-  //   }
-  // }
-  return { canSelect, canInsert, canUpdate, canDelete };
+  switch (entity._type) {
+    case "PgAttribute": {
+      const table = entity.getClass();
+      const attributePermissions = entityPermissions(
+        introspection,
+        entity,
+        role,
+        true,
+      );
+      const tablePermissions = entityPermissions(
+        introspection,
+        table,
+        role,
+        true,
+      );
+      const canSelect =
+        attributePermissions.select || Boolean(tablePermissions.select);
+      const canInsert =
+        attributePermissions.insert || Boolean(tablePermissions.insert);
+      const canUpdate =
+        attributePermissions.update || Boolean(tablePermissions.update);
+      return { canSelect, canInsert, canUpdate };
+    }
+    case "PgClass": {
+      const perms = entityPermissions(introspection, entity, role, true);
+      let canSelect = perms.select ?? false;
+      let canInsert = perms.insert ?? false;
+      let canUpdate = perms.update ?? false;
+      if (!canInsert || !canUpdate || !canSelect) {
+        const canDelete = perms.delete ?? false;
+        const attributePermissions = entity
+          .getAttributes()
+          .filter((att) => att.attnum > 0)
+          .map((att) => entityPermissions(introspection, att, role, true));
+        for (const attributePermission of attributePermissions) {
+          canSelect = canSelect || Boolean(attributePermission.select);
+          canInsert = canInsert || Boolean(attributePermission.insert);
+          canUpdate = canUpdate || Boolean(attributePermission.update);
+        }
+        return { canSelect, canInsert, canUpdate, canDelete };
+      }
+    }
+    case "PgProc": {
+      const { execute } = entityPermissions(introspection, entity, role, true);
+      return { canExecute: execute };
+    }
+    default:
+      throw new Error(`unknown entity type "${entity._type}"`);
+  }
 }
 /** @typedef {ReturnType<typeof getPermissions>} Permissions */
 
 /** @typedef {{
   name: string;
   operation: "select" | "insert" | "update" | "delete"
-  params: Array<[string, { default?: any; type: string; Pick?: string[] }]>;
+  params: Array<[string, { default?: any; type: string; Pick?: Array<string> }]>;
   where?: Array<[string, string, string]>;
   returnType?: string;
   returnsMany?: boolean;
@@ -74,27 +194,20 @@ function getPermissions(entity, { introspection, parent, role }) {
   tableName: string;
 }} QueryData */
 
+/** @typedef {{ type?: boolean, identifier: string, default?: boolean, path: string}} ImportSpec */
+
 /** @typedef {{
-  dependencies?: string[];
-  content: import("ast-types").builders
+  imports?: Array<ImportSpec>;
+  content: import("ast-types").namedTypes.BlockStatement;
   path: string;
 }} Output */
 
 /** @typedef {(info: {
-  database: Introspection;
-  results: Output[] | null;
-  //statement kinds
+  database: { schemas: Record<string, DbSchema> };
+  results: Array<Output> | null;
   builders: import("ast-types").builders
   config: Config;
-}) => Output[]} Plugin */
-
-/** @typedef {{
-  connectionString: string;
-  adapter: "pg" | "postgres";
-} & Partial<{
-  role: string;
-  plugins: Plugin[];
-}>} Config */
+}) => Array<Output>} Plugin */
 
 /** @typedef {{
   permissions: Permissions;
@@ -102,22 +215,12 @@ function getPermissions(entity, { introspection, parent, role }) {
   arguments: Array<[string, { type: string; hasDefault?: boolean }]>;
 }} DbProcedure */
 async function main() {
-  let configSearch = await cosmiconfig("pgcodeforge").search();
-  if (!configSearch) {
-    console.error("a codeforge config file is required");
-    process.exit(1);
-  }
-  const config = configSearch.config;
-
+  const config = await parseConfig();
   const introspectionResult = await (async () => {
-    if (!config.connectionString) {
-      console.error("no connectionString provided");
-      process.exit(1);
-    }
     const query = makeIntrospectionQuery();
     switch (config.adapter) {
       case "pg": {
-        const pg = await import("pg");
+        const { default: pg } = await import("pg");
         const pool = new pg.Pool({ connectionString: config.connectionString });
         const client = await pool.connect();
         await client.query("begin");
@@ -163,29 +266,31 @@ async function main() {
     return process.exit(0);
   }
 
-  /** @type {Output[]} */
-  const output = config.plugins?.reduce((results, fn) => {
+  /** @type {null | Array<Output>} */
+  const output = config.plugins.reduce((results, fn) => {
     const output = fn({ database: introspection, results, builders, config });
     if (!(output instanceof Array))
       throw new Error("plugins must return an array");
     return results ? results.concat(output) : output;
-  }, /** @type {null | Output[]} */ (null));
+  }, /** @type {null | Array<Output>} */ (null));
 
   if (!output) {
     console.error("no output from plugins");
     return process.exit(0);
   }
 
-  Object.entries(Object.groupBy(output, (o) => o.path)).forEach(
+  Object.entries(groupBy(output, (o) => o.path)).forEach(
     async ([strPath, files]) => {
       const parsedFile = path.parse(
         path.join(config.outputDir ?? "./", strPath),
       );
       const filepath = parsedFile.dir;
       const newPath = path.join(parsedFile.dir, parsedFile.base);
-
       const { code } = recast.print(
-        builders.program(files.map((f) => f.content)),
+        builders.program([
+          ...parseDependencies(files.flatMap((f) => f.imports ?? [])),
+          ...files.flatMap((f) => f.content),
+        ]),
         { tabWidth: 2 },
       );
 
@@ -209,11 +314,6 @@ function getDescription(entity) {
   return entity.getDescription();
 }
 
-/** @typedef {{
-  database: string;
-  schemas: { [k: string]: DbSchema };
-}} Introspection */
-
 /**
  * @param {import("pg-introspection").Introspection} introspection
  */
@@ -221,7 +321,7 @@ function processIntrospection(introspection) {
   const role = introspection.getCurrentUser();
   if (!role) throw new Error("who am i???");
   return {
-    database: introspection.database.datname,
+    name: introspection.database.datname,
     schemas: Object.fromEntries(
       introspection.namespaces.map((schema) => [
         schema.nspname,
@@ -236,7 +336,6 @@ function processIntrospection(introspection) {
   views: Record<string, DbView>;
   tables: Record<string, DbTable>;
   procedures: Record<string, DbProcedure>;
-  permissions: Permissions;
 }} DbSchema */
 
 /**
@@ -253,7 +352,7 @@ function processSchema(schema, { introspection, role }) {
     views: processViews(schema.oid, { introspection, role }),
     tables: processTables(schema.oid, { introspection, role }),
     procedures: processProcedures(schema.oid, { introspection, role }),
-    permissions: getPermissions(schema, { introspection, role }),
+    // permissions: getPermissions(schema, { introspection, role }),
   };
 }
 
@@ -321,7 +420,7 @@ function processTables(schemaId, { introspection, role }) {
             columns: processColumns(table.oid, { introspection, role }),
             indexes: processIndices(table.oid, { introspection }),
             references,
-            permissions: entityPermissions(introspection, table, role, true),
+            permissions: getPermissions(table, { introspection, role }),
             description: getDescription(table),
           },
         ];
@@ -367,7 +466,7 @@ function processColumns(tableId, { introspection, role }) {
             dimensionality: column.attndims,
             description: getDescription(column),
             // original: column,
-            permissions: entityPermissions(introspection, column, role, true),
+            permissions: getPermissions(column, { introspection, role }),
           },
         ];
       }),
@@ -376,10 +475,10 @@ function processColumns(tableId, { introspection, role }) {
 
 /** @typedef {{
   name: string;
-  colnames: string[];
+  colnames: Array<string>;
   isUnique: boolean | null;
   isPrimary: boolean | null;
-  option: readonly number[] | null;
+  option: readonly Array<number> | null;
 }} DbIndex */
 
 /**
@@ -481,6 +580,7 @@ function processProcedures(schemaId, { introspection, role }) {
           {
             permissions: getPermissions(proc, { introspection, role }),
             returnType: getTypeName(type),
+            // TODO: inflection?
             arguments: !proc.proargnames
               ? []
               : proc.getArguments().map((a, i) => {
@@ -498,7 +598,104 @@ function processProcedures(schemaId, { introspection, role }) {
   );
 }
 
-/** @type {(opts?: { schemas?: string[] }) => Plugin} pluginOptions */
+/** @type {(opts?: {
+  schemas?: Array<string>
+  path?: string | ((o: { schema: string, table: string }) => string),
+}) => Plugin} pluginOpts */
+export const makeZodSchemasPlugin =
+  (pluginOpts) =>
+  ({ database, config, builders: b }) => {
+    return Object.values(database.schemas)
+      .filter((s) => pluginOpts?.schemas?.includes(s.name) ?? true)
+      .flatMap((schema) =>
+        Object.values(schema.tables).map((table) => {
+          const zodschema = [
+            b.exportNamedDeclaration(
+              b.variableDeclaration("const", [
+                b.variableDeclarator(
+                  b.identifier(PascalCase(singularize(table.name))),
+                  b.callExpression(
+                    b.memberExpression(
+                      b.callExpression(
+                        b.memberExpression(
+                          b.identifier("z"),
+                          b.identifier("object"),
+                        ),
+                        [
+                          b.objectExpression(
+                            Object.values(table.columns).map((c) => {
+                              const value = b.callExpression(
+                                b.memberExpression(
+                                  b.identifier("z"),
+                                  b.identifier(
+                                    getTypeNameFromPgType(
+                                      c.type,
+                                      config,
+                                    ).toLowerCase(),
+                                  ),
+                                ),
+                                [],
+                              );
+                              return b.objectProperty.from({
+                                key: b.literal(config.inflections.columnNames(c.name)),
+                                value: c.nullable
+                                  ? b.callExpression(
+                                      b.memberExpression(
+                                        value,
+                                        b.identifier("optional"),
+                                      ),
+                                      [],
+                                    )
+                                  : value,
+                              });
+                            }),
+                          ),
+                        ],
+                      ),
+                      b.identifier("strict"),
+                    ),
+                    [],
+                  ),
+                ),
+              ]),
+            ),
+            // export type Post = z.infer<typeof Post>
+            b.exportNamedDeclaration(
+              b.tsTypeAliasDeclaration.from({
+                id: b.identifier(
+                  config.inflections.tableNames(singularize(table.name)),
+                ),
+                typeAnnotation: b.tsExpressionWithTypeArguments(
+                  b.tsQualifiedName(b.identifier("z"), b.identifier("infer")),
+                  b.tsTypeParameterInstantiation([
+                    b.tsTypeQuery(
+                      b.identifier(
+                        config.inflections.tableNames(singularize(table.name)),
+                      ),
+                    ),
+                  ]),
+                ),
+              }),
+            ),
+          ];
+
+          /** @type {Output} */
+          return {
+            path: makePathFromConfig(pluginOpts, {
+              tableName: PascalCase(table.name),
+              schemaName: schema.name,
+            }),
+            content: zodschema,
+            imports: [{ identifier: "z", path: "zod" }],
+          };
+        }),
+      );
+  };
+
+/** @type {(opts?: {
+  schemas?: Array<string>
+  path?: string | ((o: { schema: string, table: string }) => string),
+}) => Plugin} pluginOpts */
 export const makeTypesPlugin =
   (pluginOpts) =>
   ({ database, config, builders: b }) => {
@@ -510,31 +707,29 @@ export const makeTypesPlugin =
             comments: table.description
               ? [
                   b.commentBlock.from({
-                    trailing: true,
                     leading: true,
                     value: `* ${table.description} `,
                   }),
                 ]
               : null,
             declaration: b.tsTypeAliasDeclaration.from({
-              id: b.identifier(PascalCase(singularize(table.name))),
+              id: b.identifier(config.inflections.tableNames(table.name)),
               typeAnnotation: b.tsTypeLiteral(
                 Object.values(table.columns).map((column) => {
-                  const type = typeNameFromPgType(column.type);
+                  const type = getASTTypeFromTypeName(
+                    getTypeNameFromPgType(column.type, config),
+                  );
                   return b.tsPropertySignature.from({
                     comments: column.description
-                      ? [
-                          b.commentBlock.from({
-                            leading: true,
-                            value: `* ${column.description} `,
-                          }),
-                        ]
+                      ? [b.commentBlock(`* ${column.description} `)]
                       : null,
-                    key: b.identifier(column.name),
+                    key: b.identifier(
+                      config.inflections.columnNames(column.name),
+                    ),
                     typeAnnotation: b.tsTypeAnnotation(
                       column.nullable
-                        ? b.tsUnionType([getASTTypeFromTypeName(type), b.tsNullKeyword()])
-                        : getASTTypeFromTypeName(type),
+                        ? b.tsUnionType([type, b.tsNullKeyword()])
+                        : type,
                     ),
                   });
                 }),
@@ -542,20 +737,27 @@ export const makeTypesPlugin =
             }),
           });
           return {
-            path: `./${schema.name}/${PascalCase(table.name)}.ts`,
+            path: makePathFromConfig(pluginOpts, {
+              tableName: PascalCase(table.name),
+              schemaName: schema.name,
+            }),
             content: typeAlias,
           };
         }),
       );
   };
 
-/** @type {(opts: { schemas: string[] }) => Plugin} pluginOptions */
+// TODO: typescript optional? jsdoc setting?
+/** @type {(opts: {
+  schemas: Array<string>,
+  path?: string | ((o: { schema: string, table: string }) => string),
+}) => Plugin} pluginOpts */
 export const createQueriesPlugin =
-  (pluginOptions) =>
-  ({ database, builders, config }) => {
-    /** @type {QueryData[][]} */
+  (pluginOpts) =>
+  ({ database, builders, config, results }) => {
+    /** @type {Array<Array<QueryData>>} */
     const queries = Object.values(database.schemas)
-      .filter((schema) => pluginOptions.schemas.includes(schema.name))
+      .filter((schema) => pluginOpts.schemas.includes(schema.name))
       .flatMap((schema) =>
         Object.values(schema.tables).map((table) =>
           Object.values(table.indexes).flatMap((index) => {
@@ -567,22 +769,25 @@ export const createQueriesPlugin =
               return [];
             }
             const updateableColumns = Object.values(table.columns).filter(
-              // TODO: RLS
               (c) => !(c.identity || c.generated),
             );
             const columns = index.colnames.map((name) => table.columns[name]);
             const column = columns[0];
             switch (true) {
               case index.isPrimary:
+                /** @type {Array<QueryData>} */
                 return [
                   {
                     name: camelCase(`by_${column.name}`),
                     operation: "select",
                     where: [[column.name, getOperatorFromColumn(column), "?"]],
                     params: [
-                      [column.name, { type: typeNameFromPgType(column.type) }],
+                      [
+                        config.inflections.columnNames(column.name),
+                        { type: getTypeNameFromPgType(column.type, config) },
+                      ],
                     ],
-                    returnType: PascalCase(table.name),
+                    returnType: config.inflections.tableNames(table.name),
                     returnsMany: false,
                     schemaName: schema.name,
                     tableName: table.name,
@@ -591,16 +796,21 @@ export const createQueriesPlugin =
                     name: "create",
                     operation: "insert",
                     params: [
-                      [column.name, { type: typeNameFromPgType(column.type) }],
+                      [
+                        column.name,
+                        { type: getTypeNameFromPgType(column.type, config) },
+                      ],
                       [
                         "patch",
                         {
-                          type: PascalCase(table.name),
-                          Pick: updateableColumns.map((c) => c.name),
+                          type: config.inflections.tableNames(table.name),
+                          Pick: updateableColumns
+                            .filter((c) => c.permissions.canInsert)
+                            .map((c) => config.inflections.columnNames(c.name)),
                         },
                       ],
                     ],
-                    returnType: PascalCase(table.name),
+                    returnType: config.inflections.tableNames(table.name),
                     returnsMany: false,
                     schemaName: schema.name,
                     tableName: table.name,
@@ -610,12 +820,17 @@ export const createQueriesPlugin =
                     operation: "update",
                     where: [[column.name, getOperatorFromColumn(column), "?"]],
                     params: [
-                      [column.name, { type: typeNameFromPgType(column.type) }],
+                      [
+                        column.name,
+                        { type: getTypeNameFromPgType(column.type, config) },
+                      ],
                       [
                         "patch",
                         {
-                          type: PascalCase(table.name),
-                          Pick: updateableColumns.map((c) => c.name),
+                          type: config.inflections.tableNames(table.name),
+                          Pick: updateableColumns
+                            .filter((c) => c.permissions.canUpdate)
+                            .map((c) => config.inflections.columnNames(c.name)),
                         },
                       ],
                     ],
@@ -628,7 +843,10 @@ export const createQueriesPlugin =
                     operation: "delete",
                     where: [[column.name, getOperatorFromColumn(column), "?"]],
                     params: [
-                      [column.name, { type: typeNameFromPgType(column.type) }],
+                      [
+                        column.name,
+                        { type: getTypeNameFromPgType(column.type, config) },
+                      ],
                     ],
                     returnsMany: false,
                     schemaName: schema.name,
@@ -641,11 +859,11 @@ export const createQueriesPlugin =
               //   name: camelCase(`search_${table.name}`),
               //   query: `select * from ${fullTableName}, lateral websearch_to_tsquery($1) as q where ${column.name} @@ q`,
               //   params: [
-              //     [column.name, { type: typeNameFromPgType(column.type) }],
+              //     [column.name, { type: typeNameFromPgType(column.type, config) }],
               //     ["limit", { default: 100, type: "number" }],
               //     ["offset", { default: 0, type: "number" }],
               //   ],
-              //   returnType: PascalCase(table.name),
+              //   returnType: config.inflections.tableNames(table.name),
               //   returnsMany: true,
               //   schemaName: schema.name,
               //   tableName: table.name,
@@ -655,7 +873,10 @@ export const createQueriesPlugin =
                   name: camelCase(`by_${column.name}`),
                   operation: "select",
                   params: [
-                    [column.name, { type: typeNameFromPgType(column.type) }],
+                    [
+                      column.name,
+                      { type: getTypeNameFromPgType(column.type, config) },
+                    ],
                     ["limit", { default: 100, type: "number" }],
                     ["offset", { default: 0, type: "number" }],
                   ],
@@ -663,7 +884,7 @@ export const createQueriesPlugin =
                     column.name,
                     index.option && index.option[0] == 3 ? "desc" : "asc",
                   ],
-                  returnType: PascalCase(table.name),
+                  returnType: config.inflections.tableNames(table.name),
                   returnsMany: !index.isPrimary,
                   schemaName: schema.name,
                   tableName: table.name,
@@ -672,13 +893,22 @@ export const createQueriesPlugin =
                 return {
                   name: camelCase(`by_${column.name}`),
                   operation: "select",
-                  where: [[column.name, getOperatorFromColumn(column), "$1"]],
+                  where: [
+                    [
+                      config.inflections.columnNames(column.name),
+                      getOperatorFromColumn(column),
+                      "?",
+                    ],
+                  ],
                   params: [
-                    [column.name, { type: typeNameFromPgType(column.type) }],
+                    [
+                      config.inflections.columnNames(column.name),
+                      { type: getTypeNameFromPgType(column.type, config) },
+                    ],
                     ["limit", { default: 100, type: "number" }],
                     ["offset", { default: 0, type: "number" }],
                   ],
-                  returnType: PascalCase(table.name),
+                  returnType: config.inflections.tableNames(table.name),
                   returnsMany: !index.isPrimary,
                   schemaName: schema.name,
                   tableName: table.name,
@@ -687,13 +917,28 @@ export const createQueriesPlugin =
           }),
         ),
       );
-    /** @satisifies {Output[]} */
-    return queries.map((queryData) => {
-      const example = queryData[0];
+    return queries.flatMap((queryData) => {
+      const { tableName, schemaName } = queryData[0];
+      /** @satisfies {Output} */
       return {
-        path: `./${example.schemaName}/${PascalCase(example.tableName)}.ts`,
-        content: buildJSFunctions(
-          { queryData, tableName: example.tableName },
+        path: makePathFromConfig(pluginOpts, {
+          tableName: PascalCase(tableName),
+          schemaName,
+        }),
+        imports: [
+          config.adapter === "pg"
+            ? { identifier: "pg", type: true, default: true, path: "pg" }
+            : config.adapter === "postgres"
+              ? {
+                  identifier: "Sql",
+                  type: true,
+                  default: false,
+                  path: "postgres",
+                }
+              : {},
+        ],
+        content: queryDataToObjectMethods(
+          { queryData, tableName },
           { config, builders },
         ),
       };
@@ -701,55 +946,88 @@ export const createQueriesPlugin =
   };
 
 /**
+ * @param {{ path?: string | ((o: { schema: string, table: string }) => string) }}
+ * @param {{ schemaName: string, tableName: string }}
+ */
+function makePathFromConfig(
+  { path },
+  { schemaName: schema, tableName: table },
+) {
+  return typeof path === "function"
+    ? path({ schema, table })
+    : typeof path === "string"
+      ? path
+      : `../${table}.ts}`;
+}
+
+/**
  * @param {QueryData} queryData
  * @param {{ config: Config }} config
  */
 function queryBuilder(queryData, { config }) {
-  switch (queryData.operation) {
-    case "delete":
-      return `delete from ${queryData.schemaName}.${queryData.tableName}${
-        !queryData.where
-          ? ""
-          : ` where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`
-      }`;
-    case "select":
-      return `select * from ${queryData.schemaName}.${queryData.tableName}${
-        !queryData.where
-          ? ""
-          : ` where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`
-      }`;
-    case "insert":
-      return `insert into ${queryData.schemaName}.${
-        queryData.tableName
-      } (${queryData.params
-        .map(([name]) => name)
-        .join(", ")}) values (${queryData.params
-        .map((_, i) => "?")
-        .join(", ")}) returning *`;
-    case "update":
-      return `update ${queryData.schemaName}.${
-        queryData.tableName
-      } set ${queryData.params
-        .map(([name], i) => `${name} = $${i + 1}`)
-        .join(", ")} where ${queryData.where
-        ?.map((p) => p.join(" "))
-        .join(" and ")}`;
-    default:
-      throw new Error(`unknown operation "${queryData.operation}"`);
-  }
+  return (() => {
+    switch (queryData.operation) {
+      case "select": {
+        const limit = queryData.params.find(([name]) => name === "limit");
+        const offset = queryData.params.find(([name]) => name === "offset");
+        return [
+          "select * from",
+          `${queryData.schemaName}.${queryData.tableName}`,
+          queryData.where &&
+            `where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`,
+          limit && 'limit ?',
+          offset && 'offset ?',
+        ];
+      }
+      case "insert": {
+        const columns = queryData.params.map(([name]) => name).join(", ");
+        const values = queryData.params.map(() => "?").join(", ");
+        return [
+          `insert into ${queryData.schemaName}.${queryData.tableName}`,
+          `(${columns}) values (${values})`,
+          "returning *",
+        ];
+      }
+      case "update": {
+        const values = queryData.params
+          .map(([name], i) => `${name} = ?`)
+          .join(", ");
+        return [
+          `update ${queryData.schemaName}.${queryData.tableName}`,
+          `set ${values}`,
+          `where ${queryData.where?.map((p) => p.join(" ")).join(" and ")}`,
+        ];
+      }
+      case "delete": {
+        return [
+          `delete from ${queryData.schemaName}.${queryData.tableName}`,
+          queryData.where &&
+            `where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`,
+        ];
+      }
+      default:
+        throw new Error(`unknown operation "${queryData.operation}"`);
+    }
+  })()
+    .filter(Boolean)
+    .join(" ");
 }
 
+// TODO: alternative styles?
 /**
- * @param {
- *   queryData: QueryData[];
+ * @param {{
+ *   queryData: Array<QueryData>;
  *   tableName: string;
- * } queryData;
+ * }} _
  * @param {{
  *   builders: import("ast-types").builders;
  *   config: Config
- * }}
+ * }} _
  */
-function buildJSFunctions({ queryData, tableName }, { config, builders: b }) {
+function queryDataToObjectMethods(
+  { queryData, tableName },
+  { config, builders: b },
+) {
   return b.exportNamedDeclaration(
     b.variableDeclaration("const", [
       b.variableDeclarator(
@@ -762,100 +1040,102 @@ function buildJSFunctions({ queryData, tableName }, { config, builders: b }) {
               key: b.identifier(queryData.name),
               params: [
                 b.objectPattern.from({
-                  properties: queryData.params.map((arg) => {
-                    const [name, { default: defaultValue, type }] = arg;
-                    return b.property.from({
-                      kind: "init",
-                      key: b.identifier(name),
-                      value:
-                        defaultValue != null && defaultValue != ""
-                          ? b.assignmentPattern.from({
-                              left: b.identifier(name),
-                              right: b.literal(defaultValue),
-                            })
-                          : b.identifier(name),
-                      shorthand: true,
-                    });
-                  }),
+                  properties: queryData.params.map(
+                    ([name, { default: defaultValue }]) =>
+                      b.property.from({
+                        kind: "init",
+                        key: b.identifier(name),
+                        value:
+                          defaultValue != null && defaultValue !== ""
+                            ? b.assignmentPattern.from({
+                                left: b.identifier(name),
+                                right: b.literal(defaultValue),
+                              })
+                            : b.identifier(name),
+                        shorthand: true,
+                      }),
+                  ),
                   typeAnnotation: b.tsTypeAnnotation(
                     b.tsTypeLiteral(
-                      queryData.params.map(([name, { type, Pick }]) => {
-                        return b.tsPropertySignature.from({
-                          key: b.identifier(name),
-                          typeAnnotation: b.tsTypeAnnotation(
-                            Pick
-                              ? b.tsTypeReference(
-                                  b.identifier("Partial"),
-                                  b.tsTypeParameterInstantiation([
-                                    b.tsTypeReference(
-                                      b.identifier("Pick"),
-                                      b.tsTypeParameterInstantiation([
-                                        b.tsTypeReference(
-                                          b.identifier(singularize(type)),
-                                        ),
-                                        b.tsUnionType(
-                                          Pick.map((key) =>
-                                            b.tsLiteralType(
-                                              b.stringLiteral(key),
+                      queryData.params.map(
+                        ([name, { default: hasDefault, type, Pick }]) => {
+                          return b.tsPropertySignature.from({
+                            key: b.identifier(name),
+                            optional: hasDefault != null,
+                            typeAnnotation: b.tsTypeAnnotation(
+                              Pick
+                                ? b.tsTypeReference(
+                                    b.identifier("Partial"),
+                                    b.tsTypeParameterInstantiation([
+                                      b.tsTypeReference(
+                                        b.identifier("Pick"),
+                                        b.tsTypeParameterInstantiation([
+                                          b.tsTypeReference(
+                                            b.identifier(singularize(type)),
+                                          ),
+                                          b.tsUnionType(
+                                            Pick.map((key) =>
+                                              b.tsLiteralType(
+                                                b.stringLiteral(key),
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      ]),
-                                    ),
-                                  ]),
-                                )
-                              : typeof type === "string"
-                                ? getASTTypeFromTypeName(type)
-                                : type,
-                          ),
-                        });
-                      }),
+                                        ]),
+                                      ),
+                                    ]),
+                                  )
+                                : typeof type === "string"
+                                  ? getASTTypeFromTypeName(type)
+                                  : type,
+                            ),
+                          });
+                        },
+                      ),
                     ),
                   ),
                 }),
                 config.adapter === "pg"
-                  ? b.identifier("pool")
-                  : b.identifier("sql"),
+                  ? b.identifier.from({
+                      name: "pool",
+                      typeAnnotation: b.tsTypeAnnotation(
+                        b.tsUnionType([
+                          b.tsTypeReference(b.identifier("pg.Client")),
+                          b.tsTypeReference(b.identifier("pg.Pool")),
+                        ]),
+                      ),
+                    })
+                  : b.identifier.from({
+                      name: "sql",
+                      typeAnnotation: b.tsTypeAnnotation(
+                        b.tsTypeReference(b.identifier("Sql")),
+                      ),
+                    }),
               ],
-              returnType: b.tsTypeAnnotation(
-                b.tsTypeReference(
-                  b.identifier("Promise"),
-                  b.tsTypeParameterInstantiation([
-                    queryData.returnType
-                      ? b.tsTypeReference(
-                          b.identifier("Array"),
-                          b.tsTypeParameterInstantiation([
-                            b.tsTypeReference(
-                              b.identifier(
-                                PascalCase(singularize(queryData.returnType)),
-                              ),
-                            ),
-                          ]),
-                        )
-                      : b.tsTypeReference(b.identifier("void")),
-                  ]),
-                ),
-              ),
               body: {
                 pg() {
+                  const queryStr = queryBuilder(queryData, { config })
+                    .split('?')
+                .reduce((acc, part, i) => i === 0 ? `${acc}${part}` : `${acc}$${i}` + part, '');
                   const queryExpression = b.awaitExpression(
-                    b.callExpression(
-                      b.memberExpression(
+                    b.callExpression.from({
+                      callee: b.memberExpression(
                         b.identifier("pool"),
                         b.identifier("query"),
                       ),
-                      [b.stringLiteral(queryBuilder(queryData, {config}))].concat(
-                        !queryData.params.length
-                          ? []
-                          : [
-                              b.arrayExpression(
-                                queryData.params.map(([argName]) =>
-                                  b.identifier(argName),
-                                ),
-                              ),
-                            ],
-                      ),
-                    ),
+                      typeArguments: queryData.returnType
+                        ? b.typeParameterInstantiation([
+                            b.typeParameter(queryData.returnType),
+                          ])
+                        : null,
+                      arguments: [
+                        b.stringLiteral(queryStr),
+                        b.arrayExpression(
+                          queryData.params.map(([argName]) =>
+                            b.identifier(argName),
+                          ),
+                        ),
+                      ],
+                    }),
                   );
                   if (!queryData.returnType) {
                     return b.blockStatement([
@@ -887,18 +1167,49 @@ function buildJSFunctions({ queryData, tableName }, { config, builders: b }) {
                   ]);
                 },
                 postgres() {
-                  let queryString = `${queryData.operation} * from ${queryData.schemaName}.${queryData.tableName}`;
-
-                  if (queryData.where) {
-                    const [fieldName, operator, placeholder] = queryData.where;
-                    queryString += ` where ${fieldName} ${operator} ${placeholder}`;
+                  let query = queryBuilder(queryData, { config })
+                    .split("?")
+                    .flatMap((part, i) => i === 0 ? b.templateElement({ raw: part, cooked: part }, false) : b.templateElement({ raw: part, cooked: part }, true), '');
+                  const queryExpression = b.awaitExpression(
+                    b.taggedTemplateExpression.from({
+                      tag: b.tsInstantiationExpression.from({
+                        expression: b.identifier("sql"),
+                        typeParameters: !queryData.returnType
+                          ? null
+                          : b.tsTypeParameterInstantiation([
+                              b.tsTypeReference(
+                                b.identifier("Array"),
+                                b.tsTypeParameterInstantiation([
+                                  b.tsTypeReference(
+                                    b.identifier(queryData.returnType),
+                                  ),
+                                ]),
+                              ),
+                            ]),
+                      }),
+                      quasi: b.templateLiteral(query, queryData.params.map(([name]) => b. identifier(name))),
+                    }),
+                  );
+                  if (!queryData.returnType) {
+                    return b.blockStatement([
+                      b.returnStatement(queryExpression),
+                    ]);
                   }
 
                   return b.blockStatement([
-                    b.returnStatement(
-                      b.awaitExpression(
-                        b.callExpression(b.identifier("sql.query"), []),
+                    b.variableDeclaration("const", [
+                      b.variableDeclarator(
+                        b.identifier("result"),
+                        queryExpression,
                       ),
+                    ]),
+                    b.returnStatement(
+                      queryData.returnsMany
+                        ? b.identifier("result")
+                        : b.memberExpression(
+                            b.identifier("result"),
+                            b.literal(0),
+                          ),
                     ),
                   ]);
                 },
@@ -911,38 +1222,28 @@ function buildJSFunctions({ queryData, tableName }, { config, builders: b }) {
   );
 }
 
-const typelist = ["number", "string", "boolean", "json", "Date"];
-
+/** @param {Array<ImportSpec>} deps */
 function parseDependencies(deps) {
-  return deps.filter((d) => !typelist.includes(d));
-}
-
-function getASTTypeFromColumnType(type) {
   const b = recast.types.builders;
-  switch (type) {
-    case "pg_catalog.uuid":
-    case "pg_catalog.text":
-    case "pg_catalog.tsvector":
-    case "pg_catalog.varchar":
-    case "pg_catalog.json":
-    case "pg_catalog.jsonb":
-    case "public.citext":
-      return b.tsStringKeyword();
-    case "pg_catalog.bool":
-      return b.tsBooleanKeyword();
-    case "pg_catalog.timestamptz":
-      return b.tsTypeReference(b.identifier("Date"));
-    case "array":
-      return b.tsArrayType(b.tsStringKeyword());
-    case "pg_catalog.int4":
-      return b.tsNumberKeyword();
-    default:
-      debug(`unknown type "${type}"`);
-      return b.tsUnknownKeyword();
-  }
+  // FIXME: this is a really hacky way to dedupe imports
+  return Object.values(groupBy(deps, (d) => `${d.identifier}_${d.path}`)).map(
+    ([dep]) => {
+      return b.importDeclaration.from({
+        importKind: dep.type ? "type" : "value",
+        specifiers: dep.default
+          ? [
+              b.importDefaultSpecifier.from({
+                local: b.identifier(dep.identifier),
+              }),
+            ]
+          : [b.importSpecifier(b.identifier(dep.identifier))],
+        source: b.literal(dep.path),
+      });
+    },
+  );
 }
 
-/** @param {"string" | "boolean" | "number" | "Date" | "unknown"} type */
+/** @param {string} type */
 function getASTTypeFromTypeName(type) {
   const b = recast.types.builders;
   switch (type) {
@@ -966,9 +1267,10 @@ function getASTTypeFromTypeName(type) {
 
 /**
  * @param {string} pgTypeString
+ * @param {Config} config
  * @returns {"string" | "boolean" | "number" | "Date" | "unknown"}
  */
-function typeNameFromPgType(pgTypeString) {
+function getTypeNameFromPgType(pgTypeString, config) {
   switch (pgTypeString) {
     case "pg_catalog.int2":
     case "pg_catalog.int4":
@@ -1002,6 +1304,9 @@ function typeNameFromPgType(pgTypeString) {
     case "pg_catalog.jsonb":
       return "unknown";
     default:
+      if (config.typeMap && pgTypeString in config.typeMap) {
+        return config.typeMap[pgTypeString];
+      }
       debug(`unknown PgTypeString "${pgTypeString}"`);
       return "unknown";
   }

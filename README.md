@@ -1,3 +1,3 @@
-# pg-query-gen
+# pg-codeforge
 
-a tool to generate strongly-typed Postgres queries via database introspection
+a tool to generate code from Postgres introspection data
