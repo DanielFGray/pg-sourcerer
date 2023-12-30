@@ -1,10 +1,10 @@
 {
-  "name": "@danielfgray/pg-codeforge",
+  "name": "@danielfgray/pg-sourcerer",
   "version": "0.1.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "DEBUG=pg-codeforge nodemon -w index.mjs -w pgcodeforge.config.mjs -x 'rm -fr generated; bun ./index.mjs'",
+    "dev": "DEBUG=pg-sourcerer nodemon -w index.mjs -w pgsourcerer.config.mjs -x 'rm -fr generated; bun ./index.mjs'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
