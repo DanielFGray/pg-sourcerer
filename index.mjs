@@ -855,19 +855,19 @@ export const createQueriesPlugin =
                 ];
               case column.type === "pg_catalog.tsvector":
                 return [];
-              // return {
-              //   name: camelCase(`search_${table.name}`),
-              //   query: `select * from ${fullTableName}, lateral websearch_to_tsquery($1) as q where ${column.name} @@ q`,
-              //   params: [
-              //     [column.name, { type: typeNameFromPgType(column.type, config) }],
-              //     ["limit", { default: 100, type: "number" }],
-              //     ["offset", { default: 0, type: "number" }],
-              //   ],
-              //   returnType: config.inflections.tableNames(table.name),
-              //   returnsMany: true,
-              //   schemaName: schema.name,
-              //   tableName: table.name,
-              // };
+                return {
+                  name: camelCase(`search_${table.name}`),
+                  query: `select * from ${fullTableName}, lateral websearch_to_tsquery($1) as q where ${column.name} @@ q`,
+                  params: [
+                    [column.name, { type: getTypeNameFromPgType(column.type, config) }],
+                    ["limit", { default: 100, type: "number" }],
+                    ["offset", { default: 0, type: "number" }],
+                  ],
+                  returnType: config.inflections.tableNames(table.name),
+                  returnsMany: true,
+                  schemaName: schema.name,
+                  tableName: table.name,
+                };
               case column.type === "pg_catalog.timestamptz":
                 return {
                   name: camelCase(`by_${column.name}`),
