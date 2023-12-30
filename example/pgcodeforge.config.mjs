@@ -1,4 +1,4 @@
-import { makeTypesPlugin, createQueriesPlugin, makeZodSchemasPlugin } from "./index.mjs";
+import { makeTypesPlugin, createQueriesPlugin, makeZodSchemasPlugin } from "../index.mjs";
 import { camelize } from "inflection";
 
 const schemas = ["app_public"];
@@ -17,8 +17,8 @@ export default {
     "public.citext": "string",
   },
   plugins: [
-    makeTypesPlugin({ schemas, path: (t) => `./types.ts` }),
-    makeZodSchemasPlugin({ schemas, path: (t) => `./schemas.ts` }),
-    createQueriesPlugin({ schemas, path: (t) => `./queries.ts` }),
+    // makeTypesPlugin({ schemas, path: (t) => `./${t.table}.ts` }),
+    makeZodSchemasPlugin({ schemas, path: (t) => `./${t.table}.ts` }),
+    createQueriesPlugin({ schemas, path: (t) => `./${t.table}.ts` }),
   ],
 };
