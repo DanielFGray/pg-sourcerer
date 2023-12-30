@@ -18,3 +18,11 @@ the setup script will
  * start postgres in a docker container
  * run migrations using graphile-migrate
  * run the codeforge plugins in the config file
+
+### plugins
+
+currently there are a few core plugins:
+
+ * `makeTypesPlugin` - generates type aliases
+ * `makeZodSchemasPlugin` - generates zod schemas
+ * `makeQueriesPlugin` - generates CRUD queries

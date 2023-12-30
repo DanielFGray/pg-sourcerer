@@ -751,8 +751,9 @@ export const makeTypesPlugin =
 /** @type {(opts: {
   schemas: Array<string>,
   path?: string | ((o: { schema: string, table: string }) => string),
+  typescript?
 }) => Plugin} pluginOpts */
-export const createQueriesPlugin =
+export const makeQueriesPlugin =
   (pluginOpts) =>
   ({ database, builders, config, results }) => {
     /** @type {Array<Array<QueryData>>} */
