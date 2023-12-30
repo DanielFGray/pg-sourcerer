@@ -2,7 +2,7 @@
 
 a tool to generate code from Postgres introspection data
 
-### getting started
+## getting started
 
 currently this is still a work-in-progress, to see what's working so far, after cloning the repo
 
@@ -19,7 +19,7 @@ the setup script will
  * run migrations using graphile-migrate
  * run the codeforge plugins in the config file
 
-### plugins
+## plugins
 
 currently there are a few core plugins:
 
