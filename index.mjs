@@ -13,7 +13,7 @@ import recast from "recast";
 import { cosmiconfig } from "cosmiconfig";
 import { z } from "zod";
 
-const debug = _debug("pg-codeforge");
+const debug = _debug("pg-sourcerer");
 
 /** @param {string} str */
 const camelCase = (str) => camelize(str, true);
@@ -59,10 +59,10 @@ export const userConfig = z.object({
 /** @typedef {UserConfig & { inflections: Required<NonNullable<UserConfig['inflections']>> }} Config */
 
 export async function parseConfig() {
-  let configSearch = await cosmiconfig("pgcodeforge").search();
+  let configSearch = await cosmiconfig("pgsourcerer").search();
   if (!configSearch) {
     // TODO what if we codegen an empty config
-    console.error("a codeforge config is required");
+    console.error("a sourcerer config is required");
     process.exit(1);
   }
   let config;

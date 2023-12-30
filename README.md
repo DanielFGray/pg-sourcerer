@@ -1,4 +1,4 @@
-# pg-codeforge
+# pg-sourcerer
 
 a tool to generate code from Postgres introspection data
 
@@ -17,7 +17,7 @@ the setup script will
  * prompt for questions and generate a .env file
  * start postgres in a docker container
  * run migrations using graphile-migrate
- * run the codeforge plugins in the config file
+ * run the sourcerer plugins in the config file
 
 ## plugins
 
