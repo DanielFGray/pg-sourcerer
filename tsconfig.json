@@ -11,6 +11,7 @@
     "target": "esnext",
     "strict": true,
     "allowJs": true,
+    "checkJs": true,
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {

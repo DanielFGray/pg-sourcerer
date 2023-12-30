@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "DEBUG=pg-codeforge nodemon -w index.mjs -w codeforge.config.mjs -x 'bun index.mjs'",
+    "dev": "DEBUG=pg-codeforge nodemon -w index.mjs -w pgcodeforge.config.mjs -x 'rm -fr generated; bun ./index.mjs'",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,7 +15,8 @@
     "debug": "^4.3.4",
     "inflection": "^3.0.0",
     "pg-introspection": "beta",
-    "recast": "^0.23.4"
+    "recast": "^0.23.4",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@total-typescript/ts-reset": "^0.5.1",
@@ -27,7 +28,7 @@
     "nodemon": "^3.0.2"
   },
   "peerDependencies": {
-    "postgres": "^3.4.3",
-    "pg": "^8.11.3"
+    "pg": "^8.11.3",
+    "postgres": "^3.4.3"
   }
 }
