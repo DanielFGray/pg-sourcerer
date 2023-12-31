@@ -188,6 +188,7 @@ function getPermissions(entity, { introspection, role }) {
   operation: "select" | "insert" | "update" | "delete"
   params: Array<[string, { default?: any; type: string; Pick?: Array<string> }]>;
   where?: Array<[string, string, string]>;
+  join?: Array<string>;
   returnType?: string;
   returnsMany?: boolean;
   schemaName: string;
@@ -855,10 +856,12 @@ export const makeQueriesPlugin =
                   },
                 ];
               case column.type === "pg_catalog.tsvector":
-                return [];
+                // return [];
                 return {
                   name: camelCase(`search_${table.name}`),
-                  query: `select * from ${fullTableName}, lateral websearch_to_tsquery($1) as q where ${column.name} @@ q`,
+                  operation: 'select',
+                  join: 'lateral websearch_to_tsquery(?) as q',
+                  where: [[column.name, '@@', 'q']],
                   params: [
                     [column.name, { type: getTypeNameFromPgType(column.type, config) }],
                     ["limit", { default: 100, type: "number" }],
@@ -973,7 +976,8 @@ function queryBuilder(queryData, { config }) {
         const offset = queryData.params.find(([name]) => name === "offset");
         return [
           "select * from",
-          `${queryData.schemaName}.${queryData.tableName}`,
+          target,
+          queryData.join,
           queryData.where &&
             `where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`,
           limit && 'limit ?',
@@ -984,24 +988,24 @@ function queryBuilder(queryData, { config }) {
         const columns = queryData.params.map(([name]) => name).join(", ");
         const values = queryData.params.map(() => "?").join(", ");
         return [
-          `insert into ${queryData.schemaName}.${queryData.tableName}`,
+          `insert into ${target}`,
           `(${columns}) values (${values})`,
           "returning *",
         ];
       }
       case "update": {
         const values = queryData.params
-          .map(([name], i) => `${name} = ?`)
+          .map(([name]) => `${name} = ?`)
           .join(", ");
         return [
-          `update ${queryData.schemaName}.${queryData.tableName}`,
+          `update ${target}`,
           `set ${values}`,
           `where ${queryData.where?.map((p) => p.join(" ")).join(" and ")}`,
         ];
       }
       case "delete": {
         return [
-          `delete from ${queryData.schemaName}.${queryData.tableName}`,
+          `delete from ${target}`,
           queryData.where &&
             `where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`,
         ];
