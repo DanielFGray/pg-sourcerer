@@ -4,7 +4,7 @@ a tool to generate code from Postgres introspection data
 
 ## getting started
 
-currently this is still a work-in-progress, to see what's working so far, after cloning the repo
+currently this is still a work-in-progress. to see what's working so far, after cloning the repo:
 
 ```sh
 npm install
