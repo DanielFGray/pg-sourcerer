@@ -964,11 +964,9 @@ function makePathFromConfig(
       : `../${table}.ts}`;
 }
 
-/**
- * @param {QueryData} queryData
- * @param {{ config: Config }} config
- */
-function queryBuilder(queryData, { config }) {
+/** @param {QueryData} queryData */
+function queryBuilder(queryData) {
+  const target = `${queryData.schemaName}.${queryData.tableName}` 
   return (() => {
     switch (queryData.operation) {
       case "select": {
@@ -1118,7 +1116,7 @@ function queryDataToObjectMethods(
               ],
               body: {
                 pg() {
-                  const queryStr = queryBuilder(queryData, { config })
+                  const queryStr = queryBuilder(queryData)
                     .split('?')
                 .reduce((acc, part, i) => i === 0 ? `${acc}${part}` : `${acc}$${i}` + part, '');
                   const queryExpression = b.awaitExpression(
