@@ -1372,6 +1372,14 @@ function getOperatorFromColumn(column) {
   }
 }
 
+/**
+ * @param {UserConfig} userConfig
+ * @returns {UserConfig} userConfig
+ * */
+export function defineConfig(userConfig) {
+  return userConfig;
+}
+
 /** @param {{ results: Output[], identifier: string }} _ */
 function findExports({ results, identifier }) {
   let typeRef;
