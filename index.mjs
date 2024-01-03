@@ -174,9 +174,9 @@ function getPermissions(entity, { introspection, role }) {
           .filter((att) => att.attnum > 0)
           .map((att) => entityPermissions(introspection, att, role, true));
         for (const attributePermission of attributePermissions) {
-          canSelect = canSelect || Boolean(attributePermission.select);
-          canInsert = canInsert || Boolean(attributePermission.insert);
-          canUpdate = canUpdate || Boolean(attributePermission.update);
+          canSelect ||= Boolean(attributePermission.select);
+          canInsert ||= Boolean(attributePermission.insert);
+          canUpdate ||= Boolean(attributePermission.update);
         }
         return { canSelect, canInsert, canUpdate, canDelete };
       }
