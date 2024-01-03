@@ -266,22 +266,23 @@ async function main() {
     }
   })();
 
+  if (!("plugins" in config)) {
+    console.error("no plugins defined, nothing to do");
+    return process.exit(0);
+  }
+
   const introspection = processIntrospection(
     parseIntrospectionResults(introspectionResult, true),
   );
 
   const { builders } = recast.types;
 
-  if (!("plugins" in config)) {
-    console.error("no plugins defined, nothing to do");
-    return process.exit(0);
-  }
-
   /** @type {null | Array<Output>} */
   const output = config.plugins.reduce((results, fn) => {
     const output = fn({ database: introspection, results, builders, config });
     if (!(output instanceof Array))
       throw new Error("plugins must return an array");
+    if (!output) throw new Error("plugins must return an array");
     return results ? results.concat(output) : output;
   }, /** @type {null | Array<Output>} */ (null));
 
@@ -772,11 +773,15 @@ export const makeTypesPlugin =
 /** @type {(opts: {
   schemas: Array<string>,
   path?: string | ((o: { schema: string, table: string }) => string),
-  typescript?
 }) => Plugin} pluginOpts */
 export const makeQueriesPlugin =
   (pluginOpts) =>
   ({ database, builders, config, results }) => {
+    if (!results) {
+      throw new Error(
+        "makeQueriesPlugin plugin requires makeTypesPlugin or makeZodSchemasPlugin and placed after them in the plugin list",
+      );
+    }
     /** @type {Array<Array<QueryData>>} */
     const queries = Object.values(database.schemas)
       .filter((schema) => pluginOpts.schemas.includes(schema.name))
