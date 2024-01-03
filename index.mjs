@@ -38,16 +38,25 @@ export const userConfig = z.object({
         z.object({
           content: z.any(), // ast builder can take care of itself
           path: z.string(),
+          exports: z
+            .array(
+              z
+                .object({
+                  kind: z.union([z.literal("type"), z.literal("zod")]),
+                  identifier: z.string(),
+                })
+                .strict(),
+            )
+            .optional(),
           imports: z
             .array(
               z.object({
-                type: z.boolean().optional(),
+                typeImport: z.boolean().optional(),
                 identifier: z.string(),
                 default: z.boolean().optional(),
                 path: z.string(),
-              }),
-            )
-            .optional(),
+              }).strict(),
+            ).optional(),
         }),
       ),
     ),
@@ -195,11 +204,12 @@ function getPermissions(entity, { introspection, role }) {
   tableName: string;
 }} QueryData */
 
-/** @typedef {{ type?: boolean, identifier: string, default?: boolean, path: string}} ImportSpec */
+/** @typedef {{ typeImport?: boolean, identifier: string, default?: boolean, path: string}} ImportSpec */
 
 /** @typedef {{
   imports?: Array<ImportSpec>;
   content: import("ast-types").namedTypes.BlockStatement;
+  exports: Array<{ identifier: string; kind: "zod" | "type" }>;
   path: string;
 }} Output */
 
@@ -688,6 +698,10 @@ export const makeZodSchemasPlugin =
             }),
             content: zodschema,
             imports: [{ identifier: "z", path: "zod" }],
+            exports: [
+              { identifier, kind: "zod" },
+              { identifier, kind: "type" },
+            ],
           };
         }),
       );
@@ -743,6 +757,12 @@ export const makeTypesPlugin =
               schemaName: schema.name,
             }),
             content: typeAlias,
+            exports: [
+              {
+                identifier: config.inflections.tableNames(table.name),
+                kind: "type",
+              },
+            ],
           };
         }),
       );
@@ -923,19 +943,21 @@ export const makeQueriesPlugin =
       );
     return queries.flatMap((queryData) => {
       const { tableName, schemaName } = queryData[0];
-      /** @satisfies {Output} */
+      const typeRef = findExports({ results, identifier: config.inflections.tableNames(tableName) });
+      /** @type {Output} */
       return {
         path: makePathFromConfig(pluginOpts, {
           tableName: PascalCase(tableName),
           schemaName,
         }),
         imports: [
+          typeRef,
           config.adapter === "pg"
-            ? { identifier: "pg", type: true, default: true, path: "pg" }
+            ? { identifier: "pg", typeImport: true, default: true, path: "pg" }
             : config.adapter === "postgres"
               ? {
                   identifier: "Sql",
-                  type: true,
+                  typeImport: true,
                   default: false,
                   path: "postgres",
                 }
@@ -1225,22 +1247,34 @@ function queryDataToObjectMethods(
   );
 }
 
+// TODO: not handled: import <default>, { type <named> } from '<path>'
 /** @param {Array<ImportSpec>} deps */
 function parseDependencies(deps) {
   const b = recast.types.builders;
-  // FIXME: this is a really hacky way to dedupe imports
-  return Object.values(groupBy(deps, (d) => `${d.identifier}_${d.path}`)).map(
-    ([dep]) => {
+  return Object.values(groupBy(deps, (d) => d.path)).map(
+    (dep) => {
+      const ids = groupBy(dep, d => d.identifier)
+      if (dep.length > 1 && Object.keys(ids).length > 1) {
+        const allTypes = dep.every((d) => d.typeImport)
+        return b.importDeclaration.from({
+          importKind: allTypes ? "type" : "value",
+          specifiers: dep.map(d => b.importSpecifier.from({
+            imported: b.identifier(d.identifier),
+          })),
+          source: b.literal(dep[0].path),
+        });
+      }
+      const [d] = dep
       return b.importDeclaration.from({
-        importKind: dep.type ? "type" : "value",
-        specifiers: dep.default
+        importKind: d.typeImport ? "type" : "value",
+        specifiers: d.default
           ? [
               b.importDefaultSpecifier.from({
-                local: b.identifier(dep.identifier),
+                local: b.identifier(d.identifier),
               }),
             ]
-          : [b.importSpecifier(b.identifier(dep.identifier))],
-        source: b.literal(dep.path),
+          : [b.importSpecifier(b.identifier(d.identifier))],
+        source: b.literal(d.path),
       });
     },
   );
@@ -1325,4 +1359,20 @@ function getOperatorFromColumn(column) {
     default:
       return "=";
   }
+}
+
+/** @param {{ results: Output[], identifier: string }} _ */
+function findExports({ results, identifier }) {
+  let typeRef;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const e = r.exports?.find((e) => e.kind === 'type');
+    if (e && e.identifier === identifier) {
+      /** @type {ImportSpec} */
+      typeRef = { identifier: e.identifier, path: r.path, typeImport: true };
+      break;
+    }
+  }
+  if (!typeRef) throw new Error(`could not type export for ${identifier}`);
+  return typeRef;
 }
