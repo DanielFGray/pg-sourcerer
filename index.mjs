@@ -3,7 +3,6 @@ import path from "path";
 import _debug from "debug";
 import fs from "fs/promises";
 import { camelize, singularize } from "inflection";
-// @ts-check
 import {
   entityPermissions,
   makeIntrospectionQuery,
@@ -208,8 +207,8 @@ function getPermissions(entity, { introspection, role }) {
 
 /** @typedef {{
   imports?: Array<ImportSpec>;
-  content: import("ast-types").namedTypes.BlockStatement;
   exports: Array<{ identifier: string; kind: "zod" | "type" }>;
+  content: import("ast-types").namedTypes.Statement;
   path: string;
 }} Output */
 
@@ -220,11 +219,6 @@ function getPermissions(entity, { introspection, role }) {
   config: Config;
 }) => Array<Output>} Plugin */
 
-/** @typedef {{
-  permissions: Permissions;
-  returnType: string | undefined;
-  arguments: Array<[string, { type: string; hasDefault?: boolean }]>;
-}} DbProcedure */
 async function main() {
   const config = await parseConfig();
   const introspectionResult = await (async () => {
@@ -328,6 +322,7 @@ function getDescription(entity) {
 
 /**
  * @param {import("pg-introspection").Introspection} introspection
+ * @returns {import("pg-introspection").Introspection}
  */
 function processIntrospection(introspection) {
   const role = introspection.getCurrentUser();
@@ -571,6 +566,12 @@ function processReferences(tableId, { introspection }) {
   );
 }
 
+/** @typedef {{
+  permissions: Permissions;
+  returnType: string | undefined;
+  arguments: Array<[string, { type: string; hasDefault?: boolean }]>;
+}} DbProcedure */
+
 /**
  * @param {string} schemaId
  * @param {{
@@ -621,11 +622,12 @@ export const makeZodSchemasPlugin =
       .filter((s) => pluginOpts?.schemas?.includes(s.name) ?? true)
       .flatMap((schema) =>
         Object.values(schema.tables).map((table) => {
+          const identifier = PascalCase(singularize(table.name));
           const zodschema = [
             b.exportNamedDeclaration(
               b.variableDeclaration("const", [
                 b.variableDeclarator(
-                  b.identifier(PascalCase(singularize(table.name))),
+                  b.identifier(identifier),
                   b.callExpression(
                     b.memberExpression(
                       b.callExpression(
@@ -649,7 +651,9 @@ export const makeZodSchemasPlugin =
                                 [],
                               );
                               return b.objectProperty.from({
-                                key: b.literal(config.inflections.columnNames(c.name)),
+                                key: b.literal(
+                                  config.inflections.columnNames(c.name),
+                                ),
                                 value: c.nullable
                                   ? b.callExpression(
                                       b.memberExpression(
@@ -674,17 +678,11 @@ export const makeZodSchemasPlugin =
             // export type Post = z.infer<typeof Post>
             b.exportNamedDeclaration(
               b.tsTypeAliasDeclaration.from({
-                id: b.identifier(
-                  config.inflections.tableNames(singularize(table.name)),
-                ),
+                id: b.identifier(identifier),
                 typeAnnotation: b.tsExpressionWithTypeArguments(
                   b.tsQualifiedName(b.identifier("z"), b.identifier("infer")),
                   b.tsTypeParameterInstantiation([
-                    b.tsTypeQuery(
-                      b.identifier(
-                        config.inflections.tableNames(singularize(table.name)),
-                      ),
-                    ),
+                    b.tsTypeQuery(b.identifier(identifier)),
                   ]),
                 ),
               }),
@@ -800,6 +798,10 @@ export const makeQueriesPlugin =
             );
             const columns = index.colnames.map((name) => table.columns[name]);
             const column = columns[0];
+            const tableName = table.name;
+            const schemaName = schema.name;
+            const returnType = config.inflections.tableNames(table.name);
+            const columnName = config.inflections.columnNames(column.name);
             switch (true) {
               case index.isPrimary:
                 /** @type {Array<QueryData>} */
@@ -810,21 +812,21 @@ export const makeQueriesPlugin =
                     where: [[column.name, getOperatorFromColumn(column), "?"]],
                     params: [
                       [
-                        config.inflections.columnNames(column.name),
+                        columnName,
                         { type: getTypeNameFromPgType(column.type, config) },
                       ],
                     ],
-                    returnType: config.inflections.tableNames(table.name),
+                    returnType,
                     returnsMany: false,
-                    schemaName: schema.name,
-                    tableName: table.name,
+                    schemaName,
+                    tableName,
                   },
                   {
                     name: "create",
                     operation: "insert",
                     params: [
                       [
-                        column.name,
+                        columnName,
                         { type: getTypeNameFromPgType(column.type, config) },
                       ],
                       [
@@ -837,10 +839,10 @@ export const makeQueriesPlugin =
                         },
                       ],
                     ],
-                    returnType: config.inflections.tableNames(table.name),
+                    returnType,
                     returnsMany: false,
-                    schemaName: schema.name,
-                    tableName: table.name,
+                    schemaName,
+                    tableName,
                   },
                   {
                     name: "update",
@@ -862,8 +864,8 @@ export const makeQueriesPlugin =
                       ],
                     ],
                     returnsMany: false,
-                    schemaName: schema.name,
-                    tableName: table.name,
+                    schemaName,
+                    tableName,
                   },
                   {
                     name: "delete",
@@ -876,26 +878,29 @@ export const makeQueriesPlugin =
                       ],
                     ],
                     returnsMany: false,
-                    schemaName: schema.name,
-                    tableName: table.name,
+                    schemaName,
+                    tableName,
                   },
                 ];
               case column.type === "pg_catalog.tsvector":
                 // return [];
                 return {
                   name: camelCase(`search_${table.name}`),
-                  operation: 'select',
-                  join: 'lateral websearch_to_tsquery(?) as q',
-                  where: [[column.name, '@@', 'q']],
+                  operation: "select",
+                  join: "lateral websearch_to_tsquery(?) as q",
+                  where: [[column.name, "@@", "q"]],
                   params: [
-                    [column.name, { type: getTypeNameFromPgType(column.type, config) }],
+                    [
+                      column.name,
+                      { type: getTypeNameFromPgType(column.type, config) },
+                    ],
                     ["limit", { default: 100, type: "number" }],
                     ["offset", { default: 0, type: "number" }],
                   ],
-                  returnType: config.inflections.tableNames(table.name),
+                  returnType,
                   returnsMany: true,
-                  schemaName: schema.name,
-                  tableName: table.name,
+                  schemaName,
+                  tableName,
                 };
               case column.type === "pg_catalog.timestamptz":
                 return {
@@ -913,10 +918,10 @@ export const makeQueriesPlugin =
                     column.name,
                     index.option && index.option[0] == 3 ? "desc" : "asc",
                   ],
-                  returnType: config.inflections.tableNames(table.name),
+                  returnType,
                   returnsMany: !index.isPrimary,
-                  schemaName: schema.name,
-                  tableName: table.name,
+                  schemaName,
+                  tableName,
                 };
               default:
                 return {
@@ -924,23 +929,23 @@ export const makeQueriesPlugin =
                   operation: "select",
                   where: [
                     [
-                      config.inflections.columnNames(column.name),
+                      columnName,
                       getOperatorFromColumn(column),
                       "?",
                     ],
                   ],
                   params: [
                     [
-                      config.inflections.columnNames(column.name),
+                      columnName,
                       { type: getTypeNameFromPgType(column.type, config) },
                     ],
                     ["limit", { default: 100, type: "number" }],
                     ["offset", { default: 0, type: "number" }],
                   ],
-                  returnType: config.inflections.tableNames(table.name),
+                  returnType,
                   returnsMany: !index.isPrimary,
-                  schemaName: schema.name,
-                  tableName: table.name,
+                  schemaName,
+                  tableName,
                 };
             }
           }),
@@ -968,32 +973,16 @@ export const makeQueriesPlugin =
                 }
               : {},
         ],
-        content: queryDataToObjectMethods(
-          { queryData, tableName },
-          { config, builders },
+        content: queryDataToObjectMethodsAST(
+          { queryData, tableName, config },
         ),
       };
     });
   };
 
-/**
- * @param {{ path?: string | ((o: { schema: string, table: string }) => string) }}
- * @param {{ schemaName: string, tableName: string }}
- */
-function makePathFromConfig(
-  { path },
-  { schemaName: schema, tableName: table },
-) {
-  return typeof path === "function"
-    ? path({ schema, table })
-    : typeof path === "string"
-      ? path
-      : `../${table}.ts}`;
-}
-
 /** @param {QueryData} queryData */
 function queryBuilder(queryData) {
-  const target = `${queryData.schemaName}.${queryData.tableName}` 
+  const target = `${queryData.schemaName}.${queryData.tableName}`;
   return (() => {
     switch (queryData.operation) {
       case "select": {
@@ -1005,8 +994,8 @@ function queryBuilder(queryData) {
           queryData.join,
           queryData.where &&
             `where ${queryData.where.map((p) => p.join(" ")).join(" and ")}`,
-          limit && 'limit ?',
-          offset && 'offset ?',
+          limit && "limit ?",
+          offset && "offset ?",
         ];
       }
       case "insert": {
@@ -1048,16 +1037,13 @@ function queryBuilder(queryData) {
  * @param {{
  *   queryData: Array<QueryData>;
  *   tableName: string;
- * }} _
- * @param {{
- *   builders: import("ast-types").builders;
  *   config: Config
  * }} _
  */
-function queryDataToObjectMethods(
-  { queryData, tableName },
-  { config, builders: b },
+function queryDataToObjectMethodsAST(
+  { queryData, tableName, config },
 ) {
+  const b = recast.types.builders;
   return b.exportNamedDeclaration(
     b.variableDeclaration("const", [
       b.variableDeclarator(
@@ -1144,8 +1130,12 @@ function queryDataToObjectMethods(
               body: {
                 pg() {
                   const queryStr = queryBuilder(queryData)
-                    .split('?')
-                .reduce((acc, part, i) => i === 0 ? `${acc}${part}` : `${acc}$${i}` + part, '');
+                    .split("?")
+                    .reduce(
+                      (acc, part, i) =>
+                        i === 0 ? `${acc}${part}` : `${acc}$${i}` + part,
+                      "",
+                    );
                   const queryExpression = b.awaitExpression(
                     b.callExpression.from({
                       callee: b.memberExpression(
@@ -1197,12 +1187,24 @@ function queryDataToObjectMethods(
                   ]);
                 },
                 postgres() {
-                  let query = queryBuilder(queryData, { config })
+                  let query = queryBuilder(queryData)
                     .split("?")
-                    .flatMap((part, i) => i === 0 ? b.templateElement({ raw: part, cooked: part }, false) : b.templateElement({ raw: part, cooked: part }, true), '');
+                    .map(
+                      (part, i) =>
+                        i === 0
+                          ? b.templateElement(
+                              { raw: part, cooked: part },
+                              false,
+                            )
+                          : b.templateElement(
+                              { raw: part, cooked: part },
+                              true,
+                            ),
+                      "",
+                    );
                   const queryExpression = b.awaitExpression(
-                    b.taggedTemplateExpression.from({
-                      tag: b.tsInstantiationExpression.from({
+                    b.taggedTemplateExpression(
+                      b.tsInstantiationExpression.from({
                         expression: b.identifier("sql"),
                         typeParameters: !queryData.returnType
                           ? null
@@ -1217,8 +1219,11 @@ function queryDataToObjectMethods(
                               ),
                             ]),
                       }),
-                      quasi: b.templateLiteral(query, queryData.params.map(([name]) => b. identifier(name))),
-                    }),
+                      b.templateLiteral(
+                        query,
+                        queryData.params.map(([name]) => b.identifier(name)),
+                      ),
+                    ),
                   );
                   if (!queryData.returnType) {
                     return b.blockStatement([
@@ -1347,6 +1352,7 @@ function getTypeNameFromPgType(pgTypeString, config) {
       return "unknown";
     default:
       if (config.typeMap && pgTypeString in config.typeMap) {
+        // @ts-ignore
         return config.typeMap[pgTypeString];
       }
       debug(`unknown PgTypeString "${pgTypeString}"`);
@@ -1380,4 +1386,19 @@ function findExports({ results, identifier }) {
   }
   if (!typeRef) throw new Error(`could not type export for ${identifier}`);
   return typeRef;
+}
+
+/**
+ * @param {{ path?: string | ((o: { schema: string, table: string }) => string) }} _
+ * @param {{ schemaName: string, tableName: string }} _
+ */
+function makePathFromConfig(
+  { path },
+  { schemaName: schema, tableName: table },
+) {
+  return typeof path === "function"
+    ? path({ schema, table })
+    : typeof path === "string"
+      ? path
+      : `../${table}.ts}`;
 }
