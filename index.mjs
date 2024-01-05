@@ -178,8 +178,8 @@ function getPermissions(entity, { introspection, role }) {
           canInsert ||= Boolean(attributePermission.insert);
           canUpdate ||= Boolean(attributePermission.update);
         }
-        return { canSelect, canInsert, canUpdate, canDelete };
       }
+      return { canSelect, canInsert, canUpdate, canDelete };
     }
     case "PgProc": {
       const { execute } = entityPermissions(introspection, entity, role, true);
