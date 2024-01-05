@@ -774,7 +774,7 @@ export const makeTypesPlugin =
 }) => Plugin} pluginOpts */
 export const makeQueriesPlugin =
   (pluginOpts) =>
-  ({ database, builders, config, results }) => {
+  ({ database, config, results }) => {
     if (!results) {
       throw new Error(
         "makeQueriesPlugin plugin requires makeTypesPlugin or makeZodSchemasPlugin and placed after them in the plugin list",
@@ -927,13 +927,7 @@ export const makeQueriesPlugin =
                 return {
                   name: camelCase(`by_${column.name}`),
                   operation: "select",
-                  where: [
-                    [
-                      columnName,
-                      getOperatorFromColumn(column),
-                      "?",
-                    ],
-                  ],
+                  where: [[columnName, getOperatorFromColumn(column), "?"]],
                   params: [
                     [
                       columnName,
@@ -953,7 +947,10 @@ export const makeQueriesPlugin =
       );
     return queries.flatMap((queryData) => {
       const { tableName, schemaName } = queryData[0];
-      const typeRef = findExports({ results, identifier: config.inflections.tableNames(tableName) });
+      const typeRef = findExports({
+        results,
+        identifier: config.inflections.tableNames(tableName),
+      });
       /** @type {Output} */
       return {
         path: makePathFromConfig(pluginOpts, {
@@ -973,9 +970,7 @@ export const makeQueriesPlugin =
                 }
               : {},
         ],
-        content: queryDataToObjectMethodsAST(
-          { queryData, tableName, config },
-        ),
+        content: queryDataToObjectMethodsAST({ queryData, tableName, config }),
       };
     });
   };
@@ -1040,9 +1035,7 @@ function queryBuilder(queryData) {
  *   config: Config
  * }} _
  */
-function queryDataToObjectMethodsAST(
-  { queryData, tableName, config },
-) {
+function queryDataToObjectMethodsAST({ queryData, tableName, config }) {
   const b = recast.types.builders;
   return b.exportNamedDeclaration(
     b.variableDeclaration("const", [
@@ -1385,7 +1378,7 @@ function findExports({ results, identifier }) {
   let typeRef;
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
-    const e = r.exports?.find((e) => e.kind === 'type');
+    const e = r.exports?.find((e) => e.kind === "type");
     if (e && e.identifier === identifier) {
       /** @type {ImportSpec} */
       typeRef = { identifier: e.identifier, path: r.path, typeImport: true };
