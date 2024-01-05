@@ -123,3 +123,11 @@ create function app_public.search_tags(
   order by count desc
   limit 6;
 $$ language sql stable strict set search_path to pg_catalog, public, pg_temp;
+
+------------------------------------------------------------------------------------------------------------------------
+
+create view recent_posts as
+  select *
+  from app_public.posts
+  order by created_at desc
+  limit 100;
