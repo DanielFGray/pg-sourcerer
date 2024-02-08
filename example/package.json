@@ -3,10 +3,13 @@
   "license": "Unlicense",
   "private": true,
   "scripts": {
+    "dev": "bun run-p db:watch bun:watch",
+    "bun:watch": "bun --watch ../index.mjs",
     "start": "node -r dotenv/config ../index.mjs",
     "gm": "node -r dotenv/config ./node_modules/.bin/graphile-migrate",
     "db:init": "node -r dotenv/config scripts/setup-db.mjs",
     "db:latest": "node -r dotenv/config ./node_modules/.bin/graphile-migrate watch --once",
+    "db:watch": "node -r dotenv/config ./node_modules/.bin/graphile-migrate watch",
     "db:reset": "node -r dotenv/config ./node_modules/.bin/graphile-migrate reset --erase",
     "db:start": "docker-compose up -d db",
     "db:stop": "docker-compose stop db",
@@ -16,8 +19,12 @@
     "setup": "NOCONFIRM=1 run-s -s env:init db:setup"
   },
   "dependencies": {
-    "graphile-migrate": "^1.4.1",
+    "graphile-migrate": "next",
     "inquirer": "^9.2.12",
-    "npm-run-all": "^4.1.5"
+    "npm-run-all": "^4.1.5",
+    "rimraf": "^5.0.5"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.4"
   }
 }

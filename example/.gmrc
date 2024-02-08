@@ -88,7 +88,7 @@
     {
       "_": "command",
       "shadow": false,
-      "command": "node -r dotenv/config ../index.mjs"
+      "command": "bun start"
     }
   ],
 

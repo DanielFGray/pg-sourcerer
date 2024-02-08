@@ -1,26 +1,68 @@
-// @ts-check
-import { makeTypesPlugin, makeQueriesPlugin, makeZodSchemasPlugin, defineConfig } from "../index.mjs";
-import { camelize } from "inflection";
+import {
+  makeTypesPlugin,
+  makeZodSchemasPlugin,
+  makeQueriesPlugin,
+  makeHttpPlugin,
+  defineConfig,
+  transform,
+} from "../index.mjs";
+import path from "path";
+import { rimraf } from "rimraf";
 
-/** @param {string} str */
-const camelCase = (str) => camelize(str, true)
+const schemas = [
+  // "public",
+  "app_public",
+  // "app_private"
+];
+const tables = ["users", "posts", "comments"];
 
-const schemas = ["app_public"];
+const outputDir = path.resolve("./generated");
 
 export default defineConfig({
-  adapter: "pg",
-  outputDir: "./generated",
+  adapter: "postgres",
+  outputDir,
+  outputExtension: "ts",
   connectionString: process.env.AUTH_DATABASE_URL || process.env.DATABASE_URL,
-  role: process.env.DATABASE_VISITOR,
-  inflections: { columnNames: camelCase },
+  // role: process.env.DATABASE_VISITOR,
+  schemas,
   typeMap: {
-    "app_public.username": "string",
     "app_public.url": "string",
+    "app_public.username": "string",
+    "pg_catalog.tsvector": "string",
     "public.citext": "string",
   },
+  inflections: {
+    // columns: ['camelize'],
+  },
   plugins: [
-    // makeTypesPlugin({ schemas, path: () => `./types.ts` }),
-    makeZodSchemasPlugin({ schemas, path: () => `./schemas.ts` }),
-    makeQueriesPlugin({ schemas, path: () => `./queries.ts` }),
+    {
+      name: "clean",
+      render() {
+        rimraf(outputDir);
+        return [];
+      },
+    },
+    // makeTypesPlugin({
+    // 	tables,
+    // 	schemas,
+    // 	path: ["pluralize", "camelize"],
+    // 	// path: './types',
+    // }),
+    makeZodSchemasPlugin({
+      tables,
+      schemas,
+      exportType: true,
+      path: ["pluralize", "camelize"],
+      // path: './schemas',
+    }),
+    makeQueriesPlugin({
+      tables,
+      schemas,
+      path: ["camelize"],
+      // path: './queries',
+    }),
+    makeHttpPlugin({
+      // path: ({ name }) => `./${transform(name, ['camelize'])}.ts`
+    }),
   ],
 });
