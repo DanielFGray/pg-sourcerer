@@ -14,15 +14,16 @@ npm setup
 ```
 
 the setup script will
- * prompt for questions and generate a .env file
- * start postgres in a docker container
- * run migrations using graphile-migrate
- * run the sourcerer plugins in the config file
+
+- prompt for questions and generate a .env file
+- start postgres in a docker container
+- run migrations using graphile-migrate
+- run the sourcerer plugins in the config file
 
 ## plugins
 
 currently there are a few core plugins:
 
- * `makeTypesPlugin` - generates type aliases
- * `makeZodSchemasPlugin` - generates zod schemas
- * `makeQueriesPlugin` - generates CRUD queries
+- `makeTypesPlugin` - generates type aliases
+- `makeZodSchemasPlugin` - generates zod schemas
+- `makeQueriesPlugin` - generates CRUD queries

@@ -52,13 +52,13 @@ const pgPool = new pg.Pool({ connectionString: ROOT_DATABASE_URL });
   const { confirm } = process.env.NOCONFIRM
     ? { confirm: true }
     : await inquirer.prompt([
-      {
-        name: "confirm",
-        message: "press y to continue:",
-        type: "confirm",
-        prefix: "",
-      },
-    ]);
+        {
+          name: "confirm",
+          message: "press y to continue:",
+          type: "confirm",
+          prefix: "",
+        },
+      ]);
   if (!confirm) process.exit();
 
   try {
