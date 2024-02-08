@@ -40,7 +40,10 @@ async function readDotenv() {
  */
 async function createConfig(config) {
   const packageJson = JSON.parse(await fs.readFile("./package.json", "utf8"));
-  const packageName = packageJson.name.replace(/\W/g, "_").replace(/__+/g, "").replace(/^_/, "");
+  const packageName = (packageJson?.name || import.meta.dirname.split("/").at(-1))
+    .replace(/\W/g, "_")
+    .replace(/__+/g, "")
+    .replace(/^_/, "");
 
   if (
     config &&
@@ -68,6 +71,7 @@ async function createConfig(config) {
     console.error(".env file untouched");
     process.exit(0);
   }
+
   const {
     ROOT_DATABASE_USER,
     DATABASE_HOST,
@@ -149,12 +153,14 @@ async function createConfig(config) {
   };
 
   if (!Object.values(PASSWORDS).every(Boolean)) {
-    PASSWORDS = (await inquirer.prompt({
+    PASSWORDS = (
+      await inquirer.prompt({
         name: "genpwd",
         message: "auto-generate passwords?",
         type: "confirm",
         prefix: "",
-    })).genpwd
+      })
+    ).genpwd
       ? {
           ROOT_DATABASE_PASSWORD: config?.ROOT_DATABASE_PASSWORD ?? generatePassword(18),
           DATABASE_OWNER_PASSWORD: config?.DATABASE_OWNER_PASSWORD ?? generatePassword(18),

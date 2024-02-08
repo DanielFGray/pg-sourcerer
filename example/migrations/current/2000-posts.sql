@@ -13,7 +13,7 @@ create function app_hidden.array_regexp_matches (
     regexp_matches(input_string, pattern, 'g') as m(match)
 $$ language sql immutable;
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create table app_public.posts (
   id int primary key generated always as identity (start 1000),
@@ -39,7 +39,7 @@ create index on app_public.posts using gin (tags);
 create index on app_public.posts using gist (search);
 create index on app_public.posts (created_at desc);
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 alter table app_public.posts enable row level security;
 
@@ -74,7 +74,7 @@ grant
   delete
   on app_public.posts to :DATABASE_VISITOR;
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create trigger _100_timestamps
   before insert or update
@@ -91,7 +91,7 @@ create trigger _500_gql_update
     'id' -- If specified, `$1` above will be replaced with new.id or old.id from the trigger.
   );
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create function app_public.posts_short_body(
   post app_public.posts
@@ -99,7 +99,7 @@ create function app_public.posts_short_body(
   select left(post.body, 320) || case length(post.body) > 320 when true then '…' else '' end
 $$ language sql strict stable;
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create function app_public.posts_with_tags(
   tags text[]
@@ -107,7 +107,7 @@ create function app_public.posts_with_tags(
   select * from app_public.posts p where p.tags @> posts_with_tags.tags::citext[]
 $$ language sql stable set search_path to pg_catalog, public, pg_temp;
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create type tag_search_result as (tag text, count bigint);
 create function app_public.search_tags(
@@ -124,10 +124,22 @@ create function app_public.search_tags(
   limit 6;
 $$ language sql stable strict set search_path to pg_catalog, public, pg_temp;
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
-create view recent_posts as
+create view app_public.recent_posts as
   select *
   from app_public.posts
   order by created_at desc
   limit 100;
+
+create view app_public.top_tags as
+  select
+    unnest(tags) as tag,
+    count(*)
+  from
+    app_public.posts
+  group by
+    tag
+  order by
+    count desc;
+

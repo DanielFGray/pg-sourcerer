@@ -51,7 +51,7 @@ create trigger _200_post_first_vote
 comment on function app_private.tg_post_first_vote() is
   E'';
 
-------------------------------------------------------------------------------------------------------------------------
+-- ─────────────────────────────────────────────────────────────────────────────
 
 create or replace function app_public.posts_current_user_voted(
   p app_public.posts
