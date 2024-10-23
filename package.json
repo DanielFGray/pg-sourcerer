@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "",
   "main": "index.js",
+  "bin": {
+    "pgs": "./index.mjs"
+  },
   "scripts": {
     "dev": "DEBUG=pg-sourcerer nodemon -w index.mjs -w pgsourcerer.config.mjs -x 'rm -fr generated; bun ./index.mjs'",
     "test": "echo \"Error: no test specified\" && exit 1"

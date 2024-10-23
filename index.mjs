@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // @ts-check
 import path from "path";
 import _debug from "debug";
