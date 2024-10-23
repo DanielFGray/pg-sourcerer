@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// @ts-check
 import path from "path";
 import _debug from "debug";
 import fs from "fs/promises";
 import { transform } from "inflection";
 import {
+  type PgType,
+  type PgRoles,
+  type PgNamespace,
+  type Introspection as PgIntrospection,
   entityPermissions,
   makeIntrospectionQuery,
   parseIntrospectionResults,
@@ -118,11 +121,10 @@ export const userConfig = z.object({
   ),
 });
 
-/** @typedef {z.infer<typeof userConfig>} Config */
-/** @typedef {z.infer<typeof inflectionsSchema>} Inflections */
+type Config = z.infer<typeof userConfig>;
+type Inflections = z.infer<typeof inflectionsSchema>;
 
-/** @returns {Promise<Config>} */
-export async function parseConfig() {
+export default async function parseConfig(): Promise<Config> {
   let configSearch = await cosmiconfig("pgsourcerer").search();
   if (!configSearch) {
     // TODO: what if we codegen a config from prompts?
@@ -140,9 +142,9 @@ export async function parseConfig() {
   return config;
 }
 
-/** @typedef {{ typeImport?: boolean, identifier: string, default?: boolean, path: string}} ImportSpec */
+type ImportSpec = { typeImport?: boolean; identifier: string; default?: boolean; path: string };
 
-/** @typedef {ReturnType<Config['plugins'][number]['render']>[number]} Output */
+type Output = ReturnType<Config["plugins"][number]["render"]>[number];
 
 const utils = {
   getTypeName,
@@ -155,19 +157,18 @@ const utils = {
   builders: recast.types.builders,
 };
 
-/** @typedef {{
-  name: string,
+type Plugin = {
+  name: string;
   inflections?: Inflections;
   render(info: {
     introspection: { schemas: Record<string, DbSchema> };
     output: Array<Output> | null;
     config: Config;
     utils: typeof utils;
-  }): Array<Output>
-}} Plugin */
+  }): Array<Output>;
+};
 
-/** @returns {Promise<void>} */
-async function main() {
+async function main(): Promise<void> {
   const config = await parseConfig();
   const introspectionResult = await (async () => {
     const query = makeIntrospectionQuery();
@@ -213,8 +214,7 @@ async function main() {
 
   const introspection = processIntrospection(parseIntrospectionResults(introspectionResult, true));
 
-  /** @type {null | Array<Output>} */
-  const output = pluginRunner(config, introspection);
+  const output: null | Array<Output> = pluginRunner(config, introspection);
 
   if (!output || !output.length) {
     console.error("no output from plugins");
@@ -239,11 +239,7 @@ async function main() {
   });
 }
 
-/**
- * @param {Config} config
- * @param {Introspection} introspection
- */
-function pluginRunner(config, introspection) {
+function pluginRunner(config: Config, introspection: Introspection) {
   // @workspace compose plugin.inflections
   const inflections = config.plugins.reduce(
     (o, plugin) => {
@@ -260,37 +256,31 @@ function pluginRunner(config, introspection) {
     { columns: s => s },
   );
   config.inflections = inflections;
-  return config.plugins.reduce((prevOutput, plugin) => {
-    const newOutput = plugin.render({
-      introspection,
-      output: prevOutput,
-      config,
-      utils,
-    });
-    return prevOutput ? prevOutput.concat(newOutput) : newOutput;
-  }, /** @type {null | Array<Output>} */ (null));
+  return config.plugins.reduce(
+    (prevOutput, plugin) => {
+      const newOutput = plugin.render({
+        introspection,
+        output: prevOutput,
+        config,
+        utils,
+      });
+      return prevOutput ? prevOutput.concat(newOutput) : newOutput;
+    },
+    null as null | Array<Output>,
+  );
 }
 
-/** @param {import("pg-introspection").PgType} type */
-function getTypeName(type) {
+function getTypeName(type: PgType) {
   return [type.getNamespace()?.nspname, type.typname].join(".");
 }
 
-/**
- * might implement a custom metadata parser later
- * @param {{ getDescription(): string | undefined }} entity
- */
-function getDescription(entity) {
+function getDescription(entity: { getDescription(): string | undefined }) {
   return entity.getDescription();
 }
 
-/** @typedef {{ name: string, schemas: Record<string, DbSchema> }} Introspection */
+type Introspection = { name: string; schemas: Record<string, DbSchema> };
 
-/**
- * @param {import("pg-introspection").Introspection} introspection
- * @returns {Introspection}
- */
-function processIntrospection(introspection) {
+function processIntrospection(introspection: PgIntrospection): Introspection {
   const role = introspection.getCurrentUser();
   if (!role) throw new Error("who am i???");
   return {
@@ -304,15 +294,22 @@ function processIntrospection(introspection) {
   };
 }
 
-/**
- * @param {Parameters<typeof entityPermissions>[1]} entity
- * @param {{
-     introspection: import("pg-introspection").Introspection,
-     role: import("pg-introspection").PgRoles,
-   }}
- * @returns {{canSelect?: boolean, canInsert?: boolean, canUpdate?: boolean, canDelete?: boolean, canExecute?: boolean}}
- */
-function getPermissions(entity, { introspection, role }) {
+function getPermissions(
+  entity: Parameters<typeof entityPermissions>[1],
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): {
+  canSelect?: boolean;
+  canInsert?: boolean;
+  canUpdate?: boolean;
+  canDelete?: boolean;
+  canExecute?: boolean;
+} {
   // licensed under MIT from Benjie Gillam
   // https://github.com/graphile/crystal/blob/9d1c54a28e29a2da710ba093541b4a03bab6b5c6/graphile-build/graphile-build-pg/src/plugins/PgRBACPlugin.ts
   switch (entity._type) {
@@ -353,25 +350,26 @@ function getPermissions(entity, { introspection, role }) {
       throw new Error(`unknown entity type "${entity._type}"`);
   }
 }
-/** @typedef {ReturnType<typeof getPermissions>} Permissions */
+type Permissions = ReturnType<typeof getPermissions>;
 
-/** @typedef {{
+type DbSchema = {
   name: string;
   views: Record<string, DbView>;
   tables: Record<string, DbTable>;
   functions: Record<string, DbFunction>;
   types: Record<string, DbType>;
-}} DbSchema */
+};
 
-/**
- * @param {import("pg-introspection").PgNamespace} schema
- * @param {{
-     introspection: import("pg-introspection").Introspection;
-     role: import("pg-introspection").PgRoles,
-   }}
- * @returns {DbSchema}
- */
-function processSchema(schema, { introspection, role }) {
+function processSchema(
+  schema: PgNamespace,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): DbSchema {
   return {
     name: schema.nspname,
     views: processViews(schema.oid, { introspection, role }),
@@ -382,19 +380,16 @@ function processSchema(schema, { introspection, role }) {
   };
 }
 
-/**
- * @param {string} schemaId
- * @param {{
-     introspection: import("pg-introspection").Introspection,
-     role: import("pg-introspection").PgRoles,
-   }}
- * @returns {Array<
- *   | { kind: "domain",    name: string, type: "text" }
- *   | { kind: "enum",      name: string, values: Array<string> }
- *   | { composite: "enum", name: string, type: Array<{ name: string, type: string }> }
- * >}
- */
-function processTypes(schemaId, { introspection, role }) {
+function processTypes(
+  schemaId: string,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+) {
   void fs.writeFile("types.json", stringify(introspection.types), "utf8");
   const domains = introspection.types
     .filter(t => t.typtype === "d" && t.typnamespace === schemaId)
@@ -432,26 +427,31 @@ function processTypes(schemaId, { introspection, role }) {
     t => t.name,
     [...domains, ...enums, ...composites],
   );
-  return types;
+  return types as Array<
+    | { kind: "domain"; name: string; type: "text" }
+    | { kind: "enum"; name: string; values: Array<string> }
+    | { composite: "enum"; name: string; type: Array<{ name: string; type: string }> }
+  >;
 }
 
-/** @typedef {{
+type DbView = {
   name: string;
   columns: Record<string, DbColumn>;
   constraints: Record<string, DbReference>;
   description: string | undefined;
   permissions: Permissions;
-}} DbView */
+};
 
-/**
- * @param {string} schemaId
- * @param {{
-     introspection: import("pg-introspection").Introspection,
-     role: import("pg-introspection").PgRoles,
-   }}
- * @returns {Record<string, DbView>}
- */
-function processViews(schemaId, { introspection, role }) {
+function processViews(
+  schemaId: string,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): Record<string, DbView> {
   const views = Object.fromEntries(
     introspection.classes
       .filter(cls => cls.relnamespace === schemaId && cls.relkind === "v")
@@ -471,24 +471,25 @@ function processViews(schemaId, { introspection, role }) {
   return views;
 }
 
-/** @typedef {{
+type DbTable = {
   name: string;
   columns: Record<string, DbColumn>;
   indexes: Record<string, DbIndex>;
   references: Record<string, DbReference>;
   permissions: Permissions;
   description: string | undefined;
-}} DbTable */
+};
 
-/**
- * @param {string} schemaId
- * @param {{
-    introspection: import("pg-introspection").Introspection,
-    role: import("pg-introspection").PgRoles,
-   }}
- * @returns {Record<string, DbTable>}
- */
-function processTables(schemaId, { introspection, role }) {
+function processTables(
+  schemaId: string,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): Record<string, DbTable> {
   return Object.fromEntries(
     introspection.classes
       .filter(cls => cls.relnamespace === schemaId && cls.relkind === "r")
@@ -504,7 +505,7 @@ function processTables(schemaId, { introspection, role }) {
   );
 }
 
-/** @typedef {{
+type DbColumn = {
   name: string;
   identity: string | null;
   type: string;
@@ -513,17 +514,18 @@ function processTables(schemaId, { introspection, role }) {
   isArray: boolean;
   description: string | undefined;
   permissions: Permissions;
-}} DbColumn */
+};
 
-/**
- * @param {string} tableId
- * @param {{
- *   introspection: import("pg-introspection").Introspection,
- *   role: import("pg-introspection").PgRoles,
- * }}
- * @returns {Record<string, DbColumn>}
- */
-function processColumns(tableId, { introspection, role }) {
+function processColumns(
+  tableId: string,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): Record<string, DbColumn> {
   return Object.fromEntries(
     introspection.attributes
       .filter(attr => attr.attrelid === tableId)
@@ -550,23 +552,23 @@ function processColumns(tableId, { introspection, role }) {
   );
 }
 
-/** @typedef {{
+type DbIndex = {
   name: string;
   colnames: Array<string>;
   isUnique: boolean | null;
   isPrimary: boolean | null;
   option: Readonly<Array<number>> | null;
-  type: string
-}} DbIndex */
+  kind: string | null;
+};
 
-/**
- * @param {string} tableId
- * @param {{
- *  introspection: import("pg-introspection").Introspection,
- * }}
- * @returns {Record<string, DbIndex>}
- */
-function processIndexes(tableId, { introspection }) {
+function processIndexes(
+  tableId: string,
+  {
+    introspection,
+  }: {
+    introspection: PgIntrospection;
+  },
+): Record<string, DbIndex> {
   return Object.fromEntries(
     introspection.indexes
       .filter(index => index.indrelid === tableId)
@@ -586,33 +588,31 @@ function processIndexes(tableId, { introspection }) {
         const option = index.indoption;
         return [
           name,
-          /** @type DbIndex */ ({
+          {
             name,
             isUnique: index.indisunique,
             isPrimary: index.indisprimary,
             option,
-            type: am.amname,
+            kind: am.amname,
             colnames,
-          }),
+          } satisfies DbIndex,
         ];
       }),
   );
 }
 
-/** @typedef {{
+type DbReference = {
   refPath: {
     schema: string;
     table: string;
     column: string;
   };
-}} DbReference */
+};
 
-/**
- * @param {string} tableId
- * @param {{introspection: import("pg-introspection").Introspection}}
- * @returns {Record<string, DbReference>}
- */
-function processReferences(tableId, { introspection }) {
+function processReferences(
+  tableId: string,
+  { introspection }: { introspection: PgIntrospection },
+): Record<string, DbReference> {
   return Object.fromEntries(
     introspection.constraints
       .filter(c => c.conrelid === tableId && c.contype === "f")
@@ -640,22 +640,23 @@ function processReferences(tableId, { introspection }) {
   );
 }
 
-/** @typedef {{
+type DbFunction = {
   permissions: Permissions;
   returnType: string | undefined;
   args: Array<[string | number, { type: string; hasDefault?: boolean }]>;
-  volatility: "immutable" | "stable" | "volatile"
-}} DbFunction */
+  volatility: "immutable" | "stable" | "volatile";
+};
 
-/**
- * @param {string} schemaId
- * @param {{
-     introspection: import("pg-introspection").Introspection,
-     role: import("pg-introspection").PgRoles,
-   }} _
- * @returns {Record<string, DbFunction>}
- */
-function processFunctions(schemaId, { introspection, role }) {
+function processFunctions(
+  schemaId: string,
+  {
+    introspection,
+    role,
+  }: {
+    introspection: PgIntrospection;
+    role: PgRoles;
+  },
+): Record<string, DbFunction> {
   return Object.fromEntries(
     introspection.procs
       .filter(proc => proc.pronamespace === schemaId)
@@ -690,13 +691,12 @@ function processFunctions(schemaId, { introspection, role }) {
 
 /******************************************************************************/
 
-/** @type {(opts?: {
-  schemas?: Array<string>
-  tables?: Array<string>
-  inflections?: Inflections
-  path?: string | ((o: { schema: string, name: string }) => string),
-}) => Plugin} pluginOpts */
-export const makeTypesPlugin = pluginOpts => ({
+export const makeTypesPlugin = (pluginOpts?: {
+  schemas?: Array<string>;
+  tables?: Array<string>;
+  inflections?: Inflections;
+  path?: string | ((o: { schema: string; name: string }) => string);
+}): Plugin => ({
   name: "types",
   inflections: {
     types: ["classify"],
@@ -766,13 +766,12 @@ export const makeTypesPlugin = pluginOpts => ({
   },
 });
 
-/** @type {(pluginOpts?: {
-  schemas?: Array<string>
-  tables?: Array<string>
-  path?: string | ((o: { schema: string, name: string }) => string),
-  exportType?: boolean
-}) => Plugin} */
-export const makeZodSchemasPlugin = pluginOpts => ({
+export const makeZodSchemasPlugin = (pluginOpts?: {
+  schemas?: Array<string>;
+  tables?: Array<string>;
+  path?: string | ((o: { schema: string; name: string }) => string);
+  exportType?: boolean;
+}): Plugin => ({
   name: "schemas",
   inflections: {
     types: ["camelize", "singularize"],
@@ -849,30 +848,87 @@ export const makeZodSchemasPlugin = pluginOpts => ({
         return [
           ...tables,
           // TODO: ...views
-        ].map(
-          ({ identifier, content }) =>
-            /** @type {Output} */ ({
-              path: makePathFromConfig({
-                config: { ...config, pluginOpts },
-                name: config.inflections.schemas(identifier),
-                schema: schema.name,
-              }),
-              content,
-              imports: [{ identifier: "z", path: "zod" }],
-              exports: [
-                { identifier, kind: "zodSchema" },
-                ...(pluginOpts?.exportType ? [{ identifier, kind: "type" }] : []),
-              ],
-            }),
-        );
+        ].map(({ identifier, content }) => ({
+          path: makePathFromConfig({
+            config: { ...config, pluginOpts },
+            name: config.inflections.schemas(identifier),
+            schema: schema.name,
+          }),
+          content,
+          imports: [{ identifier: "z", path: "zod" }],
+          exports: [
+            { identifier, kind: "zodSchema" },
+            ...(pluginOpts?.exportType ? [{ identifier, kind: "type" }] : []),
+          ],
+        } satisfies Output));
       });
   },
 });
 
-/** @typedef {{
+export const makeEffectClassPlugin = (pluginOpts: {
+  schemas: Array<string>;
+  tables?: Array<string>;
+  path?: string | ((o: { schema: string; name: string }) => string);
+}): Plugin => ({
+  name: "effectClass",
+  inflections: {
+    schemas: ["camelize", "singularize"],
+  },
+  render({ introspection, config, output, utils }) {
+    // class User extends Schema.Class("User")({
+    //   id: Schema.String,
+    //   name: Schema.String
+    // }) {}
+    const b = utils.builders;
+    return Object.values(introspection.schemas)
+      .flatMap(schema => {
+        const tables = Object.values(schema.tables).map(t => {
+          const identifier = config.inflections.tables(t.name);
+          b.classDeclaration.from({
+            id: b.identifier(identifier),
+            superClass: b.callExpression.from({
+              callee: b.callExpression.from({
+                callee: b.memberExpression(b.identifier("Schema"), b.identifier("Class")),
+                typeArguments: b.typeParameterInstantiation([b.typeParameter(identifier)]),
+                arguments: [b.literal(identifier)],
+              }),
+              arguments: [
+                b.objectExpression.from({
+                  properties: Object.values(t.columns).map(c => {
+                    const identifier = config.inflections.columns(c.name);
+                    return b.property.from({
+                      kind: "init",
+                      key: b.stringLiteral(identifier),
+                      value: b.memberExpression(b.identifier("Schema"), b.identifier(schemaType)),
+                    });
+                  }),
+                }),
+              ],
+            }),
+            body: b.classBody.from({
+              body: [],
+            }),
+          });
+        });
+        return tables;
+      })
+      .map(({ identifier, content }) => /** @type {Output} */ ({
+        path: makePathFromConfig({
+          config: { ...config, pluginOpts },
+          name: config.inflections.schemas(identifier),
+          schema: schema.name,
+        }),
+        content,
+        imports: [{ identifier: "Schema", path: "effect" }],
+        exports: [{ identifier, kind: "effectClass" }],
+      }));
+  },
+});
+
+type QueryData = {
   name: string;
-  operation: "select" | "insert" | "update" | "delete" | "function"
-  params: Record<string, { default?: any; type: string, Pick?: Array<string> }>;
+  operation: "select" | "insert" | "update" | "delete" | "function";
+  params: Record<string, { default?: any; type: string; Pick?: Array<string> }>;
   where?: Array<[string, string, string]>;
   join?: Array<string>;
   order?: Array<string>;
@@ -880,15 +936,14 @@ export const makeZodSchemasPlugin = pluginOpts => ({
   returnsMany?: boolean;
   schema: string;
   identifier: string;
-}} QueryData */
+};
 
 // TODO: typescript optional? jsdoc setting?
-/** @type {(opts: {
-  schemas: Array<string>,
-  tables?: Array<string>,
-  path?: string | ((o: { schema: string, name: string }) => string),
-}) => Plugin} pluginOpts */
-export const makeQueriesPlugin = pluginOpts => ({
+export const makeQueriesPlugin = (pluginOpts: {
+  schemas: Array<string>;
+  tables?: Array<string>;
+  path?: string | ((o: { schema: string; name: string }) => string);
+}): Plugin => ({
   name: "queries",
   inflections: {
     identifiers: ["camelize"],
@@ -920,16 +975,13 @@ export const makeQueriesPlugin = pluginOpts => ({
           availableFunctions,
         );
         const computedByTables = groupBy(([_, fn]) => fn.args[0][1].type, computed);
-        console.log(procs, schema.views);
-        const fnQueries = procs.map(
-          ([name, fn]) =>
-            /** @type QueryData */ ({
-              name: config.inflections.methods(name),
-              operation: "select",
-              schema: schema.name,
-              identifier: name,
-            }),
-        );
+        // console.log(procs, schema.views);
+        const fnQueries = procs.map(([name, fn]) => /** @type QueryData */ ({
+          name: config.inflections.methods(name),
+          operation: "select",
+          schema: schema.name,
+          identifier: name,
+        }));
         /** @type QueryData[][] */
         const tables = Object.values(schema.tables)
           .filter(table => pluginOpts.tables?.includes(table.name) ?? true)
@@ -1121,7 +1173,7 @@ export const makeQueriesPlugin = pluginOpts => ({
                 queryData.map(q => [q.name, () => ({ name: identifier, queryData })]),
               ),
             };
-            return /** @type {Output} */ ({
+            return /** @type {Output} */ {
               path: exportPath,
               imports: [
                 config.adapter === "pg"
@@ -1146,19 +1198,15 @@ export const makeQueriesPlugin = pluginOpts => ({
                 inflections: config.inflections,
                 adapter: config.adapter,
               }),
-            });
+            };
           });
       });
   },
 });
 
-/** @param {QueryData} queryData
- * @returns {{query: string, params: Array<string>}}
- */
-function queryBuilder(queryData) {
+function queryBuilder(queryData: QueryData): { query: string; params: Array<string> } {
   const target = `${queryData.schema}.${queryData.identifier}`;
-  /** @type {Array<string>} */
-  const params = [];
+  const params: Array<string> = [];
   const query = (() => {
     const patch = ("patch" in queryData.params && queryData.params.patch.Pick) || null;
     switch (queryData.operation) {
@@ -1214,13 +1262,17 @@ function queryBuilder(queryData) {
 }
 
 // TODO: alternative styles? what about just exporting functions?
-/** @param {{
+function queryDataToObjectMethodsAST({
+  queryData,
+  name,
+  inflections,
+  adapter,
+}: {
   queryData: Array<QueryData>;
   name: string;
-  adapter: Config['adapter']
-  inflections: Inflections
-}} _ */
-function queryDataToObjectMethodsAST({ queryData, name, inflections, adapter }) {
+  adapter: Config["adapter"];
+  inflections: Inflections;
+}) {
   const b = recast.types.builders;
 
   return b.exportNamedDeclaration(
@@ -1400,15 +1452,14 @@ function queryDataToObjectMethodsAST({ queryData, name, inflections, adapter }) 
   );
 }
 
-/** @type {() => Plugin} */
-export const makeHttpPlugin = () => ({
+export const makeHttpPlugin = (): Plugin => ({
   name: "http",
   inflections: {
     endpoints: ["underscore"],
   },
   render({ output }) {
-    const r = output?.flatMap(r => r?.exports ?? []);
-    const api = r
+    const api = output
+      ?.flatMap(r => r?.exports ?? [])
       .filter(
         e =>
           typeof e.kind === "object" && Object.values(e.kind).every(k => typeof k === "function"),
@@ -1418,12 +1469,19 @@ export const makeHttpPlugin = () => ({
         // console.log(route, e);
         return e;
       });
-    return [];
+    return api;
   },
 });
 
-/** @param {{ output: Array<Output>, identifier: string, kind: Output['exports']['kind'] }} _ */
-function findExports({ output, identifier, kind }) {
+function findExports({
+  output,
+  identifier,
+  kind,
+}: {
+  output: Array<Output>;
+  identifier: string;
+  kind: Output["exports"]["kind"];
+}) {
   for (let i = 0; i < output.length; i++) {
     const r = output[i];
     if (!r) continue;
@@ -1438,8 +1496,7 @@ function findExports({ output, identifier, kind }) {
 }
 
 // TODO: not handled: import <default>, { [type] <named> } from '<path>'
-/** @param {Array<ImportSpec>} deps */
-function parseDependencies(deps) {
+function parseDependencies(deps: Array<ImportSpec>) {
   const b = recast.types.builders;
   return Object.values(groupBy(d => d.path, deps)).map(dep => {
     const ids = groupBy(d => d.identifier, dep);
@@ -1466,16 +1523,11 @@ function parseDependencies(deps) {
   });
 }
 
-/**
- * @param {Config} config
- * @returns {Config}
- */
-export function defineConfig(config) {
+export function defineConfig(config: Config): Config {
   return config;
 }
 
-/** @param {string} type */
-function getASTTypeFromTypeName(type) {
+function getASTTypeFromTypeName(type: string) {
   const b = recast.types.builders;
   switch (type) {
     case "string":
@@ -1496,12 +1548,10 @@ function getASTTypeFromTypeName(type) {
   }
 }
 
-/**
- * @param {string} pgTypeString
- * @param {Config} config
- * @returns {"string" | "boolean" | "number" | "Date" | "unknown"}
- */
-function getTSTypeNameFromPgType(pgTypeString, config) {
+function getTSTypeNameFromPgType(
+  pgTypeString: string,
+  config: Config,
+): "string" | "boolean" | "number" | "Date" | "unknown" {
   switch (pgTypeString) {
     case "pg_catalog.int2":
     case "pg_catalog.int4":
@@ -1543,8 +1593,7 @@ function getTSTypeNameFromPgType(pgTypeString, config) {
   }
 }
 
-/** @param {{ index: DbIndex, column: DbColumn }} + */
-function getOperatorsFrom({ column, index }) {
+function getOperatorsFrom({ column, index }: { index: DbIndex; column: DbColumn }) {
   switch (true) {
     case column.type === "pg_catalog.tsvector":
       return ["@@"];
@@ -1557,12 +1606,15 @@ function getOperatorsFrom({ column, index }) {
   }
 }
 
-/** @param {{
-  config: Config & { pluginOpts: {path: unknown} }
-  schema: string
-  name: string
-}} _ */
-function makePathFromConfig({ config, schema, name }) {
+function makePathFromConfig({
+  config,
+  schema,
+  name,
+}: {
+  config: Config & { pluginOpts: { path: unknown } };
+  schema: string;
+  name: string;
+}) {
   switch (true) {
     case typeof config.pluginOpts.path === "function":
       return config.pluginOpts.path({ schema, name }).concat(`.${config.outputExtension}`);
@@ -1579,8 +1631,7 @@ function makePathFromConfig({ config, schema, name }) {
   }
 }
 
-/** @param {any} data */
-function stringify(data) {
+function stringify(data: unknown) {
   return JSON.stringify(
     data,
     (_key, value) => {
@@ -1596,16 +1647,12 @@ function stringify(data) {
   );
 }
 
-/**
- * @template Output
- * @template Input
- * @template {string} Key
- * @param {(prev: Output, value: Input) => Output} valTransform
- * @param {(o: Input) => Key} keyMaker
- * @param {Array<Input>} values
- */
-function groupWith(valTransform, keyMaker, values) {
-  const result = /** @type Record<Key, Output> */ ({});
+function groupWith<Output, Input, Key>(
+  valTransform: (prev: Output, value: Input) => Output,
+  keyMaker: (o: Input) => Key,
+  values: Array<Input>,
+) {
+  const result = /** @type Record<Key, Output> */ {};
   for (let i = 0; i < values.length; i++) {
     const val = values[i];
     const key = keyMaker(val);
@@ -1614,13 +1661,7 @@ function groupWith(valTransform, keyMaker, values) {
   return result;
 }
 
-/**
- * @template T
- * @template {string} K
- * @param {(a: T) => K} keyMaker
- * @param {Array<T>} values
- */
-function groupBy(keyMaker, values) {
+function groupBy<T, K>(keyMaker: (a: T) => K, values: Array<T>) {
   return groupWith(
     (b, a) => {
       let r = b ?? [];
@@ -1632,14 +1673,8 @@ function groupBy(keyMaker, values) {
   );
 }
 
-/**
- * @template T
- * @param {Array<(a: T) => boolean>} predicates
- * @param {Array<T>} values
- * @returns {Array<Array<T>>}
- */
-function partition(predicates, values) {
-  const result = /** @type {Array<Array<T>>} */ (predicates.map(() => []).concat([[]]));
+function partition<T>(predicates: Array<(a: T) => boolean>, values: Array<T>): Array<Array<T>> {
+  const result = /** @type {Array<Array<T>>} */ predicates.map(() => []).concat([[]]);
   const stack = values.slice(0);
   let value;
   while (stack.length) {
