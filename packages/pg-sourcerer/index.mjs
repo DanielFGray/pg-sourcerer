@@ -14,6 +14,7 @@ import { lilconfig } from "lilconfig";
 import { z } from "zod";
 import partition from "lodash.partition";
 import pg from "pg";
+import invariant from "tiny-invariant";
 
 main();
 
@@ -272,7 +273,7 @@ function getDescription(entity) {
  */
 function processIntrospection(introspection) {
   const role = introspection.getCurrentUser();
-  if (!role) throw new Error("who am i???");
+  invariant(role, "who am i???");
   return {
     name: introspection.database.datname,
     schemas: Object.fromEntries(
@@ -298,7 +299,7 @@ function getPermissions(entity, { introspection, role }) {
   switch (entity._type) {
     case "PgAttribute": {
       const table = entity.getClass();
-      if (!table) throw new Error(`couldn't find table for attribute ${entity.attname}`);
+      invariant(table, `couldn't find table for attribute ${entity.attname}`);
       const attributePermissions = entityPermissions(introspection, entity, role, true);
       const tablePermissions = entityPermissions(introspection, table, role, true);
       const canSelect = attributePermissions.select || Boolean(tablePermissions.select);
@@ -330,7 +331,7 @@ function getPermissions(entity, { introspection, role }) {
       return { canExecute: execute };
     }
     default:
-      throw new Error(`unknown entity type "${entity._type}"`);
+      invariant(false, `unknown entity type "${entity._type}"`);
   }
 }
 /** @typedef {ReturnType<typeof getPermissions>} Permissions */
@@ -385,7 +386,7 @@ function processTypes(schemaId, { introspection }) {
     .filter(t => t.typtype === "e" && t.typnamespace === schemaId)
     .map(t => {
       const values = t.getEnumValues();
-      if (!values) throw new Error("could not find enum values for ${t.typname}");
+      invariant(values, `could not find enum values for ${t.typname}`);
       return /** @type {const} */ ({
         name: t.typname,
         kind: "enum",
@@ -400,7 +401,7 @@ function processTypes(schemaId, { introspection }) {
       kind: "composite",
       values: t.getAttributes().map(a => {
         const type = a.getType();
-        if (!type) throw new Error(`could not find type for composite attribute ${t.relname}`);
+        invariant(type, `could not find type for composite attribute ${t.relname}`);
         return /** @type {const} */ ({ name: a.attname, type: getTypeName(type) });
       }),
     }));
@@ -510,7 +511,7 @@ function processColumns(tableId, { introspection, role }) {
       .filter(attr => attr.attrelid === tableId)
       .map(column => {
         const type = column.getType();
-        if (!type) throw new Error(`couldn't find type for column ${column.attname}`);
+        invariant(type, `couldn't find type for column ${column.attname}`);
         const isArray = column.attndims && column.attndims > 0;
         const typeName = isArray ? getTypeName(type.getElemType()) : getTypeName(type);
         return [
@@ -553,13 +554,13 @@ function processIndexes(tableId, { introspection }) {
       .filter(index => index.indrelid === tableId)
       .map(index => {
         const cls = index.getIndexClass();
-        if (!cls) throw new Error(`failed to find index class for index ${index.indrelid}`);
+        invariant(cls, `failed to find index class for index ${index.indrelid}`);
 
         const am = cls.getAccessMethod();
-        if (!am) throw new Error(`failed to find access method for index ${cls.relname}`);
+        invariant(am, `failed to find access method for index ${cls.relname}`);
 
         const keys = index.getKeys();
-        if (!keys) throw new Error(`failed to find keys for index ${cls.relname}`);
+        invariant(keys, `failed to find keys for index ${cls.relname}`);
 
         const colnames = keys.filter(Boolean).map(a => a.attname);
         const name = cls.relname;
@@ -599,11 +600,11 @@ function processReferences(tableId, { introspection }) {
       .filter(c => c.conrelid === tableId && c.contype === "f")
       .map(constraint => {
         const fkeyAttr = constraint.getForeignAttributes();
-        if (!fkeyAttr) throw new Error();
+        invariant(fkeyAttr, `failed to get foreign attributes for constraint ${constraint.conname}`);
         const fkeyClass = constraint.getForeignClass();
-        if (!fkeyClass) throw new Error();
+        invariant(fkeyClass, `failed to get foreign class for constraint ${constraint.conname}`);
         const fkeyNsp = fkeyClass?.getNamespace();
-        if (!fkeyNsp) throw new Error();
+        invariant(fkeyNsp, `failed to get namespace for foreign class ${fkeyClass?.relname}`);
         const refPath = {
           schema: fkeyNsp?.nspname,
           table: fkeyClass?.relname,
@@ -642,7 +643,7 @@ function processFunctions(schemaId, { introspection, role }) {
       .filter(proc => proc.pronamespace === schemaId)
       .map(proc => {
         const type = proc.getReturnType();
-        if (!type) throw new Error(`couldn't find type for proc ${proc.proname}`);
+        invariant(type, `couldn't find type for proc ${proc.proname}`);
         return [
           proc.proname,
           {
