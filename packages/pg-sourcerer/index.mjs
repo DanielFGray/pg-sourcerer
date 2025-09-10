@@ -172,6 +172,12 @@ const utils = {
 /** @returns {Promise<void>} */
 async function main() {
   const config = await parseConfig();
+
+  if (!("plugins" in config)) {
+    console.error("no plugins defined, nothing to do");
+    return process.exit(0);
+  }
+
   const introspectionQuery = makeIntrospectionQuery();
   const introspectionResult = await (async () => {
     const pool = new pg.Pool({ connectionString: config.connectionString });
@@ -187,44 +193,23 @@ async function main() {
     return rows[0].introspection;
   })();
 
-  if (!("plugins" in config)) {
-    console.error("no plugins defined, nothing to do");
-    return process.exit(0);
-  }
-
   const introspection = processIntrospection(parseIntrospectionResults(introspectionResult, true));
 
-  /** @type {null | Array<Output>} */
   const output = pluginRunner(config, introspection);
 
-  if (!output || !output.length) {
+  if (!output) {
     console.error("no output from plugins");
     return process.exit(1);
   }
 
-  Object.entries(Object.groupBy(output, o => o.path)).forEach(async ([strPath, files]) => {
-    const parsedFile = path.parse(path.join(config.outputDir ?? "./", strPath));
-    const filepath = parsedFile.dir;
-    const newPath = path.join(parsedFile.dir, parsedFile.base);
-    const result = recast.print(
-      recast.types.builders.program([
-        ...parseDependencies(files.flatMap(f => f.imports ?? [])),
-        ...files.flatMap(f => f.content),
-      ]),
-      { tabWidth: 2 },
-    );
-
-    await fs.mkdir(filepath, { recursive: true });
-    await fs.writeFile(newPath, result.code, "utf8");
-    console.log('wrote file "%s"', newPath.replace(import.meta.dirname, "."));
-  });
+  await writePluginOutput(output, config);
 }
 
 /**
  * @param {Config} config
  * @param {Introspection} introspection
  */
-function pluginRunner(config, introspection) {
+export function pluginRunner(config, introspection) {
   // @workspace compose plugin.inflections
   const inflections = config.plugins.reduce(
     (o, plugin) => {
@@ -250,6 +235,36 @@ function pluginRunner(config, introspection) {
     });
     return prevOutput ? prevOutput.concat(newOutput) : newOutput;
   }, /** @type {null | Array<Output>} */ (null));
+}
+
+/**
+ * Writes plugin output to disk
+ * @param {Array<Output>} output - Plugin output to write
+ * @param {Config} config - Configuration object for output settings
+ * @returns {Promise<void>}
+ */
+export async function writePluginOutput(output, config) {
+  if (!output.length) {
+    console.error("no output from plugins");
+    return process.exit(1);
+  }
+
+  Object.entries(Object.groupBy(output, o => o.path)).forEach(async ([strPath, files]) => {
+    const parsedFile = path.parse(path.join(config.outputDir ?? "./", strPath));
+    const filepath = parsedFile.dir;
+    const newPath = path.join(parsedFile.dir, parsedFile.base);
+    const result = recast.print(
+      recast.types.builders.program([
+        ...parseDependencies(files.flatMap(f => f.imports ?? [])),
+        ...files.flatMap(f => f.content),
+      ]),
+      { tabWidth: 2 },
+    );
+
+    await fs.mkdir(filepath, { recursive: true });
+    await fs.writeFile(newPath, result.code, "utf8");
+    console.log('wrote file "%s"', newPath.replace(import.meta.dirname, "."));
+  });
 }
 
 /** @param {import("pg-introspection").PgType} type */
