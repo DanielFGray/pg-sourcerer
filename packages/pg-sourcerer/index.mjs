@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // @ts-check
 import path from "path";
 import _debug from "debug";
@@ -10,8 +10,10 @@ import {
   parseIntrospectionResults,
 } from "pg-introspection";
 import recast from "recast";
-import { cosmiconfig } from "cosmiconfig";
+import { lilconfig } from "lilconfig";
 import { z } from "zod";
+import partition from "lodash.partition";
+import pg from "pg";
 
 main();
 
@@ -88,7 +90,7 @@ export const userConfig = z.object({
                   )
                   .refine(
                     entries => {
-                      const [values, types] = partition([e => e.kind === "type"], entries);
+                      const [values, types] = partition(entries, e => e.kind === "type");
                       const typeIdentifiers = new Set(types.map(e => e.identifier));
                       const valueIdentifiers = new Set(values.map(e => e.identifier));
                       return (
@@ -123,7 +125,7 @@ export const userConfig = z.object({
 
 /** @returns {Promise<Config>} */
 export async function parseConfig() {
-  let configSearch = await cosmiconfig("pgsourcerer").search();
+  let configSearch = await lilconfig("pgsourcerer").search();
   if (!configSearch) {
     // TODO: what if we codegen a config from prompts?
     console.error("a pgsourcerer config is required");
@@ -169,41 +171,19 @@ const utils = {
 /** @returns {Promise<void>} */
 async function main() {
   const config = await parseConfig();
+  const introspectionQuery = makeIntrospectionQuery();
   const introspectionResult = await (async () => {
-    const query = makeIntrospectionQuery();
-    switch (config.adapter) {
-      case "pg": {
-        const { default: pg } = await import("pg");
-        const pool = new pg.Pool({ connectionString: config.connectionString });
-        const client = await pool.connect();
-        await client.query("begin");
-        if (config.role) {
-          await client.query("select set_config('role', $1, false)", [config.role]);
-        }
-        const { rows } = await client.query(query);
-        await client.query("rollback");
-        client.release();
-        pool.end();
-        return rows[0].introspection;
-      }
-      case "postgres": {
-        const { default: postgres } = await import("postgres");
-        const sql = postgres(config.connectionString);
-        const result = await sql.begin(async sql => {
-          if (config.role) {
-            await sql`select set_config('role', ${config.role}, false)`;
-          }
-          const rows = await sql.unsafe(query);
-          sql.unsafe("rollback");
-          return rows[0].introspection;
-        });
-        sql.end();
-        return result;
-      }
-      default:
-        console.error(`invalid adapter in config: ${config.adapter}`);
-        process.exit(1);
+    const pool = new pg.Pool({ connectionString: config.connectionString });
+    const client = await pool.connect();
+    await client.query("begin");
+    if (config.role) {
+      await client.query("select set_config('role', $1, false)", [config.role]);
     }
+    const { rows } = await client.query(introspectionQuery);
+    await client.query("rollback");
+    client.release();
+    pool.end();
+    return rows[0].introspection;
   })();
 
   if (!("plugins" in config)) {
@@ -221,7 +201,7 @@ async function main() {
     return process.exit(1);
   }
 
-  Object.entries(groupBy(o => o.path, output)).forEach(async ([strPath, files]) => {
+  Object.entries(Object.groupBy(output, o => o.path)).forEach(async ([strPath, files]) => {
     const parsedFile = path.parse(path.join(config.outputDir ?? "./", strPath));
     const filepath = parsedFile.dir;
     const newPath = path.join(parsedFile.dir, parsedFile.base);
@@ -382,34 +362,35 @@ function processSchema(schema, { introspection, role }) {
   };
 }
 
+/**@typedef {
+ *   | { kind: "domain",    name: string, type: "text" }
+ *   | { kind: "enum",      name: string, values: Array<string> }
+ *   | { composite: "enum", name: string, type: Array<{ name: string, type: string }> }
+ * } DbType
+ */
+
 /**
  * @param {string} schemaId
  * @param {{
      introspection: import("pg-introspection").Introspection,
-     role: import("pg-introspection").PgRoles,
-   }}
- * @returns {Array<
- *   | { kind: "domain",    name: string, type: "text" }
- *   | { kind: "enum",      name: string, values: Array<string> }
- *   | { composite: "enum", name: string, type: Array<{ name: string, type: string }> }
- * >}
+   }} _
+ * @returns {Record<string, DbType>} 
  */
-function processTypes(schemaId, { introspection, role }) {
-  void fs.writeFile("types.json", stringify(introspection.types), "utf8");
+function processTypes(schemaId, { introspection }) {
   const domains = introspection.types
     .filter(t => t.typtype === "d" && t.typnamespace === schemaId)
-    .map(t => ({ name: t.typname, kind: "domain", type: t.typoutput }));
+    .map(t => /** @type {const} */ ({ name: t.typname, kind: "domain", type: t.typoutput }));
 
   const enums = introspection.types
     .filter(t => t.typtype === "e" && t.typnamespace === schemaId)
     .map(t => {
       const values = t.getEnumValues();
       if (!values) throw new Error("could not find enum values for ${t.typname}");
-      return {
+      return /** @type {const} */ ({
         name: t.typname,
         kind: "enum",
         values: values.map(x => x.enumlabel),
-      };
+      });
     });
 
   const composites = introspection.classes
@@ -420,18 +401,18 @@ function processTypes(schemaId, { introspection, role }) {
       values: t.getAttributes().map(a => {
         const type = a.getType();
         if (!type) throw new Error(`could not find type for composite attribute ${t.relname}`);
-        return { name: a.attname, type: getTypeName(type) };
+        return /** @type {const} */ ({ name: a.attname, type: getTypeName(type) });
       }),
     }));
 
-  const types = groupWith(
-    (a, b) => {
-      if (a) throw new Error(`existing type with name ${a.name}`);
-      return b;
-    },
-    t => t.name,
-    [...domains, ...enums, ...composites],
-  );
+  const ts = [...domains, ...enums, ...composites];
+  const types = ts.reduce((prev, curr) => {
+    if (!prev[curr.name]) {
+      prev[curr.name] = [];
+    }
+    prev[curr.name].push(curr);
+    return prev;
+  }, /** @type {Record<string, typeof ts>} */ ({}));
   return types;
 }
 
@@ -905,22 +886,15 @@ export const makeQueriesPlugin = pluginOpts => ({
         const availableFunctions = Object.entries(schema.functions).filter(
           ([_, f]) => f.permissions.canExecute,
         );
-        const [computed, procs] = partition(
-          [
-            ([_, fn]) => {
-              if (fn.args.length !== 1) return false;
-              if (fn.volatility === "volatile") return false;
-              const firstArgType = fn.args[0]?.[1].type;
-              const idx = tableNames.findIndex(
-                tableName => firstArgType && firstArgType === tableName,
-              );
-              return idx > -1;
-            },
-          ],
-          availableFunctions,
-        );
-        const computedByTables = groupBy(([_, fn]) => fn.args[0][1].type, computed);
-        const fnQueries = procs.map(
+        const [computed, procs] = partition(availableFunctions, ([_, fn]) => {
+          if (fn.args.length !== 1) return false;
+          if (fn.volatility === "volatile") return false;
+          const firstArgType = fn.args[0]?.[1].type;
+          const idx = tableNames.findIndex(tableName => firstArgType && firstArgType === tableName);
+          return idx > -1;
+        });
+        const _computedByTables = Object.groupBy(computed, ([_, fn]) => fn.args[0][1].type);
+        const _fnQueries = procs.map(
           ([name, fn]) =>
             /** @type QueryData */ ({
               name: config.inflections.methods(name),
@@ -929,7 +903,7 @@ export const makeQueriesPlugin = pluginOpts => ({
               identifier: name,
             }),
         );
-        /** @type QueryData[][] */
+
         const tables = Object.values(schema.tables)
           .filter(table => pluginOpts.tables?.includes(table.name) ?? true)
           .map(table =>
@@ -1229,8 +1203,8 @@ function queryDataToObjectMethodsAST({ queryData, name, inflections, adapter }) 
         b.objectExpression(
           queryData.map(queryData => {
             const [[Pick], params] = partition(
-              [([name, values]) => name === "patch" && "Pick" in values],
               Object.entries(queryData.params),
+              ([name, values]) => name === "patch" && "Pick" in values,
             );
             const typeParamAst = params.map(([name, { default: hasDefault, type }]) =>
               b.tsPropertySignature.from({
@@ -1440,8 +1414,8 @@ function findExports({ output, identifier, kind }) {
 /** @param {Array<ImportSpec>} deps */
 function parseDependencies(deps) {
   const b = recast.types.builders;
-  return Object.values(groupBy(d => d.path, deps)).map(dep => {
-    const ids = groupBy(d => d.identifier, dep);
+  return Object.values(Object.groupBy(deps, d => d.path)).map(dep => {
+    const ids = Object.groupBy(dep, d => d.identifier);
     if (dep.length > 1 && Object.keys(ids).length > 1) {
       const allTypes = dep.every(d => d.typeImport);
       return b.importDeclaration.from({
@@ -1593,61 +1567,6 @@ function stringify(data) {
     },
     2,
   );
-}
-
-/**
- * @template Output
- * @template Input
- * @template {string} Key
- * @param {(prev: Output, value: Input) => Output} valTransform
- * @param {(o: Input) => Key} keyMaker
- * @param {Array<Input>} values
- */
-function groupWith(valTransform, keyMaker, values) {
-  const result = /** @type Record<Key, Output> */ ({});
-  for (let i = 0; i < values.length; i++) {
-    const val = values[i];
-    const key = keyMaker(val);
-    result[key] = valTransform(result[key], val);
-  }
-  return result;
-}
-
-/**
- * @template T
- * @template {string} K
- * @param {(a: T) => K} keyMaker
- * @param {Array<T>} values
- */
-function groupBy(keyMaker, values) {
-  return groupWith(
-    (b, a) => {
-      let r = b ?? [];
-      r.push(a);
-      return r;
-    },
-    keyMaker,
-    values,
-  );
-}
-
-/**
- * @template T
- * @param {Array<(a: T) => boolean>} predicates
- * @param {Array<T>} values
- * @returns {Array<Array<T>>}
- */
-function partition(predicates, values) {
-  const result = /** @type {Array<Array<T>>} */ (predicates.map(() => []).concat([[]]));
-  const stack = values.slice(0);
-  let value;
-  while (stack.length) {
-    value = stack.pop();
-    if (value == null) break;
-    // @ts-expect-error  I promise it's fine
-    result.at(predicates.findIndex(p => p(value))).push(value);
-  }
-  return result;
 }
 
 export { transform } from "inflection";
