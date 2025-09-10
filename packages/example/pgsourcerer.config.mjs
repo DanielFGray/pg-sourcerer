@@ -1,11 +1,9 @@
 import {
-  makeTypesPlugin,
   makeZodSchemasPlugin,
   makeQueriesPlugin,
   makeHttpPlugin,
   defineConfig,
-  transform,
-} from "../index.mjs";
+} from "@danielfgray/pg-sourcerer";
 import path from "path";
 import { rimraf } from "rimraf";
 
