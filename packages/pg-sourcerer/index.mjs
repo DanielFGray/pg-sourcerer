@@ -929,15 +929,14 @@ export const makeQueriesPlugin = pluginOpts => ({
                 return [];
               }
               const columns = Object.values(table.columns);
-              const idxColumns = index.colnames.map(n => table.columns[n]);
+              const [column] = index.colnames.map(n => table.columns[n]);
               const identifier = table.name;
               const schemaName = schema.name;
               const returnType = config.inflections.types(table.name);
-              const pgTypeName = utils.getTSTypeNameFromPgType(idxColumns.type, config);
-              if (idxColumns.length > 1) {
-                console.log(idxColumns);
+              const pgTypeName = utils.getTSTypeNameFromPgType(column.type, config);
+              if (index.colnames.length > 1) {
+                console.log(column);
               } else {
-                const column = idxColumns[0];
                 const columnName = config.inflections.columns(column.name);
                 switch (true) {
                   case index.isPrimary:
@@ -946,7 +945,7 @@ export const makeQueriesPlugin = pluginOpts => ({
                         ? []
                         : [
                             {
-                              name: config.inflections.methods(`by_${idxColumns.name}`),
+                              name: config.inflections.methods(`by_${column.name}`),
                               operation: "select",
                               where: [[column.name, "=", "?"]],
                               params: {
@@ -1023,7 +1022,7 @@ export const makeQueriesPlugin = pluginOpts => ({
                             },
                           ]),
                     ];
-                  case idxColumns.type === "pg_catalog.tsvector":
+                  case column.type === "pg_catalog.tsvector":
                     /** @type QueryData[] */
                     return [
                       {
@@ -1042,9 +1041,9 @@ export const makeQueriesPlugin = pluginOpts => ({
                         identifier,
                       },
                     ];
-                  case idxColumns.type === "pg_catalog.timestamptz":
+                  case column.type === "pg_catalog.timestamptz":
                     const name =
-                      idxColumns.name === "created_at" && index.option?.[0] === 3
+                      column.name === "created_at" && index.option?.[0] === 3
                         ? "latest"
                         : `by_${columnName}`;
                     /** @type QueryData[] */
@@ -1068,7 +1067,7 @@ export const makeQueriesPlugin = pluginOpts => ({
                       },
                     ];
                   default:
-                    return utils.getOperatorsFrom({ column: idxColumns, index }).map(operator => ({
+                    return utils.getOperatorsFrom({ column, index }).map(operator => ({
                       name: config.inflections.methods(`by_${columnName}`),
                       operation: "select",
                       where: [[columnName, operator, "?"]],
