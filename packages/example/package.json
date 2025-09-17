@@ -2,15 +2,16 @@
   "name": "pgsourcerer-demo",
   "license": "Unlicense",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "bun run-p db:watch bun:watch",
     "bun:watch": "bun --watch ../pg-sourcerer/index.mjs",
-    "start": "bun -r dotenv/config pgs",
-    "gm": "bun -r dotenv/config ./node_modules/.bin/graphile-migrate",
-    "db:init": "bun -r dotenv/config scripts/setup-db.mjs",
-    "db:latest": "bun -r dotenv/config ./node_modules/.bin/graphile-migrate watch --once",
-    "db:watch": "bun -r dotenv/config ./node_modules/.bin/graphile-migrate watch",
-    "db:reset": "bun -r dotenv/config ./node_modules/.bin/graphile-migrate reset --erase",
+    "start": "bun pgs",
+    "gm": "bun ./node_modules/.bin/graphile-migrate",
+    "db:init": "bun scripts/setup-db.mjs",
+    "db:latest": "bun ./node_modules/.bin/graphile-migrate watch --once",
+    "db:watch": "bun ./node_modules/.bin/graphile-migrate watch",
+    "db:reset": "bun ./node_modules/.bin/graphile-migrate reset --erase",
     "db:start": "docker-compose up -d db",
     "db:stop": "docker-compose stop db",
     "db:exec": "docker-compose exec db",
@@ -22,8 +23,7 @@
     "@danielfgray/pg-sourcerer": "workspace:*",
     "graphile-migrate": "next",
     "inquirer": "^9.2.12",
-    "npm-run-all": "^4.1.5",
-    "rimraf": "^5.0.5"
+    "npm-run-all": "^4.1.5"
   },
   "devDependencies": {
     "prettier": "^3.2.4"

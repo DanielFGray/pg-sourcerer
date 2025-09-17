@@ -1,16 +1,18 @@
+// @ts-check
 import {
   makeZodSchemasPlugin,
   makeQueriesPlugin,
   makeHttpPlugin,
+  makeEffectModelsPlugin,
   defineConfig,
 } from "@danielfgray/pg-sourcerer";
+import fs from "fs/promises";
 import path from "path";
-import { rimraf } from "rimraf";
 
 const schemas = [
   // "public",
   "app_public",
-  // "app_private"
+  "app_private",
 ];
 const tables = ["users", "posts", "comments"];
 
@@ -21,7 +23,7 @@ export default defineConfig({
   outputDir,
   outputExtension: "ts",
   connectionString: process.env.AUTH_DATABASE_URL || process.env.DATABASE_URL,
-  // role: process.env.DATABASE_VISITOR,
+  role: process.env.DATABASE_VISITOR,
   schemas,
   typeMap: {
     "app_public.url": "string",
@@ -35,8 +37,8 @@ export default defineConfig({
   plugins: [
     {
       name: "clean",
-      render() {
-        rimraf(outputDir);
+      async render() {
+        await fs.rm(outputDir, { recursive: true, force: true });
         return [];
       },
     },
@@ -46,18 +48,26 @@ export default defineConfig({
     // 	path: ["pluralize", "camelize"],
     // 	// path: './types',
     // }),
-    makeZodSchemasPlugin({
-      tables,
+    // makeZodSchemasPlugin({
+    //   // tables,
+    //   schemas,
+    //   exportType: true,
+    //   path: ["pluralize", "camelize"],
+    //   // path: './schemas',
+    // }),
+    // makeQueriesPlugin({
+    //   // tables,
+    //   schemas,
+    //   adapter: "postgres",
+    //   path: ["camelize"],
+    //   // path: './queries',
+    // }),
+    makeEffectModelsPlugin({
       schemas,
-      exportType: true,
-      path: ["pluralize", "camelize"],
-      // path: './schemas',
-    }),
-    makeQueriesPlugin({
-      tables,
-      schemas,
+      // tables,
+      // Group by model name by default; users can override path to group all
       path: ["camelize"],
-      // path: './queries',
+      prefixWithSchema: false,
     }),
     makeHttpPlugin({
       // path: ({ name }) => `./${transform(name, ['camelize'])}.ts`

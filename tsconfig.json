@@ -21,6 +21,8 @@
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
+    "allowJs": true,
+    "checkJs": true,
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
