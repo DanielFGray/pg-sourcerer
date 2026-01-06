@@ -66,22 +66,34 @@ function mapPgToEffect(pgType) {
   }
 }
 
-/** Build S.<name>() */
-function sCall(name) {
-  return b.callExpression(b.memberExpression(b.identifier("S"), b.identifier(name)), []);
+/**
+ * Build S.<name> (member access, not a call - primitives are values, not functions)
+ * @param {string} name
+ */
+function sPrimitive(name) {
+  return b.memberExpression(b.identifier("S"), b.identifier(name));
 }
 
-/** Wrap with S.Array(expr) */
+/**
+ * Wrap with S.Array(expr)
+ * @param {import("ast-types").namedTypes.Expression} inner
+ */
 function sArray(inner) {
   return b.callExpression(b.memberExpression(b.identifier("S"), b.identifier("Array")), [inner]);
 }
 
-/** Wrap with S.NullOr(expr) */
+/**
+ * Wrap with S.NullOr(expr)
+ * @param {import("ast-types").namedTypes.Expression} inner
+ */
 function sNullOr(inner) {
   return b.callExpression(b.memberExpression(b.identifier("S"), b.identifier("NullOr")), [inner]);
 }
 
-/** Model.Generated(expr) */
+/**
+ * Model.Generated(expr)
+ * @param {import("ast-types").namedTypes.Expression} inner
+ */
 function modelGenerated(inner) {
   return b.callExpression(b.memberExpression(b.identifier("Model"), b.identifier("Generated")), [
     inner,
@@ -107,17 +119,13 @@ function getInflect(config, key) {
   return s => s;
 }
 
-/**
- * @typedef {(opts?: {
+/** @type {(opts: {
  *   schemas?: Array<string>
  *   tables?: Array<string>
  *   path?: string | ((o: { schema: string, name: string }) => string) | string[]
  *   prefixWithSchema?: boolean
- *   effectTypeMap?: Record<string, string>
- * }) => import("../index.mjs").Plugin} MakeEffectModelsPlugin
- */
-
-/** @type {MakeEffectModelsPlugin} */
+ *   typeMap?: Record<string, string>
+ * }) => import("../index.mjs").Plugin} */
 export const makeEffectModelsPlugin = pluginOpts => ({
   name: "effect-models",
   inflections: {
@@ -165,8 +173,8 @@ export const makeEffectModelsPlugin = pluginOpts => ({
             name: identifier,
           }),
           content: decl,
-          imports: [{ identifier: "Schema", default: false, path: "@effect/schema", as: "S" }],
-          exports: [{ identifier, kind: "zodSchema" }],
+          imports: [{ identifier: "Schema", default: false, path: "effect", as: "S" }],
+          exports: [{ identifier, kind: "schema" }],
         });
       }
 
@@ -177,8 +185,8 @@ export const makeEffectModelsPlugin = pluginOpts => ({
         const identifier = withSchemaPrefix(baseName, schema.name, prefixWithSchema);
         // t.type may be plain base like 'text', map to pg_catalog.<type> where sensible
         const pgBase = t.type.startsWith("pg_catalog.") ? t.type : `pg_catalog.${t.type}`;
-        const mapped = pluginOpts?.effectTypeMap?.[pgBase] || mapPgToEffect(pgBase);
-        const expr = sCall(mapped);
+        const mapped = pluginOpts?.typeMap?.[pgBase] || mapPgToEffect(pgBase);
+        const expr = sPrimitive(mapped);
         const decl = b.exportNamedDeclaration(
           b.variableDeclaration("const", [b.variableDeclarator(b.identifier(identifier), expr)]),
         );
@@ -189,8 +197,8 @@ export const makeEffectModelsPlugin = pluginOpts => ({
             name: identifier,
           }),
           content: decl,
-          imports: [{ identifier: "Schema", default: false, path: "@effect/schema", as: "S" }],
-          exports: [{ identifier, kind: "zodSchema" }],
+          imports: [{ identifier: "Schema", default: false, path: "effect", as: "S" }],
+          exports: [{ identifier, kind: "schema" }],
         });
       }
 
@@ -205,7 +213,7 @@ export const makeEffectModelsPlugin = pluginOpts => ({
           const effectCtor = mapPgToEffect(
             v.type.startsWith("pg_catalog.") ? v.type : `pg_catalog.${v.type}`,
           );
-          const expr = sCall(effectCtor);
+          const expr = sPrimitive(effectCtor);
           return b.objectProperty.from({ key: b.literal(colInflect(v.name)), value: expr });
         });
         const structCall = b.callExpression(
@@ -224,8 +232,8 @@ export const makeEffectModelsPlugin = pluginOpts => ({
             name: identifier,
           }),
           content: decl,
-          imports: [{ identifier: "Schema", default: false, path: "@effect/schema", as: "S" }],
-          exports: [{ identifier, kind: "zodSchema" }],
+          imports: [{ identifier: "Schema", default: false, path: "effect", as: "S" }],
+          exports: [{ identifier, kind: "schema" }],
         });
       }
 
@@ -238,7 +246,7 @@ export const makeEffectModelsPlugin = pluginOpts => ({
         /** @type {Array<import("../index.mjs").ImportSpec>} */
         const imports = [
           { identifier: "Model", default: false, path: "@effect/sql" },
-          { identifier: "Schema", default: false, path: "@effect/schema", as: "S" },
+          { identifier: "Schema", default: false, path: "effect", as: "S" },
         ];
 
         const properties = Object.values(table.columns).map(c => {
@@ -264,7 +272,7 @@ export const makeEffectModelsPlugin = pluginOpts => ({
               const ref = utils.findExports({
                 output: outputs,
                 identifier: refIdent,
-                kind: "zodSchema",
+                kind: "schema",
               });
               // only add import if paths differ; we add after computing our own path
               // We'll compare after we know our path (below)
@@ -276,7 +284,7 @@ export const makeEffectModelsPlugin = pluginOpts => ({
           } else {
             // direct mapping
             const mapped = mapPgToEffect(c.type);
-            expr = sCall(mapped);
+            expr = sPrimitive(mapped);
           }
 
           if (c.isArray) expr = sArray(expr);
@@ -336,7 +344,7 @@ export const makeEffectModelsPlugin = pluginOpts => ({
             const ref = utils.findExports({
               output: outputs,
               identifier: refIdent,
-              kind: "zodSchema",
+              kind: "schema",
             });
             if (ref.path !== filePath) {
               // Convert .ts file path to relative import path with .js extension

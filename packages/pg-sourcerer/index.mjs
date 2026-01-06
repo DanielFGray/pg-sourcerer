@@ -56,7 +56,7 @@ const OutputSchema = z.object({
         identifier: z.string(),
         kind: z.union([
           z.literal("type"),
-          z.literal("zodSchema"),
+          z.literal("schema"),
           z.record(
             // z.union([
             z.function(z.tuple([]), z.any()),
@@ -77,13 +77,13 @@ const OutputSchema = z.object({
   imports: z
     .array(
       z
-              .object({
-                typeImport: z.boolean().optional(),
-                identifier: z.string(),
-                default: z.boolean().optional(),
-                path: z.string(),
-                as: z.string().optional(),
-              })
+        .object({
+          typeImport: z.boolean().optional(),
+          identifier: z.string(),
+          default: z.boolean().optional(),
+          path: z.string(),
+          as: z.string().optional(),
+        })
         .strict(),
     )
     .optional(),
