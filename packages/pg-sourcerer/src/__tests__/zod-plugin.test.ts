@@ -17,6 +17,7 @@ import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { conjure } from "../lib/conjure.js"
 
 // Load introspection data from fixture
 const introspection = loadIntrospectionFixture()
@@ -49,6 +50,19 @@ function createTestLayer(ir: SemanticIR) {
   )
 }
 
+/**
+ * Run plugin and get serialized emissions.
+ * Handles AST serialization so tests can inspect string content.
+ */
+function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
+  return Effect.gen(function* () {
+    const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
+    // Serialize any AST emissions to string content
+    emissions.serializeAst(conjure.print)
+    return emissions.getAll()
+  })
+}
+
 describe("Zod Plugin", () => {
   describe("plugin structure", () => {
     it("has correct name", () => {
@@ -75,8 +89,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // Should have generated files for entities
         const userFile = all.find((e) => e.path.includes("User.ts"))
@@ -97,8 +110,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile?.content).toContain('import { z } from "zod"')
@@ -114,8 +126,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -139,8 +150,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -161,8 +171,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -183,8 +192,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile?.content).toContain("// This file is auto-generated. Do not edit.")
@@ -202,8 +210,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -225,8 +232,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: false })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -250,8 +256,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // User has role field which is an enum
         const userFile = all.find((e) => e.path.includes("User.ts"))
@@ -323,8 +328,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "custom/zod", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // All paths should start with the custom output directory
         for (const emission of all) {
@@ -344,8 +348,7 @@ describe("Zod Plugin", () => {
           .run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // Just verify we get some output (entities without @omit)
         expect(all.length).toBeGreaterThan(0)

@@ -30,6 +30,7 @@ import { Inflection, InflectionLive } from "./inflection.js";
 import { IR } from "./ir.js";
 import { ArtifactStore, createArtifactStore } from "./artifact-store.js";
 import { PluginMeta } from "./plugin-meta.js";
+import { conjure } from "../lib/conjure.js";
 
 // ============================================================================
 // Re-export types from plugin.ts for backwards compatibility
@@ -314,6 +315,9 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
           },
           { discard: true },
         );
+
+        // Serialize AST emissions to string content
+        emissions.serializeAst(conjure.print);
 
         // Validate emissions for conflicts
         yield* emissions.validate();
