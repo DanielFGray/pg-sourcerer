@@ -22,7 +22,7 @@ export const makeZodSchemasPlugin = pluginOpts => ({
     return Object.values(introspection.schemas)
       .filter(s => pluginOpts?.schemas?.includes(s.name) ?? true)
       .flatMap(schema => {
-        const createSchemaFromEntity = (entity) => {
+        const createSchemaFromEntity = entity => {
           const identifier = config.inflections.schemas(entity.name);
           const exportType = b.exportNamedDeclaration(
             b.tsTypeAliasDeclaration.from({
@@ -92,10 +92,7 @@ export const makeZodSchemasPlugin = pluginOpts => ({
           .filter(view => pluginOpts?.views?.includes(view.name) ?? true)
           .map(createSchemaFromEntity);
 
-        return [
-          ...tables,
-          ...views
-        ].map(
+        return [...tables, ...views].map(
           ({ identifier, content }) =>
             /** @type {import("../index.mjs").Output} */ ({
               path: utils.makePathFromConfig({
@@ -106,7 +103,7 @@ export const makeZodSchemasPlugin = pluginOpts => ({
               content,
               imports: [{ identifier: "z", path: "zod" }],
               exports: [
-                { identifier, kind: "zodSchema" },
+                { identifier, kind: "schema" },
                 ...(pluginOpts?.exportType ? [{ identifier, kind: "type" }] : []),
               ],
             }),
