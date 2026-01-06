@@ -5,7 +5,6 @@
  * with inferred TypeScript types.
  */
 import { Schema as S } from "effect"
-import recast from "recast"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import {
@@ -16,35 +15,10 @@ import {
   PgTypeOid,
 } from "../services/pg-types.js"
 import type { Field, Shape, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
+import { conjure, cast } from "../lib/conjure.js"
 
-const b = recast.types.builders
-
-/**
- * Type assertion helpers for recast AST nodes.
- *
- * The recast/ast-types library has type definitions that conflict with
- * exactOptionalPropertyTypes. These helpers provide safe casts.
- */
-type AnyExpression = Parameters<typeof b.callExpression>[1][number]
-type AnyStatement = Parameters<typeof b.program>[0][number]
-type AnyArrayElement = Parameters<typeof b.arrayExpression>[0][number]
-type AnyMemberObject = Parameters<typeof b.memberExpression>[0]
-type AnyPropertyValue = Parameters<typeof b.objectProperty>[1]
-
-/** Cast Expression for use in recast call arguments */
-const asExpr = (node: n.Expression): AnyExpression => node as AnyExpression
-
-/** Cast Statement for use in recast builders */
-const asStatement = (node: n.Statement): AnyStatement => node as AnyStatement
-
-/** Cast Expression for use in recast array elements */
-const asArrayElem = (node: n.Expression): AnyArrayElement => node as AnyArrayElement
-
-/** Cast Expression for use as member expression object */
-const asMemberObj = (node: n.Expression): AnyMemberObject => node as AnyMemberObject
-
-/** Cast Expression for use as object property value */
-const asPropValue = (node: n.Expression): AnyPropertyValue => node as AnyPropertyValue
+const { ts, program, b, obj } = conjure
+const { asPropValue, asExpr } = cast
 
 /**
  * Plugin configuration schema
@@ -120,21 +94,11 @@ function isDateType(field: Field): boolean {
  * // => z.string().uuid().nullable()
  */
 function buildZodChain(baseMethod: string, chainMethods: string[]): n.Expression {
-  // Start with z.<baseMethod>()
-  let expr: n.Expression = b.callExpression(
-    b.memberExpression(b.identifier("z"), b.identifier(baseMethod)),
-    []
-  )
-
-  // Chain additional methods
+  let chain = conjure.id("z").method(baseMethod)
   for (const method of chainMethods) {
-    expr = b.callExpression(
-      b.memberExpression(asMemberObj(expr), b.identifier(method)),
-      []
-    )
+    chain = chain.method(method)
   }
-
-  return expr
+  return chain.build()
 }
 
 /**
@@ -145,34 +109,28 @@ function buildZodChain(baseMethod: string, chainMethods: string[]): n.Expression
  * // => z.enum(["admin", "user"])
  */
 function buildZodEnum(values: readonly string[]): n.Expression {
-  return b.callExpression(
-    b.memberExpression(b.identifier("z"), b.identifier("enum")),
-    [b.arrayExpression(values.map((v) => b.stringLiteral(v)))]
-  )
+  return conjure
+    .id("z")
+    .method("enum", [conjure.arr(...values.map((v) => conjure.str(v))).build()])
+    .build()
 }
 
 /**
  * Build z.array(<inner>)
  */
 function buildZodArray(inner: n.Expression): n.Expression {
-  return b.callExpression(
-    b.memberExpression(b.identifier("z"), b.identifier("array")),
-    [asExpr(inner)]
-  )
+  return conjure.id("z").method("array", [inner]).build()
 }
 
 /**
  * Add method calls to an expression
  */
 function chainMethods(expr: n.Expression, methods: string[]): n.Expression {
-  let result = expr
+  let chain = conjure.chain(expr)
   for (const method of methods) {
-    result = b.callExpression(
-      b.memberExpression(asMemberObj(result), b.identifier(method)),
-      []
-    )
+    chain = chain.method(method)
   }
-  return result
+  return chain.build()
 }
 
 /**
@@ -218,13 +176,7 @@ function resolveFieldZodSchema(
   // Check for date/timestamp - use z.coerce.date()
   else if (isDateType(field)) {
     // z.coerce.date() is different - needs special handling
-    let schema: n.Expression = b.callExpression(
-      b.memberExpression(
-        b.memberExpression(b.identifier("z"), b.identifier("coerce")),
-        b.identifier("date")
-      ),
-      []
-    )
+    let schema: n.Expression = conjure.id("z").prop("coerce").method("date").build()
 
     if (field.isArray) {
       schema = buildZodArray(schema)
@@ -338,18 +290,17 @@ function generateShapeSchema(
   enums: ReadonlyMap<string, EnumDef>,
   extensions: ReadonlyArray<ExtensionInfo>
 ): n.ExportNamedDeclaration {
-  const properties = shape.fields.map((field) => {
+  // Build object properties using conjure.obj()
+  let objBuilder = obj()
+  for (const field of shape.fields) {
     const zodSchema = resolveFieldZodSchema(field, enums, extensions)
-    return b.objectProperty(b.identifier(field.name), asPropValue(zodSchema))
-  })
+    objBuilder = objBuilder.prop(field.name, zodSchema)
+  }
 
-  const schemaExpr = b.callExpression(
-    b.memberExpression(b.identifier("z"), b.identifier("object")),
-    [b.objectExpression(properties)]
-  )
+  const schemaExpr = conjure.id("z").method("object", [objBuilder.build()]).build()
 
   const variableDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(b.identifier(shape.name), schemaExpr),
+    b.variableDeclarator(b.identifier(shape.name), asExpr(schemaExpr)),
   ])
 
   return b.exportNamedDeclaration(variableDecl)
@@ -364,30 +315,22 @@ function generateShapeSchema(
  */
 function generateShapeTypeExport(shapeName: string): n.ExportNamedDeclaration {
   // Build: z.infer<typeof ShapeName>
-  const inferType = b.tsTypeReference(
-    b.tsQualifiedName(b.identifier("z"), b.identifier("infer")),
-    b.tsTypeParameterInstantiation([
-      b.tsTypeQuery(b.identifier(shapeName)),
-    ])
-  )
+  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shapeName)])
 
-  const typeAlias = b.tsTypeAliasDeclaration(
-    b.identifier(shapeName),
-    inferType
-  )
+  const typeAlias = b.tsTypeAliasDeclaration(b.identifier(shapeName), inferType)
 
   return b.exportNamedDeclaration(typeAlias)
 }
 
 /**
- * Generate file content for an entity
+ * Generate AST for an entity's Zod schemas
  */
-function generateEntityFile(
+function generateEntityAst(
   entity: Entity,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: ReadonlyArray<ExtensionInfo>,
   exportTypes: boolean
-): string {
+): n.Program {
   const declarations: n.Statement[] = []
 
   const { row, insert, update, patch } = entity.shapes
@@ -422,8 +365,7 @@ function generateEntityFile(
     }
   }
 
-  const program = b.program(declarations.map(asStatement))
-  return recast.print(program).code
+  return program(...declarations)
 }
 
 /**
@@ -449,7 +391,7 @@ export const zodPlugin = definePlugin({
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue
 
-      const content = generateEntityFile(
+      const ast = generateEntityAst(
         entity,
         ir.enums,
         ir.extensions,
@@ -458,12 +400,9 @@ export const zodPlugin = definePlugin({
 
       const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`
 
-      // Build zod import
-      const zodImport = 'import { z } from "zod"\n\n'
-
-      // Add header
-      const header = "// This file is auto-generated. Do not edit.\n\n"
-      ctx.emit(filePath, header + zodImport + content)
+      // Build header with zod import
+      const header = '// This file is auto-generated. Do not edit.\n\nimport { z } from "zod"\n\n'
+      ctx.emitAst(filePath, ast, header)
 
       // Register symbols for each shape
       const { row, insert, update, patch } = entity.shapes

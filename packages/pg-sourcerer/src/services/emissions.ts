@@ -2,8 +2,10 @@
  * Emission Buffer Service
  * 
  * Buffers code emissions from plugins before writing to disk.
+ * Supports both string content and AST nodes (serialized by the plugin runner).
  */
 import { Context, Effect, Layer } from "effect"
+import type { namedTypes as n } from "ast-types"
 import { EmitConflict } from "../errors.js"
 
 /**
@@ -16,23 +18,50 @@ export interface EmissionEntry {
 }
 
 /**
+ * AST emission entry - buffered until serialization
+ */
+export interface AstEmissionEntry {
+  readonly path: string
+  readonly ast: n.Program
+  readonly plugin: string
+  /** Optional header to prepend (e.g., imports that can't be in AST) */
+  readonly header?: string
+}
+
+/**
  * Emission buffer interface
  */
 export interface EmissionBuffer {
   /**
-   * Emit code to a file (buffered)
+   * Emit string content to a file (buffered)
    */
   readonly emit: (path: string, content: string, plugin: string) => void
 
   /**
-   * Append to an already-emitted file (same plugin only)
+   * Emit an AST program to a file (buffered, serialized later by runner)
+   */
+  readonly emitAst: (path: string, ast: n.Program, plugin: string, header?: string) => void
+
+  /**
+   * Append to an already-emitted file (same plugin only, string emissions only)
    */
   readonly appendEmit: (path: string, content: string, plugin: string) => void
 
   /**
-   * Get all emissions
+   * Get all string emissions
    */
   readonly getAll: () => readonly EmissionEntry[]
+
+  /**
+   * Get all AST emissions (for serialization by runner)
+   */
+  readonly getAstEmissions: () => readonly AstEmissionEntry[]
+
+  /**
+   * Serialize all AST emissions to string emissions.
+   * Called by the plugin runner after all plugins have run.
+   */
+  readonly serializeAst: (serialize: (ast: n.Program) => string) => void
 
   /**
    * Check for conflicts (same path from different plugins)
@@ -58,36 +87,44 @@ export class Emissions extends Context.Tag("Emissions")<
  */
 export function createEmissionBuffer(): EmissionBuffer {
   const emissions = new Map<string, EmissionEntry>()
+  const astEmissions = new Map<string, AstEmissionEntry>()
   // Track all plugins that have written to each path (for conflict detection)
   const pluginsByPath = new Map<string, Set<string>>()
 
+  const trackPlugin = (path: string, plugin: string) => {
+    const plugins = pluginsByPath.get(path) ?? new Set()
+    plugins.add(plugin)
+    pluginsByPath.set(path, plugins)
+  }
+
   return {
     emit: (path, content, plugin) => {
-      // Track this plugin as having written to this path
-      const plugins = pluginsByPath.get(path) ?? new Set()
-      plugins.add(plugin)
-      pluginsByPath.set(path, plugins)
-      
+      trackPlugin(path, plugin)
       // Store the emission (last write wins for content)
       emissions.set(path, { path, content, plugin })
+    },
+
+    emitAst: (path, ast, plugin, header) => {
+      trackPlugin(path, plugin)
+      // Store the AST emission (last write wins)
+      const entry: AstEmissionEntry = { path, ast, plugin }
+      if (header !== undefined) {
+        astEmissions.set(path, { ...entry, header })
+      } else {
+        astEmissions.set(path, entry)
+      }
     },
 
     appendEmit: (path, content, plugin) => {
       const existing = emissions.get(path)
       if (!existing) {
-        // Track this plugin as having written to this path
-        const plugins = pluginsByPath.get(path) ?? new Set()
-        plugins.add(plugin)
-        pluginsByPath.set(path, plugins)
-        
+        trackPlugin(path, plugin)
         emissions.set(path, { path, content, plugin })
         return
       }
       if (existing.plugin !== plugin) {
         // Track the conflict - different plugin trying to append
-        const plugins = pluginsByPath.get(path) ?? new Set()
-        plugins.add(plugin)
-        pluginsByPath.set(path, plugins)
+        trackPlugin(path, plugin)
         return
       }
       emissions.set(path, {
@@ -98,6 +135,18 @@ export function createEmissionBuffer(): EmissionBuffer {
     },
 
     getAll: () => [...emissions.values()],
+
+    getAstEmissions: () => [...astEmissions.values()],
+
+    serializeAst: (serialize) => {
+      for (const [path, entry] of astEmissions) {
+        const code = serialize(entry.ast)
+        const content = entry.header ? entry.header + code : code
+        emissions.set(path, { path, content, plugin: entry.plugin })
+      }
+      // Clear AST emissions after serialization
+      astEmissions.clear()
+    },
 
     validate: () =>
       Effect.gen(function* () {
@@ -117,6 +166,7 @@ export function createEmissionBuffer(): EmissionBuffer {
 
     clear: () => {
       emissions.clear()
+      astEmissions.clear()
       pluginsByPath.clear()
     },
   }

@@ -5,6 +5,7 @@
  * that yield the services they need from context.
  */
 import { Effect, Schema as S } from "effect"
+import type { namedTypes as n } from "ast-types"
 import type { Artifact, CapabilityKey, SemanticIR } from "../ir/semantic-ir.js"
 import { PluginExecutionFailed } from "../errors.js"
 import type { CoreInflection } from "./inflection.js"
@@ -145,8 +146,18 @@ export interface SimplePluginContext {
   /** Type hints registry */
   readonly typeHints: TypeHintRegistry
 
-  /** Emit code to a file (buffered) */
+  /** Emit string content to a file (buffered) */
   readonly emit: (path: string, content: string) => void
+
+  /**
+   * Emit an AST program to a file (buffered).
+   * The plugin runner handles serialization after all plugins run.
+   * 
+   * @param path - Output file path
+   * @param ast - The AST program node to emit
+   * @param header - Optional header to prepend (e.g., imports that can't be in AST)
+   */
+  readonly emitAst: (path: string, ast: n.Program, header?: string) => void
 
   /** Append to an already-emitted file */
   readonly appendEmit: (path: string, content: string) => void
@@ -251,6 +262,10 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): Plugin<TCo
 
           emit: (path, content) => {
             emissions.emit(path, content, meta.name)
+          },
+
+          emitAst: (path, ast, header) => {
+            emissions.emitAst(path, ast, meta.name, header)
           },
 
           appendEmit: (path, content) => {

@@ -17,6 +17,7 @@ import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { conjure } from "../lib/conjure.js"
 
 // Load introspection data from fixture
 const introspection = loadIntrospectionFixture()
@@ -51,6 +52,19 @@ function createTestLayer(ir: SemanticIR) {
   )
 }
 
+/**
+ * Run plugin and get serialized emissions.
+ * Handles AST serialization so tests can inspect string content.
+ */
+function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
+  return Effect.gen(function* () {
+    const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
+    // Serialize any AST emissions to string content
+    emissions.serializeAst(conjure.print)
+    return emissions.getAll()
+  })
+}
+
 describe("Types Plugin", () => {
   describe("plugin structure", () => {
     it("has correct name", () => {
@@ -76,8 +90,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // Should have generated files for entities
         const userFile = all.find((e) => e.path.includes("User.ts"))
@@ -98,8 +111,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -124,8 +136,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile).toBeDefined()
@@ -150,8 +161,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
         expect(userFile?.content).toContain("// This file is auto-generated. Do not edit.")
@@ -169,8 +179,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // Check if there are enums in the IR
         if (ir.enums.size > 0) {
@@ -190,8 +199,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         if (ir.enums.size > 0) {
           const enumsFile = all.find((e) => e.path.includes("enums.ts"))
@@ -214,8 +222,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // User has role field which is an enum
         const userFile = all.find((e) => e.path.includes("User.ts"))
@@ -287,8 +294,7 @@ describe("Types Plugin", () => {
           .run({ outputDir: "custom/path" })
           .pipe(Effect.provide(testLayer))
 
-        const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-        const all = emissions.getAll()
+        const all = yield* runPluginAndGetEmissions(testLayer)
 
         // All paths should start with the custom output directory
         for (const emission of all) {
@@ -316,8 +322,7 @@ describe("Types Plugin", () => {
             .run({ outputDir: "types" })
             .pipe(Effect.provide(testLayer))
 
-          const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
-          const all = emissions.getAll()
+          const all = yield* runPluginAndGetEmissions(testLayer)
 
           // Just verify we get some output (entities without @omit)
           expect(all.length).toBeGreaterThan(0)

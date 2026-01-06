@@ -4,7 +4,6 @@
  * Generates Row, Insert, Update, and Patch interfaces for each entity.
  */
 import { Schema as S } from "effect"
-import recast from "recast"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import {
@@ -14,23 +13,10 @@ import {
   TsType,
 } from "../services/pg-types.js"
 import type { Field, Shape, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
+import { conjure, cast } from "../lib/conjure.js"
 
-const b = recast.types.builders
-
-/**
- * Type assertion helpers for recast AST nodes.
- *
- * The recast/ast-types library has type definitions that conflict with
- * exactOptionalPropertyTypes. These helpers provide safe casts.
- */
-type AnyTSType = Parameters<typeof b.tsArrayType>[0]
-type AnyStatement = Parameters<typeof b.program>[0][number]
-
-/** Cast TSType for use in recast builders */
-const asTSType = (node: n.TSType): AnyTSType => node as AnyTSType
-
-/** Cast Statement for use in recast builders */
-const asStatement = (node: n.Statement): AnyStatement => node as AnyStatement
+const { ts, program, b } = conjure
+const { asTSType } = cast
 
 /**
  * Plugin configuration schema
@@ -81,20 +67,20 @@ function getPgTypeName(field: Field): string | undefined {
 function tsTypeToAst(tsType: string): n.TSType {
   switch (tsType) {
     case TsType.String:
-      return b.tsStringKeyword()
+      return ts.string()
     case TsType.Number:
-      return b.tsNumberKeyword()
+      return ts.number()
     case TsType.Boolean:
-      return b.tsBooleanKeyword()
+      return ts.boolean()
     case TsType.BigInt:
-      return b.tsBigIntKeyword()
+      return ts.bigint()
     case TsType.Date:
-      return b.tsTypeReference(b.identifier("Date"))
+      return ts.ref("Date")
     case TsType.Buffer:
-      return b.tsTypeReference(b.identifier("Buffer"))
+      return ts.ref("Buffer")
     case TsType.Unknown:
     default:
-      return b.tsUnknownKeyword()
+      return ts.unknown()
   }
 }
 
@@ -112,8 +98,8 @@ function resolveFieldType(
     if (pgTypeName) {
       const enumDef = findEnumByPgName(enums, pgTypeName)
       if (enumDef) {
-        const baseType = b.tsTypeReference(b.identifier(enumDef.name))
-        return field.isArray ? b.tsArrayType(baseType) : baseType
+        const baseType = ts.ref(enumDef.name)
+        return field.isArray ? ts.array(baseType) : baseType
       }
     }
   }
@@ -121,48 +107,48 @@ function resolveFieldType(
   // Try OID-based mapping (precise, for built-in types)
   const oid = getTypeOid(field)
   if (oid !== undefined) {
-    const tsType = defaultPgToTs(oid)
-    if (tsType) {
-      const baseType = tsTypeToAst(tsType)
-      return field.isArray ? b.tsArrayType(asTSType(baseType)) : baseType
+    const tsTypeName = defaultPgToTs(oid)
+    if (tsTypeName) {
+      const baseType = tsTypeToAst(tsTypeName)
+      return field.isArray ? ts.array(baseType) : baseType
     }
   }
 
   // Try OID-based mapping for domain base types
   // (e.g., `url` domain over `text` -> map text OID 25 to string)
   if (field.domainBaseType) {
-    const tsType = defaultPgToTs(field.domainBaseType.typeOid)
-    if (tsType) {
-      const baseType = tsTypeToAst(tsType)
-      return field.isArray ? b.tsArrayType(asTSType(baseType)) : baseType
+    const tsTypeName = defaultPgToTs(field.domainBaseType.typeOid)
+    if (tsTypeName) {
+      const baseType = tsTypeToAst(tsTypeName)
+      return field.isArray ? ts.array(baseType) : baseType
     }
   }
 
   // Try extension-based mapping for the direct type (for citext, ltree, etc.)
   const pgType = field.pgAttribute.getType()
   if (pgType) {
-    const tsType = getExtensionTypeMapping(
+    const tsTypeName = getExtensionTypeMapping(
       pgType.typname,
       String(pgType.typnamespace),
       extensions
     )
-    if (tsType) {
-      const baseType = tsTypeToAst(tsType)
-      return field.isArray ? b.tsArrayType(asTSType(baseType)) : baseType
+    if (tsTypeName) {
+      const baseType = tsTypeToAst(tsTypeName)
+      return field.isArray ? ts.array(baseType) : baseType
     }
   }
 
   // Try extension-based mapping for domain base types
   // (e.g., `username` domain over `citext` -> map citext to string)
   if (field.domainBaseType) {
-    const tsType = getExtensionTypeMapping(
+    const tsTypeName = getExtensionTypeMapping(
       field.domainBaseType.typeName,
       field.domainBaseType.namespaceOid,
       extensions
     )
-    if (tsType) {
-      const baseType = tsTypeToAst(tsType)
-      return field.isArray ? b.tsArrayType(asTSType(baseType)) : baseType
+    if (tsTypeName) {
+      const baseType = tsTypeToAst(tsTypeName)
+      return field.isArray ? ts.array(baseType) : baseType
     }
   }
 
@@ -171,13 +157,12 @@ function resolveFieldType(
     // Check if element is an enum
     const enumDef = findEnumByPgName(enums, field.elementTypeName)
     if (enumDef) {
-      return b.tsArrayType(b.tsTypeReference(b.identifier(enumDef.name)))
+      return ts.array(ts.ref(enumDef.name))
     }
   }
 
   // Fallback to unknown
-  const unknownType = b.tsUnknownKeyword()
-  return field.isArray ? b.tsArrayType(unknownType) : unknownType
+  return field.isArray ? ts.array(ts.unknown()) : ts.unknown()
 }
 
 /**
@@ -185,7 +170,7 @@ function resolveFieldType(
  */
 function wrapNullableAst(typeNode: n.TSType, nullable: boolean): n.TSType {
   if (!nullable) return typeNode
-  return b.tsUnionType([asTSType(typeNode), b.tsNullKeyword()])
+  return ts.union(typeNode, ts.null())
 }
 
 /**
@@ -220,9 +205,7 @@ function generateShapeInterface(
  * Generate enum type alias
  */
 function generateEnumType(enumDef: EnumDef): n.ExportNamedDeclaration {
-  const unionType = b.tsUnionType(
-    enumDef.values.map((value) => b.tsLiteralType(b.stringLiteral(value)))
-  )
+  const unionType = ts.union(...enumDef.values.map((value) => ts.literal(value)))
 
   const typeAlias = b.tsTypeAliasDeclaration(
     b.identifier(enumDef.name),
@@ -233,14 +216,14 @@ function generateEnumType(enumDef: EnumDef): n.ExportNamedDeclaration {
 }
 
 /**
- * Generate file content for an entity
+ * Generate AST for an entity's interfaces
  */
-function generateEntityFile(
+function generateEntityAst(
   entity: Entity,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: ReadonlyArray<ExtensionInfo>,
   usedEnums: Set<string>
-): string {
+): n.Program {
   const declarations: n.Statement[] = []
 
   // Generate each shape
@@ -276,22 +259,20 @@ function generateEntityFile(
     }
   }
 
-  const program = b.program(declarations.map(asStatement))
-  return recast.print(program).code
+  return program(...declarations)
 }
 
 /**
- * Generate file content for enums
+ * Generate AST for enums file
  */
-function generateEnumsFile(enums: ReadonlyMap<string, EnumDef>): string {
+function generateEnumsAst(enums: ReadonlyMap<string, EnumDef>): n.Program {
   const declarations: n.Statement[] = []
 
   for (const enumDef of enums.values()) {
     declarations.push(generateEnumType(enumDef))
   }
 
-  const program = b.program(declarations.map(asStatement))
-  return recast.print(program).code
+  return program(...declarations)
 }
 
 /**
@@ -315,12 +296,12 @@ export const typesPlugin = definePlugin({
 
     // Generate enum types file if there are enums
     if (ir.enums.size > 0) {
-      const enumsContent = generateEnumsFile(ir.enums)
+      const enumsAst = generateEnumsAst(ir.enums)
       const enumsPath = `${config.outputDir}/enums.ts`
 
-      // Add header
+      // Emit AST with header
       const header = "// This file is auto-generated. Do not edit.\n\n"
-      ctx.emit(enumsPath, header + enumsContent)
+      ctx.emitAst(enumsPath, enumsAst, header)
 
       // Register enum symbols
       for (const enumDef of ir.enums.values()) {
@@ -346,19 +327,17 @@ export const typesPlugin = definePlugin({
       const usedEnums = new Set<string>()
       usedEnumsByEntity.set(name, usedEnums)
 
-      const content = generateEntityFile(entity, ir.enums, ir.extensions, usedEnums)
+      const ast = generateEntityAst(entity, ir.enums, ir.extensions, usedEnums)
       const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`
 
-      // Build imports for enums
-      let imports = ""
+      // Build header with imports
+      let header = "// This file is auto-generated. Do not edit.\n\n"
       if (usedEnums.size > 0 && ir.enums.size > 0) {
         const enumImports = [...usedEnums].sort().join(", ")
-        imports = `import type { ${enumImports} } from "./enums.js"\n\n`
+        header += `import type { ${enumImports} } from "./enums.js"\n\n`
       }
 
-      // Add header
-      const header = "// This file is auto-generated. Do not edit.\n\n"
-      ctx.emit(filePath, header + imports + content)
+      ctx.emitAst(filePath, ast, header)
 
       // Register symbols for each shape
       const { row, insert, update, patch } = entity.shapes
