@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run-p db:watch bun:watch",
-    "bun:watch": "bun --watch ../pg-sourcerer/index.mjs",
+    "generate": "bun ../pg-sourcerer/src/cli.ts generate -v",
+    "generate:dry": "bun ../pg-sourcerer/src/cli.ts generate -v --dry-run",
+    "dev": "bun run-p db:watch generate:watch",
+    "generate:watch": "bun --watch ../pg-sourcerer/src/cli.ts generate -v",
     "predev": "bun db:ensure",
-    "start": "bun ../pg-sourcerer/index.mjs",
     "gm": "bun node_modules/.bin/graphile-migrate",
     "db:ensure": "bun scripts/dbEnsure.ts",
     "db:setup": "bun scripts/dbSetup.ts",
@@ -23,16 +24,16 @@
   },
   "dependencies": {
     "@danielfgray/pg-sourcerer": "workspace:*",
-    "@effect/platform": "^0.94.1",
+    "@effect/platform": "catalog:",
     "@effect/platform-bun": "^0.87.0",
-    "@effect/platform-node": "^0.104.0",
-    "effect": "^3.19.14",
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
     "graphile-migrate": "next",
     "inquirer": "^9.2.12",
     "npm-run-all": "^4.1.5"
   },
   "devDependencies": {
     "prettier": "^3.2.4",
-    "typescript": "^5.9.3"
+    "typescript": "catalog:"
   }
 }

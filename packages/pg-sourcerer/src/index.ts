@@ -154,3 +154,23 @@ export {
 // Plugins
 export { typesPlugin } from "./plugins/types.js"
 export { zodPlugin } from "./plugins/zod.js"
+
+// Generate orchestration
+export {
+  generate,
+  runGenerate,
+  GenerateLive,
+  type GenerateOptions,
+  type GenerateResult,
+  type GenerateError,
+} from "./generate.js"
+
+// Database introspection
+export {
+  type DatabaseIntrospection,
+  type IntrospectOptions,
+  DatabaseIntrospectionService,
+  DatabaseIntrospectionLive,
+  createDatabaseIntrospection,
+  introspectDatabase,
+} from "./services/introspection.js"
