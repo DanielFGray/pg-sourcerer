@@ -41,7 +41,7 @@ This plan reorganizes `packages/core/index.mjs` into a modular, testable library
   - `path: string`
   - `content: ASTNode | ASTNode[]`
   - `imports?: ImportSpec[]`
-  - `exports?: Array<{ identifier: string; kind: "type" | "zodSchema" | Record<string, () => any> }>`
+  - `exports?: Array<{ identifier: string; kind: "type" | "schema" | Record<string, () => any> }>`
 - `ImportSpec`:
   - `{ identifier: string; path: string; default?: boolean; typeImport?: boolean }`
 

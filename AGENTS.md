@@ -1,112 +1,215 @@
 # Agent Notes for pg-sourcerer
 
-## Tooling notes
-* This is a bun project. Never use `npm` or `npx` - use `bun` or `bunx`
-* `ast-grep` should be used for all code editing. Execute `curl https://ast-grep.github.io/llms.txt` for more information
-  * store common patterns here in this level next time you use it
+## Tooling
 
-## Project Overview
-A PostgreSQL code generator that introspects database schemas and generates TypeScript types, Zod schemas, query builders, and HTTP endpoints. Built with Bun, uses `pg-introspection` for database analysis.
+- **Bun** - Runtime and package manager. Never use `npm` or `npx`.
+- **Vitest + @effect/vitest** - Testing framework with Effect integration
+- **Effect-ts** - Core framework for services, errors, and composition
 
-## Core Architecture
+### Running Tests
+```bash
+cd packages/sourcerer-rewrite
+bun run test     # never `bun test`
+bun test:watch  # Watch mode
+bun typecheck   # Type check without emit
+```
 
-### Entry Point (`packages/pg-sourcerer/index.mjs`)
-- Main CLI tool using Node.js `parseArgs` for command line parsing
-- Loads config via `lilconfig`, processes plugins, and orchestrates code generation
+## Key Libraries
 
-### Database Introspection (`packages/pg-sourcerer/introspection.mjs`)
-- Uses `pg-introspection` library to analyze database structure
-- Transforms raw introspection into structured data for plugins
+### Effect-ts
+- Docs: Query Context7 with library ID `/effect-ts/effect` or `/llmstxt/effect_website_llms-full_txt`
+- Key patterns used:
+  - `Context.Tag` for service definitions
+  - `Layer` for dependency injection
+  - `Effect.gen` for generator-based effects
+  - `Data.TaggedError` for typed errors
+  - `Schema` for validation (use `S.optionalWith({ default: () => value })` for defaults)
 
-### Plugin System
-Four main plugins in `packages/pg-sourcerer/plugins/`:
+### @effect/vitest
+- Import `{ it, describe, expect, layer }` from `@effect/vitest`
+- Use `it.effect("name", () => Effect.gen(...))` for effect tests
+- Use `layer(MyLayer)("suite name", (it) => { ... })` to provide layers to test suites
+- The `it` inside layer callback has the layer's services available
 
-1. **types.mjs** - Generates TypeScript type definitions
-2. **schemas.mjs** - Generates Zod validation schemas
-3. **queries.mjs** - Generates query builder functions
-4. **http.mjs** - Generates HTTP endpoint handlers
+### pg-introspection
+- Provides `PgAttribute`, `PgClass`, `PgType`, `PgConstraint`, etc.
+- **Important patterns:**
+  ```typescript
+  // Get type from attribute (NOT attr.type)
+  const pgType = pgAttribute.getType()
+  
+  // Check for arrays
+  const isArray = pgType?.typcategory === 'A'
+  
+  // Get enum values
+  const isEnum = pgType?.typtype === 'e'
+  const values = pgType?.getEnumValues()
+  
+  // Get table columns
+  const columns = pgClass.getAttributes().filter(a => a.attnum > 0)
+  
+  // Get foreign keys
+  const fks = pgClass.getConstraints().filter(c => c.contype === 'f')
+  ```
 
-### Utils (`packages/pg-sourcerer/utils/index.mjs`)
-- Shared utilities for AST generation, type mapping, and code generation
-- Uses `recast` for AST manipulation
-- Provides PostgreSQL to TypeScript type mapping
+## Architecture Overview
 
-## Configuration Structure
+See `/ARCHITECTURE.md` in the repo root for the full plan.
 
-### Main Config (`pgsourcerer.config.mjs`)
-```javascript
-export default defineConfig({
-  connectionString: "...",
-  schemas: ["app_public", "app_private"],
-  plugins: [
-    ...plugins
-  ]
+### Core Principle
+**The core plugin system shouldn't know what it's generating.** Core orchestrates plugins that declare capabilities and dependencies.
+
+### IR Structure
+
+```
+SemanticIR
+├── entities: Map<string, Entity>
+│   └── Entity
+│       ├── shapes: { row, insert?, update?, patch? }
+│       │   └── Shape { fields: Field[] }
+│       └── relations: Relation[]
+├── enums: Map<string, EnumDef>
+└── artifacts: Map<CapabilityKey, Artifact>
+```
+
+### Error Types (all defined in errors.ts)
+
+- Config: `ConfigNotFound`, `ConfigInvalid`
+- Database: `ConnectionFailed`, `IntrospectionFailed`
+- Tags: `TagParseError`
+- Plugins: `CapabilityNotSatisfied`, `CapabilityConflict`, `CapabilityCycle`, `PluginConfigInvalid`, `PluginExecutionFailed`
+- Emission: `EmitConflict`, `WriteError`
+
+## Testing Patterns
+
+### Basic Effect Test
+```typescript
+it.effect("description", () =>
+  Effect.gen(function* () {
+    const result = yield* someEffect
+    expect(result).toBe(expected)
+  })
+)
+```
+
+### Test with Layer
+```typescript
+layer(MyServiceLayer)("suite name", (it) => {
+  it.effect("has access to service", () =>
+    Effect.gen(function* () {
+      const svc = yield* MyService
+      // use svc
+    })
+  )
 })
 ```
 
-## Development Workflow
+### Creating Test IR
+```typescript
+import { createIRBuilder, freezeIR } from "../index.js"
 
-### Running Development Mode
+const builder = createIRBuilder(["public"])
+// Add entities, enums to builder
+const ir = freezeIR(builder)
+```
+
+### Stub Plugin Context for Unit Tests
+```typescript
+import { createStubPluginContext } from "../index.js"
+
+const ctx = createStubPluginContext(ir, "test-plugin")
+// ctx has all services stubbed for isolation
+```
+
+## File Organization
+
+```
+src/
+├── index.ts           # Public API exports
+├── errors.ts          # All TaggedError types
+├── config.ts          # Config schema
+├── ir/
+│   ├── index.ts       # Re-exports
+│   ├── smart-tags.ts  # SmartTags Effect Schema
+│   └── semantic-ir.ts # IR types and builder
+└── services/
+    ├── index.ts       # Re-exports
+    ├── inflection.ts  # Naming service
+    ├── type-hints.ts  # Type override registry
+    ├── symbols.ts     # Symbol registry for imports
+    ├── emissions.ts   # Output buffer
+    ├── plugin-context.ts  # What plugins receive
+    └── plugin-runner.ts   # Plugin orchestration
+```
+
+## ⚠️ Effect Code: Read the Style Guide First
+
+**MANDATORY**: Read `/EFFECT_STYLE.md` before writing or modifying Effect code.
+
+Effect has specific idioms that differ from typical TypeScript. The style guide covers:
+- Method `.pipe()` vs function `pipe()` (critical distinction)
+- Import conventions (no single-letter abbreviations)
+- Functional patterns (`Effect.reduce`, find-first, `Effect.if`)
+- Anti-patterns and how to fix them
+- Service and error definitions
+
+### Quick Rules (see EFFECT_STYLE.md for full details)
+
+```typescript
+// ✅ Effect values: method-style .pipe()
+buildProviderMap(plugins).pipe(Effect.flatMap(...))
+
+// ✅ Pure data: function pipe()
+const names = pipe(plugins, Array.map(p => p.name))
+
+// ✅ Full import names
+import { Array, HashMap, Option } from "effect"
+
+// ❌ Never abbreviate
+import { Array as A } from "effect"  // NO
+```
+
+## Reminders
+
+1. **Stub first** - Get the wiring right before implementing logic
+2. **Use Effect patterns** - Services via Context.Tag, errors via TaggedError
+3. **Think functionally** - Data transformations, not imperative steps
+4. **Test with @effect/vitest** - Use `it.effect` and `layer()`
+5. **Check ARCHITECTURE.md** - For design decisions and open questions
+6. **Query Context7** - For Effect-ts API questions
+7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
+
+## ⚠️ CRITICAL: Task Tracking
+
+**NEVER use TodoWrite/TodoRead** - These are disabled for this project.
+
+**Use beads MCP tools ONLY** for all task tracking:
+- `beads_ready()` - Find available work
+- `beads_list()` - List issues with filters
+- `beads_show()` - View task details  
+- `beads_update()` - Update status/fields
+- `beads_close()` - Complete a task
+- `beads_create()` - Create new tasks
+
+Do NOT use bash `bd` CLI commands. Use the MCP tools directly.
+
+## Beads Workflow
+
+Tasks are tracked in beads. **Always use beads MCP tools directly** - e.g., `beads_ready()`, `beads_update()`, `beads_close()` (do not use bash for beads)
+
 ```bash
-bun dev  # Runs example with file watching
+# Check what's ready to work on
+beads_ready()
+
+# See all rewrite tasks
+beads_list(labels=["rewrite"])
+
+# Show task details
+beads_show(issue_id="pg-sourcerer-xxx")
+
+# Start working on a task
+beads_update(issue_id="pg-sourcerer-xxx", status="in_progress")
+
+# Complete a task
+beads_close(issue_id="pg-sourcerer-xxx", reason="Description of what was done")
 ```
-
-### Project Structure
-```
-packages/
-  pg-sourcerer/          # Core library
-    plugins/             # Code generation plugins
-    utils/              # Shared utilities
-    index.mjs           # CLI entry point
-    introspection.mjs   # Database analysis
-  example/              # Demo project
-    migrations/         # Database migrations
-    generated/          # Generated TypeScript files
-```
-
-## Potential Improvements
-
-### 1. Configuration Validation
-- Add Zod schema validation for configuration objects
-- Better error messages for missing required fields
-- Validate plugin compatibility with selected adapter
-
-### 2. Error Handling
-- Wrap database connection errors with helpful context
-- Provide migration suggestions for configuration changes
-- Add retry logic for database connections
-
-### 3. Plugin System Enhancements
-- Auto-pass common config values (adapter, schemas) to plugins
-- Plugin dependency management
-- Hot-reloading of plugin changes during development
-
-### 4. Type Safety
-- Better TypeScript definitions for plugin interfaces
-- Runtime type checking for generated code
-- Validation of database schema compatibility
-
-### 5. Performance
-- Cache introspection results during development
-- Parallel plugin execution
-- Incremental generation based on schema changes
-
-## Key Dependencies
-- `pg-introspection`: Database analysis
-- `recast`: AST manipulation for code generation  
-- `lilconfig`: Configuration loading
-- `graphile-migrate`: Database migration management
-- `zod`: Runtime type validation
-
-## Testing Strategy
-- Unit tests for individual plugins
-- Integration tests with real database schemas
-- Configuration validation tests
-- Generated code compilation tests
-
-## Notes for Future Development
-1. Always test with `bun dev` after significant changes
-2. Check for import/parameter naming conflicts in plugins
-3. Validate that adapter configuration flows through entire system
-4. Consider database connection pooling for better performance
-5. Add comprehensive error handling for database connection failures
