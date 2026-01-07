@@ -89,14 +89,20 @@ function tsTypeToAst(tsType: string): n.TSType {
 
 /**
  * Build TypeHintFieldMatch from entity and field
+ * For arrays, uses the element type name for matching (not the array type _foo)
  */
 function buildFieldMatch(entity: Entity, field: Field): TypeHintFieldMatch {
-  const pgType = field.pgAttribute.getType()
+  // For arrays, use the element type name for matching
+  // This allows { pgType: "citext" } to match citext[] columns
+  const pgTypeName = field.isArray && field.elementTypeName
+    ? field.elementTypeName
+    : field.pgAttribute.getType()?.typname ?? ""
+  
   return {
     schema: entity.schemaName,
     table: entity.tableName,
     column: field.columnName,
-    pgType: pgType?.typname ?? "",
+    pgType: pgTypeName,
   }
 }
 
@@ -207,6 +213,21 @@ function resolveFieldType(
     const enumDef = findEnumByPgName(enums, field.elementTypeName)
     if (enumDef) {
       return { type: ts.array(ts.ref(enumDef.name)) }
+    }
+    
+    // Try extension-based mapping for array element type
+    // The array type itself (e.g., _citext) won't match, but the element type (citext) might
+    const pgType = field.pgAttribute.getType()
+    if (pgType?.typnamespace) {
+      const tsTypeName = getExtensionTypeMapping(
+        field.elementTypeName,
+        String(pgType.typnamespace),
+        extensions
+      )
+      if (tsTypeName) {
+        const baseType = tsTypeToAst(tsTypeName)
+        return { type: ts.array(baseType) }
+      }
     }
   }
 

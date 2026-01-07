@@ -162,6 +162,7 @@ export {
 // Plugins
 export { typesPlugin } from "./plugins/types.js"
 export { zodPlugin } from "./plugins/zod.js"
+export { effectModelPlugin } from "./plugins/effect-model.js"
 
 // Generate orchestration
 export {

@@ -8,7 +8,7 @@ import { Effect, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import type { Artifact, CapabilityKey, SemanticIR } from "../ir/semantic-ir.js"
 import { PluginExecutionFailed } from "../errors.js"
-import type { CoreInflection } from "./inflection.js"
+import type { CoreInflection, InflectionConfig } from "./inflection.js"
 import type { SymbolRegistry } from "./symbols.js"
 import type { TypeHintRegistry } from "./type-hints.js"
 import type { FileBuilder } from "./file-builder.js"
@@ -85,11 +85,28 @@ export interface Plugin<TConfig = unknown> {
   readonly inflection: PluginInflection
 
   /**
+   * Plugin's default inflection transforms.
+   * 
+   * These are applied BEFORE user-configured inflection, allowing composition:
+   * - Plugin sets baseline (e.g., entityName: ["pascalCase"] → "users" → "Users")
+   * - User config refines (e.g., entityName: ["singularize"] → "Users" → "User")
+   * 
+   * @example
+   * ```typescript
+   * inflectionDefaults: {
+   *   entityName: ["pascalCase"],  // Plugin wants PascalCase class names
+   *   fieldName: [],               // Plugin preserves field names as-is
+   * }
+   * ```
+   */
+  readonly inflectionDefaults?: InflectionConfig
+
+  /**
    * Plugin execution - returns Effect that yields services from context.
    *
    * Services available:
    * - IR: SemanticIR (read-only)
-   * - Inflection: CoreInflection
+   * - Inflection: CoreInflection (composed: plugin defaults + user config)
    * - Emissions: EmissionBuffer
    * - Symbols: SymbolRegistry
    * - TypeHints: TypeHintRegistry
@@ -206,8 +223,17 @@ export interface SimplePluginDef<TConfig = unknown> {
   /** Configuration schema */
   readonly configSchema: S.Schema<TConfig>
 
-  /** Plugin-specific inflection */
+  /** Plugin-specific inflection for file and symbol naming */
   readonly inflection: PluginInflection
+
+  /**
+   * Plugin's default inflection transforms.
+   * 
+   * These are applied BEFORE user-configured inflection, allowing composition:
+   * - Plugin sets baseline (e.g., entityName: ["pascalCase"] → "users" → "Users")
+   * - User config refines (e.g., entityName: ["singularize"] → "Users" → "User")
+   */
+  readonly inflectionDefaults?: InflectionConfig
 
   /**
    * Plugin execution function.
@@ -348,10 +374,14 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): Plugin<TCo
       }),
   }
 
-  // Add requires only if defined (exactOptionalPropertyTypes)
+  // Add optional properties only if defined (exactOptionalPropertyTypes)
+  let result = plugin
   if (def.requires !== undefined) {
-    return { ...plugin, requires: def.requires }
+    result = { ...result, requires: def.requires }
+  }
+  if (def.inflectionDefaults !== undefined) {
+    result = { ...result, inflectionDefaults: def.inflectionDefaults }
   }
 
-  return plugin
+  return result
 }

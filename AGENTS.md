@@ -197,6 +197,24 @@ import { Array as A } from "effect"  // NO
 6. **Query Context7** - For Effect-ts API questions
 7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
 
+## ⚠️ CRITICAL: Decision Making
+
+**ALWAYS defer to the user on design decisions.**
+
+When you identify multiple approaches/options:
+1. **STOP** - Do not pick one and proceed
+2. **Present the options clearly** - Brief description of each, with your recommendation if you have one
+3. **Wait for user input** - Let the user decide which approach to take
+
+This applies to:
+- Architecture choices
+- API design decisions  
+- Implementation strategies
+- Naming conventions
+- Any situation with 2+ reasonable paths forward
+
+Do NOT make assumptions about user preferences. Ask first.
+
 ## ⚠️ CRITICAL: Task Tracking
 
 **NEVER use TodoWrite/TodoRead** - These are disabled for this project.
