@@ -31,9 +31,9 @@ const introspection = loadIntrospectionFixture()
 // Platform layers for file operations
 const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
-// Combined layer for tests that need PluginRunner
+// Combined layer for tests that need PluginRunner with ClassicInflection
 const TestLayer = Layer.mergeAll(
-  Layer.provide(PluginRunner.Default, ClassicInflectionLive),
+  Layer.provide(PluginRunner.DefaultWithoutDependencies, ClassicInflectionLive),
   PlatformLayer,
   TypeHintsLive([]) // Empty type hints for tests
 )

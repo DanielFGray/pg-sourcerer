@@ -16,7 +16,7 @@ import { NodeFileSystem, NodePath } from "@effect/platform-node"
 
 import { PluginRunner, type ConfiguredPlugin } from "../services/plugin-runner.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { makeInflectionLayer, InflectionLive, inflect, type InflectionConfig } from "../services/inflection.js"
+import { makeInflectionLayer, inflect, type InflectionConfig } from "../services/inflection.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
@@ -32,10 +32,10 @@ const introspection = loadIntrospectionFixture()
 // Platform layers
 const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
-// Base test layer with identity inflection (tests can override with their own)
-// Note: PluginRunner now requires Inflection to be provided
+// Base test layer with identity inflection
+// PluginRunner.Default includes InflectionLive, so it works standalone
 const BaseTestLayer = Layer.mergeAll(
-  Layer.provide(PluginRunner.Default, InflectionLive),
+  PluginRunner.Default,
   PlatformLayer,
   TypeHintsLive([])
 )
@@ -74,14 +74,18 @@ const runScenario = (scenario: ConfigScenario) =>
       .pipe(Effect.provide(inflectionLayer))
 
     // Run plugins with the same inflection layer
-    // This mirrors how generate.ts works - PluginRunner is created with user's inflection
+    // When custom inflection is provided, use DefaultWithoutDependencies
+    // so we can override the default InflectionLive
+    const runnerLayer = scenario.inflection
+      ? Layer.provide(PluginRunner.DefaultWithoutDependencies, inflectionLayer)
+      : PluginRunner.Default
+    
     const result = yield* Effect.gen(function* () {
       const runner = yield* PluginRunner
       const prepared = yield* runner.prepare(scenario.plugins)
       return yield* runner.run(prepared, ir)
     }).pipe(
-      Effect.provide(PluginRunner.Default),
-      Effect.provide(inflectionLayer)
+      Effect.provide(runnerLayer)
     )
 
     return {

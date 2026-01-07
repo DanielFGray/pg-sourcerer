@@ -26,7 +26,7 @@ import {
 import { type EmissionBuffer, Emissions, createEmissionBuffer } from "./emissions.js";
 import { type SymbolRegistry, Symbols, createSymbolRegistry } from "./symbols.js";
 import { TypeHints } from "./type-hints.js";
-import { Inflection, composeInflection } from "./inflection.js";
+import { Inflection, InflectionLive, composeInflection } from "./inflection.js";
 import { IR } from "./ir.js";
 import { ArtifactStore, createArtifactStore } from "./artifact-store.js";
 import { PluginMeta } from "./plugin-meta.js";
@@ -351,7 +351,5 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
 
     return { prepare, run };
   }),
-  // Note: Inflection is NOT included as a dependency here.
-  // Callers must provide their own Inflection layer (or use InflectionLive for identity).
-  // This allows the caller to customize inflection (e.g., from user config).
+  dependencies: [InflectionLive],
 }) {}
