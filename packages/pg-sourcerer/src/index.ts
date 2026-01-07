@@ -24,6 +24,12 @@ export {
   type SemanticIR,
   type SemanticIRBuilder,
   type Entity,
+  type TableEntity,
+  type EnumEntity,
+  type DomainEntity,
+  type DomainConstraint,
+  type CompositeEntity,
+  type CompositeField,
   type Shape,
   type Field,
   type Relation,
@@ -32,8 +38,25 @@ export {
   type Artifact,
   type CapabilityKey,
   type PrimaryKey,
+  type EntityKind,
+  type DomainBaseTypeInfo,
+  type FunctionEntity,
+  type FunctionArg,
+  type Volatility,
   createIRBuilder,
   freezeIR,
+  // Type guards
+  isTableEntity,
+  isEnumEntity,
+  isDomainEntity,
+  isCompositeEntity,
+  isFunctionEntity,
+  // Helpers
+  getTableEntities,
+  getEnumEntities,
+  getDomainEntities,
+  getCompositeEntities,
+  getFunctionEntities,
 } from "./ir/index.js"
 
 export { SmartTags, ShapeKind } from "./ir/index.js"

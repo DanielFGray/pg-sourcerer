@@ -5,7 +5,7 @@
  * Users configure with simple string→string functions that compose naturally.
  */
 import { Context, Layer, String as Str } from "effect"
-import type { PgAttribute, PgClass, PgType } from "pg-introspection"
+import type { PgAttribute, PgClass, PgProc, PgType } from "pg-introspection"
 import type { SmartTags, ShapeKind } from "../ir/index.js"
 
 // ============================================================================
@@ -127,6 +127,7 @@ export interface CoreInflection {
   readonly enumName: (pgType: PgType, tags: SmartTags) => string
   readonly enumValueName: (value: string) => string
   readonly relationName: (name: string) => string
+  readonly functionName: (pgProc: PgProc, tags: SmartTags) => string
 }
 
 /** Service tag */
@@ -203,6 +204,12 @@ export interface InflectionConfig {
    * Default: identity (preserve name)
    */
   readonly relationName?: TransformFn
+
+  /**
+   * Transform function name.
+   * Default: "{name}_{argCount}" for overload disambiguation
+   */
+  readonly functionName?: TransformFn
 }
 
 // ============================================================================
@@ -228,6 +235,7 @@ export const defaultInflection: CoreInflection = {
   enumName: (pgType, tags) => tags.name ?? pgType.typname,
   enumValueName: (value) => value,
   relationName: (name) => name,
+  functionName: (pgProc, tags) => tags.name ?? `${pgProc.proname}_${pgProc.pronargs}`,
 }
 
 // ============================================================================
@@ -267,6 +275,7 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
   const enumValueFn = config.enumValue ?? identity
   const shapeSuffixFn = config.shapeSuffix ?? identity
   const relationFn = config.relationName ?? identity
+  const functionFn = config.functionName ?? identity
 
   return {
     // Primitive transforms unchanged
@@ -292,6 +301,9 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
     enumValueName: (value) => enumValueFn(value),
 
     relationName: (name) => relationFn(name),
+
+    functionName: (pgProc, tags) =>
+      tags.name ?? functionFn(`${pgProc.proname}_${pgProc.pronargs}`),
   }
 }
 
@@ -397,6 +409,7 @@ export function composeInflectionConfigs(
       enumValue: composeFns(pluginDefaults.enumValue, userConfig.enumValue),
       shapeSuffix: composeFns(pluginDefaults.shapeSuffix, userConfig.shapeSuffix),
       relationName: composeFns(pluginDefaults.relationName, userConfig.relationName),
+      functionName: composeFns(pluginDefaults.functionName, userConfig.functionName),
     }).filter(([, v]) => v !== undefined)
   ) as InflectionConfig
 }
@@ -423,9 +436,10 @@ export function composeInflection(
   const enumValueFn = pluginDefaults.enumValue
   const shapeSuffixFn = pluginDefaults.shapeSuffix
   const relationFn = pluginDefaults.relationName
+  const functionFn = pluginDefaults.functionName
 
   // If no transforms defined, return base unchanged
-  if (!entityFn && !fieldFn && !enumNameFn && !enumValueFn && !shapeSuffixFn && !relationFn) {
+  if (!entityFn && !fieldFn && !enumNameFn && !enumValueFn && !shapeSuffixFn && !relationFn && !functionFn) {
     return baseInflection
   }
 
@@ -473,6 +487,13 @@ export function composeInflection(
     relationName: (name) => {
       const afterPlugin = relationFn ? relationFn(name) : name
       return baseInflection.relationName(afterPlugin)
+    },
+
+    functionName: (pgProc, tags) => {
+      if (tags.name) return tags.name
+      const baseName = `${pgProc.proname}_${pgProc.pronargs}`
+      const afterPlugin = functionFn ? functionFn(baseName) : baseName
+      return baseInflection.functionName({ ...pgProc, proname: afterPlugin }, {})
     },
   }
 }

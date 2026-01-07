@@ -12,6 +12,7 @@ import type {
   PgClass,
   PgConstraint,
   PgType,
+  PgProc,
   PgRoles,
 } from "pg-introspection"
 import { entityPermissions } from "pg-introspection"
@@ -19,6 +20,10 @@ import type {
   DomainBaseTypeInfo,
   TableEntity,
   EnumEntity,
+  DomainEntity,
+  DomainConstraint,
+  CompositeEntity,
+  CompositeField,
   ExtensionInfo,
   Field,
   EntityPermissions,
@@ -28,6 +33,9 @@ import type {
   Relation,
   SemanticIR,
   Shape,
+  FunctionEntity,
+  FunctionArg,
+  Volatility,
 } from "../ir/semantic-ir.js"
 import type { ShapeKind, SmartTags } from "../ir/smart-tags.js"
 import { createIRBuilder, freezeIR } from "../ir/semantic-ir.js"
@@ -45,6 +53,8 @@ import { IntrospectionFailed, TagParseError } from "../errors.js"
 export interface IRBuilderOptions {
   /** PostgreSQL schemas to include */
   readonly schemas: readonly string[]
+  /** Exclude functions that belong to extensions (default: true) */
+  readonly excludeExtensionFunctions?: boolean
 }
 
 /**
@@ -625,6 +635,176 @@ function buildEnum(
 }
 
 // ============================================================================
+// Domains
+// ============================================================================
+
+/**
+ * Get domain constraints from pg_constraint.
+ * Domain constraints have contypid set to the domain's OID.
+ */
+function getDomainConstraints(
+  pgType: PgType,
+  introspection: Introspection
+): readonly DomainConstraint[] {
+  // Find constraints where contypid matches the domain type's OID
+  const domainOid = pgType._id
+
+  return introspection.constraints
+    .filter((c) => c.contypid === domainOid && c.contype === "c") // CHECK constraints
+    .map((c) => {
+      const constraint: DomainConstraint = {
+        name: c.conname,
+      }
+      // Add expression only if present (exactOptionalPropertyTypes)
+      if (c.consrc) {
+        return { ...constraint, expression: c.consrc }
+      }
+      return constraint
+    })
+}
+
+/**
+ * Build a DomainEntity from a PgType
+ */
+function buildDomain(
+  pgType: PgType,
+  introspection: Introspection
+): Effect.Effect<DomainEntity, TagParseError, Inflection> {
+  const context: TagContext = {
+    objectType: "type",
+    objectName: pgType.typname,
+  }
+
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection
+    const parsed = yield* parseSmartTags(pgType.getDescription(), context)
+    const tags = parsed.tags
+    const schemaName = pgType.getNamespace()?.nspname ?? "public"
+
+    // Get base type info
+    const baseTypeOid = pgType.typbasetype
+    const baseType = baseTypeOid
+      ? introspection.getType({ id: String(baseTypeOid) })
+      : undefined
+    const baseTypeName = baseType?.typname ?? "unknown"
+
+    // Check for NOT NULL constraint (typnotnull)
+    const notNull = pgType.typnotnull === true
+
+    // Get CHECK constraints
+    const constraints = getDomainConstraints(pgType, introspection)
+
+    return {
+      kind: "domain" as const,
+      name: inflection.enumName(pgType, tags), // enumName works for all PgType
+      pgName: pgType.typname,
+      schemaName,
+      pgType,
+      baseTypeName,
+      baseTypeOid: baseTypeOid ? Number(baseTypeOid) : 0,
+      notNull,
+      constraints,
+      tags,
+    }
+  })
+}
+
+// ============================================================================
+// Composites
+// ============================================================================
+
+/**
+ * Build a CompositeField from a PgAttribute
+ */
+function buildCompositeField(
+  attr: PgAttribute,
+  tags: SmartTags,
+  introspection: Introspection
+): Effect.Effect<CompositeField, never, Inflection> {
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection
+    const pgType = attr.getType()
+
+    // Array handling
+    const isArray = pgType?.typcategory === "A"
+    const elementType = isArray ? pgType?.getElemType() : undefined
+
+    // Resolve domain base type for proper type mapping
+    const domainBaseType = resolveDomainBaseType(pgType, introspection)
+
+    const nullable = !(attr.attnotnull ?? false)
+
+    const field: CompositeField = {
+      name: inflection.fieldName(attr, tags),
+      attributeName: attr.attname,
+      pgAttribute: attr,
+      nullable,
+      tags,
+      isArray,
+    }
+
+    // Build result with optional properties (exactOptionalPropertyTypes)
+    let result = field
+    if (elementType?.typname !== undefined) {
+      result = { ...result, elementTypeName: elementType.typname }
+    }
+    if (domainBaseType !== undefined) {
+      result = { ...result, domainBaseType }
+    }
+
+    return result
+  })
+}
+
+/**
+ * Build a CompositeEntity from a PgType
+ */
+function buildComposite(
+  pgType: PgType,
+  introspection: Introspection
+): Effect.Effect<CompositeEntity, TagParseError, Inflection> {
+  const context: TagContext = {
+    objectType: "type",
+    objectName: pgType.typname,
+  }
+
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection
+    const parsed = yield* parseSmartTags(pgType.getDescription(), context)
+    const tags = parsed.tags
+    const schemaName = pgType.getNamespace()?.nspname ?? "public"
+
+    // Get attributes for the composite type via its associated pg_class
+    // Composite types have a pg_class entry with relkind = 'c'
+    const pgClass = pgType.getClass()
+    const attributes = pgClass?.getAttributes()?.filter((a) => a.attnum > 0) ?? []
+
+    // Parse attribute tags and build fields
+    const fields = yield* Effect.forEach(attributes, (attr) => {
+      const attrContext: TagContext = {
+        objectType: "column",
+        objectName: `${pgType.typname}.${attr.attname}`,
+      }
+      return parseSmartTags(attr.getDescription(), attrContext).pipe(
+        Effect.flatMap((attrParsed) =>
+          buildCompositeField(attr, attrParsed.tags, introspection)
+        )
+      )
+    })
+
+    return {
+      kind: "composite" as const,
+      name: inflection.enumName(pgType, tags), // enumName works for all PgType
+      pgName: pgType.typname,
+      schemaName,
+      pgType,
+      fields,
+      tags,
+    }
+  })
+}
+
+// ============================================================================
 // Main Builder
 // ============================================================================
 
@@ -691,6 +871,49 @@ function filterEnums(
 }
 
 /**
+ * Filter domain types in specified schemas
+ */
+function filterDomains(
+  introspection: Introspection,
+  schemas: readonly string[]
+): readonly PgType[] {
+  const schemaSet = new Set(schemas)
+
+  return introspection.types.filter((t) => {
+    const namespace = t.getNamespace()?.nspname
+    if (!namespace || !schemaSet.has(namespace)) return false
+
+    return t.typtype === "d" // domain type
+  })
+}
+
+/**
+ * Filter user-defined composite types in specified schemas.
+ * Excludes table/view row types (those have relkind = 'r' or 'v').
+ * Only includes composites with relkind = 'c' (standalone composite types).
+ */
+function filterComposites(
+  introspection: Introspection,
+  schemas: readonly string[]
+): readonly PgType[] {
+  const schemaSet = new Set(schemas)
+
+  return introspection.types.filter((t) => {
+    const namespace = t.getNamespace()?.nspname
+    if (!namespace || !schemaSet.has(namespace)) return false
+
+    // Composite types have typtype === "c"
+    if (t.typtype !== "c") return false
+
+    // Get the associated class to check its relkind
+    // User-defined composites have relkind = 'c'
+    // Table row types have relkind = 'r', view row types have relkind = 'v'
+    const pgClass = t.getClass()
+    return pgClass?.relkind === "c"
+  })
+}
+
+/**
  * Extract extension info from introspection.
  * Extensions are needed for type mapping (e.g., citext -> string).
  */
@@ -705,6 +928,125 @@ function extractExtensions(
 }
 
 /**
+ * Get the fully qualified type name from a PgType.
+ */
+function getTypeName(pgType: PgType | undefined): string {
+  if (!pgType) return "unknown"
+  const ns = pgType.getNamespace()?.nspname
+  return ns ? `${ns}.${pgType.typname}` : pgType.typname
+}
+
+/**
+ * Filter functions in specified schemas.
+ * Only includes functions (prokind = 'f'), not procedures.
+ *
+ * @param introspection - The introspection result
+ * @param schemas - Schemas to include functions from
+ * @param options - Optional filter settings
+ */
+function filterFunctions(
+  introspection: Introspection,
+  schemas: readonly string[],
+  options?: {
+    /** Exclude functions that belong to extensions (default: true) */
+    excludeExtensions?: boolean
+  }
+): readonly { pgProc: PgProc; isFromExtension: boolean }[] {
+  const schemaSet = new Set(schemas)
+  const excludeExtensions = options?.excludeExtensions ?? true
+
+  // Build set of extension namespace OIDs (always build this for tracking)
+  const extensionNamespaceOids = new Set(
+    introspection.extensions
+      .filter((ext) => ext.extnamespace)
+      .map((ext) => ext.extnamespace)
+  )
+
+  return introspection.procs
+    .map((proc) => {
+      const namespace = proc.getNamespace()
+      if (!namespace) return null
+
+      const namespaceName = namespace.nspname
+      if (!namespaceName || !schemaSet.has(namespaceName)) return null
+
+      // Only include functions, not procedures
+      if (proc.prokind !== "f") return null
+
+      // Check if function belongs to an extension
+      const isFromExtension = extensionNamespaceOids.has(namespace._id)
+
+      // Exclude extension functions
+      if (excludeExtensions && isFromExtension) {
+        return null
+      }
+
+      return { pgProc: proc, isFromExtension }
+    })
+    .filter((item): item is { pgProc: PgProc; isFromExtension: boolean } => item !== null)
+}
+
+/**
+ * Build a FunctionEntity from a PgProc.
+ */
+function buildFunction(
+  pgProc: PgProc,
+  introspection: Introspection,
+  role: PgRoles,
+  isFromExtension: boolean
+): Effect.Effect<FunctionEntity, TagParseError, Inflection> {
+  const context: TagContext = {
+    objectType: "type",
+    objectName: pgProc.proname,
+  }
+
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection
+    const parsed = yield* parseSmartTags(pgProc.getDescription(), context)
+    const tags = parsed.tags
+    const schemaName = pgProc.getNamespace()?.nspname ?? "public"
+
+    const returnType = pgProc.getReturnType()
+    const returnTypeName = returnType ? getTypeName(returnType) : "void"
+
+    const args = pgProc.getArguments().map((arg): FunctionArg => ({
+      name: arg.name ?? "",
+      typeName: getTypeName(arg.type),
+      hasDefault: arg.hasDefault,
+    }))
+
+    const volatilityMap: Record<string, Volatility> = {
+      i: "immutable",
+      s: "stable",
+      v: "volatile",
+    }
+
+    const perms = entityPermissions(introspection, pgProc, role)
+    const canExecute = perms.execute ?? false
+
+    const volatilityKey = pgProc.provolatile ?? "v"
+    const volatility = volatilityMap[volatilityKey] ?? "volatile"
+
+    return {
+      kind: "function" as const,
+      name: inflection.functionName(pgProc, tags),
+      pgName: pgProc.proname,
+      schemaName,
+      pgProc,
+      returnTypeName,
+      returnsSet: pgProc.proretset ?? false,
+      argCount: pgProc.pronargs ?? 0,
+      args,
+      volatility,
+      isStrict: pgProc.proisstrict ?? false,
+      canExecute,
+      isFromExtension,
+      tags,
+    }
+  })
+}
+
+/**
   * Create the live IR builder implementation
   */
 function createIRBuilderImpl(): IRBuilder {
@@ -713,6 +1055,11 @@ function createIRBuilderImpl(): IRBuilder {
       Effect.gen(function* () {
         const classes = filterClasses(introspection, options.schemas)
         const enumTypes = filterEnums(introspection, options.schemas)
+        const domainTypes = filterDomains(introspection, options.schemas)
+        const compositeTypes = filterComposites(introspection, options.schemas)
+        const functionProcs = filterFunctions(introspection, options.schemas, {
+          excludeExtensions: options.excludeExtensionFunctions ?? true,
+        })
 
         // Get the current role for permission checks, or use a fallback
         const role: PgRoles = introspection.getCurrentUser() ?? {
@@ -734,7 +1081,7 @@ function createIRBuilderImpl(): IRBuilder {
         // Build entity name lookup first (needed for relations)
         const entityNameLookup = yield* buildEntityNameLookup(classes)
 
-        // Build entities
+        // Build table/view entities
         const entities = yield* Effect.forEach(classes, (pgClass) =>
           buildEntity(pgClass, entityNameLookup, introspection, role)
         )
@@ -742,6 +1089,21 @@ function createIRBuilderImpl(): IRBuilder {
         // Build enums
         const enums = yield* Effect.forEach(enumTypes, (pgType) =>
           buildEnum(pgType)
+        )
+
+        // Build domains
+        const domains = yield* Effect.forEach(domainTypes, (pgType) =>
+          buildDomain(pgType, introspection)
+        )
+
+        // Build composites
+        const composites = yield* Effect.forEach(compositeTypes, (pgType) =>
+          buildComposite(pgType, introspection)
+        )
+
+        // Build functions
+        const functions = yield* Effect.forEach(functionProcs, ({ pgProc, isFromExtension }) =>
+          buildFunction(pgProc, introspection, role, isFromExtension)
         )
 
         // Extract extensions for type mapping
@@ -754,6 +1116,15 @@ function createIRBuilderImpl(): IRBuilder {
         }
         for (const enumEntity of enums) {
           builder.entities.set(enumEntity.name, enumEntity)
+        }
+        for (const domain of domains) {
+          builder.entities.set(domain.name, domain)
+        }
+        for (const composite of composites) {
+          builder.entities.set(composite.name, composite)
+        }
+        for (const fn of functions) {
+          builder.entities.set(fn.name, fn)
         }
         builder.extensions.push(...extensions)
 
