@@ -79,11 +79,10 @@ export interface Shape {
 }
 
 /**
- * Relation between entities - inferred from foreign key constraints
+ * Relation between entities - inferred from foreign key constraints.
+ * Contains raw constraint data; plugins derive names as needed.
  */
 export interface Relation {
-  /** Inflected relation name */
-  readonly name: string
   /** Relationship kind */
   readonly kind: "hasMany" | "hasOne" | "belongsTo"
   /** Target entity name (not table name) */
@@ -109,6 +108,35 @@ export interface PrimaryKey {
   readonly columns: readonly string[]
   /** True if from @primaryKey tag, false if real PK constraint */
   readonly isVirtual: boolean
+}
+
+/**
+ * Index method types
+ */
+export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist"
+
+/**
+ * Information about a database index
+ */
+export interface IndexDef {
+  /** PostgreSQL index name */
+  readonly name: string
+  /** Inflected column names (camelCase) */
+  readonly columns: readonly string[]
+  /** Original PostgreSQL column names */
+  readonly columnNames: readonly string[]
+  /** True if this is a unique index */
+  readonly isUnique: boolean
+  /** True if this is a primary key index */
+  readonly isPrimary: boolean
+  /** True if this is a partial index (has WHERE clause) */
+  readonly isPartial: boolean
+  /** WHERE clause for partial indexes (raw SQL) */
+  readonly predicate?: string
+  /** Index method (btree, gin, gist, hash, brin, spgist) */
+  readonly method: IndexMethod
+  /** True if any "column" is actually an expression (not a real column) */
+  readonly hasExpressions: boolean
 }
 
 /**
@@ -154,6 +182,9 @@ export interface Entity {
 
   /** Primary key (may be undefined for views without @primaryKey) */
   readonly primaryKey?: PrimaryKey
+
+  /** Indexes on this entity */
+  readonly indexes: readonly IndexDef[]
 
   /** Shapes for this entity */
   readonly shapes: {

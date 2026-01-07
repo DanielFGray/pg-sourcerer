@@ -5,7 +5,7 @@
  * Users configure with simple string→string functions that compose naturally.
  */
 import { Context, Layer, String as Str } from "effect"
-import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
+import type { PgAttribute, PgClass, PgType } from "pg-introspection"
 import type { SmartTags, ShapeKind } from "../ir/index.js"
 
 // ============================================================================
@@ -126,11 +126,7 @@ export interface CoreInflection {
   readonly fieldName: (pgAttribute: PgAttribute, tags: SmartTags) => string
   readonly enumName: (pgType: PgType, tags: SmartTags) => string
   readonly enumValueName: (value: string) => string
-  readonly relationName: (
-    constraint: PgConstraint,
-    side: "local" | "foreign",
-    tags: SmartTags
-  ) => string
+  readonly relationName: (name: string) => string
 }
 
 /** Service tag */
@@ -203,8 +199,8 @@ export interface InflectionConfig {
   readonly shapeSuffix?: TransformFn
 
   /**
-   * Transform relation names derived from constraints.
-   * Default: identity (after cleaning constraint name)
+   * Transform relation names.
+   * Default: identity (preserve name)
    */
   readonly relationName?: TransformFn
 }
@@ -231,18 +227,7 @@ export const defaultInflection: CoreInflection = {
   fieldName: (pgAttribute, tags) => tags.name ?? pgAttribute.attname,
   enumName: (pgType, tags) => tags.name ?? pgType.typname,
   enumValueName: (value) => value,
-
-  relationName: (constraint, side, tags) => {
-    if (side === "local" && tags.fieldName) return tags.fieldName
-    if (side === "foreign" && tags.foreignFieldName) return tags.foreignFieldName
-
-    // Clean constraint name: "posts_author_id_fkey" → "author"
-    const name = constraint.conname
-    return name
-      .replace(/_fkey$/, "")
-      .replace(/_id$/, "")
-      .replace(/^[^_]+_/, "")
-  },
+  relationName: (name) => name,
 }
 
 // ============================================================================
@@ -306,18 +291,7 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
 
     enumValueName: (value) => enumValueFn(value),
 
-    relationName: (constraint, side, tags) => {
-      if (side === "local" && tags.fieldName) return tags.fieldName
-      if (side === "foreign" && tags.foreignFieldName) return tags.foreignFieldName
-
-      // Clean constraint name first
-      const cleaned = constraint.conname
-        .replace(/_fkey$/, "")
-        .replace(/_id$/, "")
-        .replace(/^[^_]+_/, "")
-
-      return relationFn(cleaned)
-    },
+    relationName: (name) => relationFn(name),
   }
 }
 
@@ -496,23 +470,9 @@ export function composeInflection(
       return baseInflection.enumValueName(afterPlugin)
     },
 
-    relationName: (constraint, side, tags) => {
-      if (side === "local" && tags.fieldName) return tags.fieldName
-      if (side === "foreign" && tags.foreignFieldName) return tags.foreignFieldName
-
-      // Clean constraint name first (same as default)
-      const cleaned = constraint.conname
-        .replace(/_fkey$/, "")
-        .replace(/_id$/, "")
-        .replace(/^[^_]+_/, "")
-
-      const afterPlugin = relationFn ? relationFn(cleaned) : cleaned
-      // Base would also clean, but we already cleaned, so just apply relation transform
-      return baseInflection.relationName(
-        { ...constraint, conname: afterPlugin },
-        side,
-        {}
-      )
+    relationName: (name) => {
+      const afterPlugin = relationFn ? relationFn(name) : name
+      return baseInflection.relationName(afterPlugin)
     },
   }
 }

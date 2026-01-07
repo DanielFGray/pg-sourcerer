@@ -23,6 +23,7 @@ import type {
   Field,
   EntityPermissions,
   FieldPermissions,
+  IndexDef,
   PrimaryKey,
   Relation,
   SemanticIR,
@@ -414,6 +415,9 @@ function buildEntity(
     // Build relations from foreign keys
     const relations = yield* buildRelations(pgClass, entityNameLookup)
 
+    // Build indexes
+    const indexes = yield* buildIndexes(pgClass)
+
     // Build primary key
     const primaryKey = buildPrimaryKey(pgClass, tableTags)
 
@@ -440,6 +444,7 @@ function buildEntity(
       pgClass,
       shapes,
       relations,
+      indexes,
       tags: tableTags,
       permissions,
     }
@@ -503,16 +508,87 @@ function buildRelation(
     }))
 
     // This is the "local" side - we have the FK, so we "belong to" the foreign table
-    const name = inflection.relationName(fk, "local", constraintTags)
-
     return {
-      name,
       kind: "belongsTo" as const,
       targetEntity,
       constraintName: fk.conname,
       columns,
       tags: constraintTags,
     }
+  })
+}
+
+// ============================================================================
+// Indexes
+// ============================================================================
+
+/**
+ * Get the index method from the index class's access method
+ */
+function getIndexMethod(pgClass: PgClass): IndexDef["method"] {
+  const accessMethod = pgClass.getAccessMethod()
+  if (!accessMethod || !accessMethod.amname) {
+    return "btree" // Default to btree if unknown
+  }
+
+  // Map common access method names to our IndexMethod type
+  const methodName = accessMethod.amname.toLowerCase()
+  switch (methodName) {
+    case "btree":
+    case "gin":
+    case "gist":
+    case "hash":
+    case "brin":
+    case "spgist":
+      return methodName as IndexDef["method"]
+    default:
+      return "btree"
+  }
+}
+
+/**
+ * Build IndexDef objects from pg-introspection indexes
+ */
+function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], never, Inflection> {
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection
+
+    const indexes = pgClass.getIndexes()
+
+    return indexes.map((index) => {
+      const indexClass = index.getIndexClass()
+      const keys = index.getKeys()
+
+      // Check for expressions (null entries in keys array)
+      const hasExpressions = keys.some((k) => k === null)
+
+      // Get column names (filter out nulls for expression columns)
+      const columnAttrs = keys.filter((k): k is PgAttribute => k !== null)
+      const columns = columnAttrs.map((attr) => inflection.fieldName(attr, {}))
+      const columnNames = columnAttrs.map((attr) => attr.attname)
+
+      // Determine if this is a primary key index (via constraint)
+      const isPrimary = index.indisprimary === true
+
+      // Build the base index definition
+      const indexDef: IndexDef = {
+        name: indexClass?.relname ?? "unknown",
+        columns,
+        columnNames,
+        isUnique: index.indisunique === true,
+        isPrimary,
+        isPartial: index.indpred !== null && index.indpred.length > 0,
+        method: indexClass ? getIndexMethod(indexClass) : "btree",
+        hasExpressions,
+      }
+
+      // Add predicate only for partial indexes (exactOptionalPropertyTypes)
+      if (indexDef.isPartial && index.indpred) {
+        return { ...indexDef, predicate: index.indpred }
+      }
+
+      return indexDef
+    })
   })
 }
 
