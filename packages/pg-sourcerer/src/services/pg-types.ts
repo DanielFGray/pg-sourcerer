@@ -351,7 +351,7 @@ export function getExtensionTypeMapping(
 /**
  * Find an enum in the IR by its PostgreSQL type name.
  *
- * @param enums - The enums map from SemanticIR
+ * @param enums - Array of enum entities or iterable of enums
  * @param pgTypeName - The PostgreSQL type name (e.g., "user_role")
  * @returns The enum definition if found, undefined otherwise
  *
@@ -359,7 +359,7 @@ export function getExtensionTypeMapping(
  * ```typescript
  * const pgType = field.pgAttribute.getType()
  * if (pgType?.typtype === 'e') {
- *   const enumDef = findEnumByPgName(ctx.ir.enums, pgType.typname)
+ *   const enumDef = findEnumByPgName(getEnumEntities(ir), pgType.typname)
  *   if (enumDef) {
  *     return enumDef.name // Use inflected name like "UserRole"
  *   }
@@ -367,10 +367,10 @@ export function getExtensionTypeMapping(
  * ```
  */
 export function findEnumByPgName(
-  enums: ReadonlyMap<string, { readonly pgName: string; readonly name: string; readonly values: readonly string[] }>,
+  enums: Iterable<{ readonly pgName: string; readonly name: string; readonly values: readonly string[] }>,
   pgTypeName: string
 ): EnumLookupResult | undefined {
-  for (const enumDef of enums.values()) {
+  for (const enumDef of enums) {
     if (enumDef.pgName === pgTypeName) {
       return {
         name: enumDef.name,

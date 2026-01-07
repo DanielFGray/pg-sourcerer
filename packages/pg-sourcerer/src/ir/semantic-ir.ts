@@ -165,18 +165,43 @@ export interface EntityPermissions {
   readonly canDelete: boolean
 }
 
+// ============================================================================
+// Entity Kind Discriminator
+// ============================================================================
+
 /**
- * An entity represents a table, view, or composite type
+ * All possible entity kinds
  */
-export interface Entity {
+export type EntityKind = "table" | "view" | "enum"
+
+// ============================================================================
+// Entity Base (shared fields)
+// ============================================================================
+
+/**
+ * Base fields shared by all entity kinds
+ */
+interface EntityBase {
   /** Inflected entity name (PascalCase) */
   readonly name: string
-  /** Original PostgreSQL table/view name */
-  readonly tableName: string
+  /** Original PostgreSQL object name (table, view, or type name) */
+  readonly pgName: string
   /** PostgreSQL schema name */
   readonly schemaName: string
-  /** Entity kind */
-  readonly kind: "table" | "view" | "composite"
+  /** Smart tags from comment */
+  readonly tags: SmartTags
+}
+
+// ============================================================================
+// Table/View Entity
+// ============================================================================
+
+/**
+ * A table or view entity - has shapes, relations, and permissions
+ */
+export interface TableEntity extends EntityBase {
+  /** Entity kind discriminator */
+  readonly kind: "table" | "view"
   /** Raw class from pg-introspection */
   readonly pgClass: PgClass
 
@@ -201,30 +226,76 @@ export interface Entity {
   /** Relations to other entities */
   readonly relations: readonly Relation[]
 
-  /** Smart tags from table/view comment */
-  readonly tags: SmartTags
-
   /** Permissions for the connected role */
   readonly permissions: EntityPermissions
 }
 
+// ============================================================================
+// Enum Entity
+// ============================================================================
+
 /**
- * Enum definition from PostgreSQL
+ * An enum entity - represents a PostgreSQL enum type
  */
-export interface EnumDef {
-  /** Inflected enum name (PascalCase) */
-  readonly name: string
-  /** Original PostgreSQL enum name */
-  readonly pgName: string
-  /** PostgreSQL schema name */
-  readonly schemaName: string
+export interface EnumEntity extends EntityBase {
+  /** Entity kind discriminator */
+  readonly kind: "enum"
   /** Raw type from pg-introspection */
   readonly pgType: PgType
   /** Enum values in order */
   readonly values: readonly string[]
-  /** Smart tags from type comment */
-  readonly tags: SmartTags
 }
+
+// ============================================================================
+// Unified Entity Type
+// ============================================================================
+
+/**
+ * An entity represents a table, view, or enum type in the database.
+ * 
+ * Use the `kind` discriminator to narrow the type:
+ * ```typescript
+ * if (entity.kind === "enum") {
+ *   // entity is EnumEntity, has .values
+ * } else {
+ *   // entity is TableEntity, has .shapes, .relations, etc.
+ * }
+ * ```
+ */
+export type Entity = TableEntity | EnumEntity
+
+// ============================================================================
+// Type Guards
+// ============================================================================
+
+/**
+ * Check if an entity is a table or view (has shapes, relations, etc.)
+ */
+export function isTableEntity(entity: Entity): entity is TableEntity {
+  return entity.kind === "table" || entity.kind === "view"
+}
+
+/**
+ * Check if an entity is an enum (has values)
+ */
+export function isEnumEntity(entity: Entity): entity is EnumEntity {
+  return entity.kind === "enum"
+}
+
+// ============================================================================
+// Legacy Compatibility
+// ============================================================================
+
+/**
+ * @deprecated Use Entity with kind: "enum" instead. Will be removed in v1.0.
+ * 
+ * Alias for EnumEntity to ease migration. New code should use Entity directly.
+ */
+export type EnumDef = EnumEntity
+
+// ============================================================================
+// Other Types
+// ============================================================================
 
 /**
  * Capability key - colon-separated hierarchical namespace
@@ -260,10 +331,8 @@ export interface ExtensionInfo {
  * The complete Semantic IR
  */
 export interface SemanticIR {
-  /** All entities (tables, views, composites) keyed by name */
+  /** All entities (tables, views, enums) keyed by name */
   readonly entities: ReadonlyMap<string, Entity>
-  /** All enums keyed by name */
-  readonly enums: ReadonlyMap<string, EnumDef>
   /** Artifacts from plugins, keyed by capability */
   readonly artifacts: ReadonlyMap<CapabilityKey, Artifact>
   /** Installed PostgreSQL extensions */
@@ -281,7 +350,6 @@ export interface SemanticIR {
  */
 export interface SemanticIRBuilder {
   entities: Map<string, Entity>
-  enums: Map<string, EnumDef>
   artifacts: Map<CapabilityKey, Artifact>
   extensions: ExtensionInfo[]
   introspectedAt: Date
@@ -294,7 +362,6 @@ export interface SemanticIRBuilder {
 export function createIRBuilder(schemas: readonly string[]): SemanticIRBuilder {
   return {
     entities: new Map(),
-    enums: new Map(),
     artifacts: new Map(),
     extensions: [],
     introspectedAt: new Date(),
@@ -308,10 +375,27 @@ export function createIRBuilder(schemas: readonly string[]): SemanticIRBuilder {
 export function freezeIR(builder: SemanticIRBuilder): SemanticIR {
   return {
     entities: new Map(builder.entities),
-    enums: new Map(builder.enums),
     artifacts: new Map(builder.artifacts),
     extensions: [...builder.extensions],
     introspectedAt: builder.introspectedAt,
     schemas: [...builder.schemas],
   }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Get all table/view entities from the IR
+ */
+export function getTableEntities(ir: SemanticIR): TableEntity[] {
+  return [...ir.entities.values()].filter(isTableEntity)
+}
+
+/**
+ * Get all enum entities from the IR
+ */
+export function getEnumEntities(ir: SemanticIR): EnumEntity[] {
+  return [...ir.entities.values()].filter(isEnumEntity)
 }

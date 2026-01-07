@@ -32,8 +32,8 @@ import { TypeHints } from "./type-hints.js"
 export interface FileNameContext {
   /** Already-inflected entity name */
   readonly entityName: string
-  /** Raw PostgreSQL table/view name */
-  readonly tableName: string
+  /** Raw PostgreSQL object name (table, view, or type name) */
+  readonly pgName: string
   /** Schema name */
   readonly schema: string
   /** Inflection utilities (singularize, pluralize, etc.) */

@@ -31,7 +31,7 @@ import { PluginRunner } from "./services/plugin-runner.js"
 import { createFileWriter, type WriteResult } from "./services/file-writer.js"
 import { TypeHintsLive } from "./services/type-hints.js"
 import { makeInflectionLayer } from "./services/inflection.js"
-import type { SemanticIR } from "./ir/semantic-ir.js"
+import { getEnumEntities, type SemanticIR } from "./ir/semantic-ir.js"
 import {
   ConfigNotFound,
   ConfigInvalid,
@@ -157,14 +157,16 @@ export const generate = (
       .build(introspection, { schemas: config.schemas as string[] })
       .pipe(Effect.provide(inflectionLayer))
 
-    yield* Effect.log(`Built ${ir.entities.size} entities, ${ir.enums.size} enums`)
+    const enumEntities = getEnumEntities(ir)
+    const tableCount = ir.entities.size - enumEntities.length
+    yield* Effect.log(`Built ${tableCount} tables/views, ${enumEntities.length} enums`)
 
     if (ir.entities.size > 0) {
       const entityNames = [...ir.entities.keys()].sort()
       yield* Effect.logDebug(`Entities: ${entityNames.join(", ")}`)
     }
-    if (ir.enums.size > 0) {
-      const enumNames = [...ir.enums.keys()].sort()
+    if (enumEntities.length > 0) {
+      const enumNames = enumEntities.map(e => e.name).sort()
       yield* Effect.logDebug(`Enums: ${enumNames.join(", ")}`)
     }
 

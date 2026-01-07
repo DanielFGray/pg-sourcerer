@@ -20,6 +20,7 @@ import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { getEnumEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 
 // Load introspection data from fixture
@@ -170,7 +171,7 @@ describe("Types Plugin", () => {
   })
 
   describe("enum generation", () => {
-    it.effect("generates enums file when enums exist", () =>
+    it.effect("generates separate file for each enum", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -181,10 +182,14 @@ describe("Types Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
 
         // Check if there are enums in the IR
-        if (ir.enums.size > 0) {
-          const enumsFile = all.find((e) => e.path.includes("enums.ts"))
-          expect(enumsFile).toBeDefined()
-          expect(enumsFile?.content).toContain("export type")
+        const enumEntities = getEnumEntities(ir)
+        if (enumEntities.length > 0) {
+          // Each enum should have its own file
+          for (const enumEntity of enumEntities) {
+            const enumFile = all.find((e) => e.path.includes(`${enumEntity.name}.ts`))
+            expect(enumFile).toBeDefined()
+            expect(enumFile?.content).toContain("export type")
+          }
         }
       })
     )
@@ -199,13 +204,16 @@ describe("Types Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        if (ir.enums.size > 0) {
-          const enumsFile = all.find((e) => e.path.includes("enums.ts"))
-          expect(enumsFile).toBeDefined()
+        const enumEntities = getEnumEntities(ir)
+        if (enumEntities.length > 0) {
+          // Check first enum's file for union type syntax
+          const firstEnum = enumEntities[0]!
+          const enumFile = all.find((e) => e.path.includes(`${firstEnum.name}.ts`))
+          expect(enumFile).toBeDefined()
 
           // Should use union type syntax with string literals
           // e.g., export type Role = "admin" | "user"
-          const content = enumsFile?.content ?? ""
+          const content = enumFile?.content ?? ""
           expect(content).toMatch(/export type \w+ = "[^"]+"/)
         }
       })
@@ -228,7 +236,9 @@ describe("Types Plugin", () => {
         const content = userFile?.content ?? ""
 
         // Should import the enum type if Role enum exists
-        if (ir.enums.has("Role")) {
+        const enumEntities = getEnumEntities(ir)
+        const hasRoleEnum = enumEntities.some(e => e.name === "Role")
+        if (hasRoleEnum) {
           expect(content).toContain('import type { Role }')
           expect(content).toContain('from "./enums.js"')
         }
@@ -269,7 +279,9 @@ describe("Types Plugin", () => {
         const allSymbols = symbols.getAll()
 
         // If Role enum exists, it should be registered
-        if (ir.enums.has("Role")) {
+        const enumEntities = getEnumEntities(ir)
+        const hasRoleEnum = enumEntities.some(e => e.name === "Role")
+        if (hasRoleEnum) {
           const roleSymbol = allSymbols.find((s) => s.name === "Role")
           expect(roleSymbol).toBeDefined()
           expect(roleSymbol?.capability).toBe("types")

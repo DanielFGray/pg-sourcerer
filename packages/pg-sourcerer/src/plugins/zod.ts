@@ -10,6 +10,7 @@ import { definePlugin } from "../services/plugin.js";
 import type { FileNameContext } from "../services/plugin.js";
 import { TsType } from "../services/pg-types.js";
 import type { Field, Shape, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js";
+import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
 import {
@@ -87,7 +88,7 @@ function chainZodMethods(expr: n.Expression, methods: string[]): n.Expression {
  */
 function resolveFieldZodSchema(
   field: Field,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: Iterable<EnumDef>,
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
   // Use shared field type resolution
@@ -182,7 +183,7 @@ function tsTypeToZodMethod(tsType: string): string {
  */
 function buildShapeZodObject(
   shape: Shape,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: Iterable<EnumDef>,
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
   let objBuilder = obj();
@@ -198,7 +199,7 @@ function buildShapeZodObject(
  */
 function generateShapeStatements(
   shape: Shape,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: Iterable<EnumDef>,
   extensions: readonly ExtensionInfo[],
   entityName: string,
   shapeKind: "row" | "insert" | "update" | "patch",
@@ -249,8 +250,11 @@ export const zodPlugin = definePlugin({
   run: (ctx, config) => {
     const { ir } = ctx;
 
-    // Generate entity schema files
-    for (const [name, entity] of ir.entities) {
+    // Get enum entities for field type resolution
+    const enumEntities = getEnumEntities(ir);
+
+    // Generate schema files for table/view entities
+    for (const entity of getTableEntities(ir)) {
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue;
 
@@ -259,7 +263,7 @@ export const zodPlugin = definePlugin({
 
       // Generate Row schema and type
       statements.push(
-        ...generateShapeStatements(row, ir.enums, ir.extensions, name, "row", config.exportTypes),
+        ...generateShapeStatements(row, enumEntities, ir.extensions, entity.name, "row", config.exportTypes),
       );
 
       // Generate Insert schema and type
@@ -267,9 +271,9 @@ export const zodPlugin = definePlugin({
         statements.push(
           ...generateShapeStatements(
             insert,
-            ir.enums,
+            enumEntities,
             ir.extensions,
-            name,
+            entity.name,
             "insert",
             config.exportTypes,
           ),
@@ -281,9 +285,9 @@ export const zodPlugin = definePlugin({
         statements.push(
           ...generateShapeStatements(
             update,
-            ir.enums,
+            enumEntities,
             ir.extensions,
-            name,
+            entity.name,
             "update",
             config.exportTypes,
           ),
@@ -295,9 +299,9 @@ export const zodPlugin = definePlugin({
         statements.push(
           ...generateShapeStatements(
             patch,
-            ir.enums,
+            enumEntities,
             ir.extensions,
-            name,
+            entity.name,
             "patch",
             config.exportTypes,
           ),
@@ -308,7 +312,7 @@ export const zodPlugin = definePlugin({
       const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
       const fileNameCtx: FileNameContext = {
         entityName,
-        tableName: entity.tableName,
+        pgName: entity.pgName,
         schema: entity.schemaName,
         inflection: ctx.inflection,
         entity,

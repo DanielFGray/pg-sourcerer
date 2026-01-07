@@ -9,7 +9,14 @@ import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
 import { findEnumByPgName, TsType } from "../services/pg-types.js"
-import type { Field, Shape, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
+import type {
+  Field,
+  Shape,
+  TableEntity,
+  EnumEntity,
+  ExtensionInfo,
+} from "../ir/semantic-ir.js"
+import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
 import type { ImportRef } from "../services/file-builder.js"
@@ -64,7 +71,7 @@ function tsTypeToAst(tsType: string): n.TSType {
  * Build TypeHintFieldMatch from entity and field
  * For arrays, uses the element type name for matching (not the array type _foo)
  */
-function buildFieldMatch(entity: Entity, field: Field): TypeHintFieldMatch {
+function buildFieldMatch(entity: TableEntity, field: Field): TypeHintFieldMatch {
   // For arrays, use the element type name for matching
   // This allows { pgType: "citext" } to match citext[] columns
   const pgTypeName = field.isArray && field.elementTypeName
@@ -73,7 +80,7 @@ function buildFieldMatch(entity: Entity, field: Field): TypeHintFieldMatch {
   
   return {
     schema: entity.schemaName,
-    table: entity.tableName,
+    table: entity.pgName,
     column: field.columnName,
     pgType: pgTypeName,
   }
@@ -97,8 +104,8 @@ interface ResolvedFieldType {
  */
 function resolveFieldType(
   field: Field,
-  entity: Entity,
-  enums: ReadonlyMap<string, EnumDef>,
+  entity: TableEntity,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
   typeHints: TypeHintRegistry
 ): ResolvedFieldType {
@@ -170,8 +177,8 @@ interface ShapeGenerationResult {
  */
 function generateShapeStatement(
   shape: Shape,
-  entity: Entity,
-  enums: ReadonlyMap<string, EnumDef>,
+  entity: TableEntity,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
   entityName: string,
   shapeKind: "row" | "insert" | "update" | "patch",
@@ -205,11 +212,11 @@ function generateShapeStatement(
 /**
  * Generate enum type alias using exp.typeAlias()
  */
-function generateEnumStatement(enumDef: EnumDef): SymbolStatement {
-  const unionType = ts.union(...enumDef.values.map((value) => ts.literal(value)))
+function generateEnumStatement(enumEntity: EnumEntity): SymbolStatement {
+  const unionType = ts.union(...enumEntity.values.map((value) => ts.literal(value)))
   return exp.typeAlias(
-    enumDef.name,
-    { capability: "types", entity: enumDef.name },
+    enumEntity.name,
+    { capability: "types", entity: enumEntity.name },
     unionType
   )
 }
@@ -218,8 +225,8 @@ function generateEnumStatement(enumDef: EnumDef): SymbolStatement {
  * Collect enum names used by an entity's shapes
  */
 function collectUsedEnums(
-  entity: Entity,
-  enums: ReadonlyMap<string, EnumDef>
+  entity: TableEntity,
+  enums: readonly EnumEntity[]
 ): Set<string> {
   const usedEnums = new Set<string>()
   const { row, insert, update, patch } = entity.shapes
@@ -230,9 +237,9 @@ function collectUsedEnums(
       if (isEnumType(field)) {
         const pgTypeName = getPgTypeName(field)
         if (pgTypeName) {
-          const enumDef = findEnumByPgName(enums, pgTypeName)
-          if (enumDef) {
-            usedEnums.add(enumDef.name)
+          const enumEntity = findEnumByPgName(enums, pgTypeName)
+          if (enumEntity) {
+            usedEnums.add(enumEntity.name)
           }
         }
       }
@@ -268,29 +275,48 @@ export const typesPlugin = definePlugin({
   run: (ctx, config) => {
     const { ir, typeHints } = ctx
 
-    // Generate enum types file if there are enums
-    if (ir.enums.size > 0) {
-      const enumStatements = [...ir.enums.values()].map(generateEnumStatement)
+    // Get enum and table entities
+    const enumEntities = getEnumEntities(ir)
+    const tableEntities = getTableEntities(ir)
+
+    // Generate enum type files - each enum gets its own file
+    for (const enumEntity of enumEntities) {
+      // Skip enums marked with @omit
+      if (enumEntity.tags.omit === true) continue
+
+      const statement = generateEnumStatement(enumEntity)
+
+      // Build file name context for outputFile
+      const fileNameCtx: FileNameContext = {
+        entityName: enumEntity.name,
+        pgName: enumEntity.pgName,
+        schema: enumEntity.schemaName,
+        inflection: ctx.inflection,
+        entity: enumEntity,
+      }
+      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
+      const filePath = `${config.outputDir}/${fileName}`
 
       ctx
-        .file(`${config.outputDir}/enums.ts`)
+        .file(filePath)
         .header("// This file is auto-generated. Do not edit.\n")
-        .ast(conjure.symbolProgram(...enumStatements))
+        .ast(conjure.symbolProgram(statement))
         .emit()
     }
 
-    // Generate entity type files
-    for (const [name, entity] of ir.entities) {
+    // Generate table/view entity type files
+    for (const entity of tableEntities) {
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue
 
+      const name = entity.name
       const statements: SymbolStatement[] = []
       const allCustomImports: CustomImportInfo[] = []
       const { row, insert, update, patch } = entity.shapes
 
       // Generate Row interface
       const rowResult = generateShapeStatement(
-        row, entity, ir.enums, ir.extensions, name, "row", typeHints
+        row, entity, enumEntities, ir.extensions, name, "row", typeHints
       )
       statements.push(rowResult.statement)
       allCustomImports.push(...rowResult.customImports)
@@ -298,30 +324,30 @@ export const typesPlugin = definePlugin({
       // Generate optional shape interfaces
       if (insert) {
         const insertResult = generateShapeStatement(
-          insert, entity, ir.enums, ir.extensions, name, "insert", typeHints
+          insert, entity, enumEntities, ir.extensions, name, "insert", typeHints
         )
         statements.push(insertResult.statement)
         allCustomImports.push(...insertResult.customImports)
       }
       if (update) {
         const updateResult = generateShapeStatement(
-          update, entity, ir.enums, ir.extensions, name, "update", typeHints
+          update, entity, enumEntities, ir.extensions, name, "update", typeHints
         )
         statements.push(updateResult.statement)
         allCustomImports.push(...updateResult.customImports)
       }
       if (patch) {
         const patchResult = generateShapeStatement(
-          patch, entity, ir.enums, ir.extensions, name, "patch", typeHints
+          patch, entity, enumEntities, ir.extensions, name, "patch", typeHints
         )
         statements.push(patchResult.statement)
         allCustomImports.push(...patchResult.customImports)
       }
 
       // Collect enum imports
-      const usedEnums = collectUsedEnums(entity, ir.enums)
+      const usedEnums = collectUsedEnums(entity, enumEntities)
       const enumImports: ImportRef[] =
-        usedEnums.size > 0 && ir.enums.size > 0
+        usedEnums.size > 0
           ? [...usedEnums].map((enumName) => ({
               kind: "symbol" as const,
               ref: { capability: "types", entity: enumName },
@@ -332,7 +358,7 @@ export const typesPlugin = definePlugin({
       const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
       const fileNameCtx: FileNameContext = {
         entityName,
-        tableName: entity.tableName,
+        pgName: entity.pgName,
         schema: entity.schemaName,
         inflection: ctx.inflection,
         entity,

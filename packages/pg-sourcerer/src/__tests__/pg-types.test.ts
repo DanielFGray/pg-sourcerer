@@ -149,16 +149,10 @@ describe("TsType constants", () => {
 })
 
 describe("findEnumByPgName", () => {
-  const mockEnums = new Map([
-    [
-      "UserRole",
-      { name: "UserRole", pgName: "user_role", values: ["admin", "user", "guest"] },
-    ],
-    [
-      "Status",
-      { name: "Status", pgName: "status", values: ["active", "inactive"] },
-    ],
-  ])
+  const mockEnums = [
+    { name: "UserRole", pgName: "user_role", values: ["admin", "user", "guest"] as const },
+    { name: "Status", pgName: "status", values: ["active", "inactive"] as const },
+  ]
 
   it("finds enum by PostgreSQL type name", () => {
     const result = findEnumByPgName(mockEnums, "user_role")
@@ -179,8 +173,8 @@ describe("findEnumByPgName", () => {
     expect(result?.name).toBe("Status")
   })
 
-  it("works with empty enums map", () => {
-    const result = findEnumByPgName(new Map(), "user_role")
+  it("works with empty enums array", () => {
+    const result = findEnumByPgName([], "user_role")
     expect(result).toBeUndefined()
   })
 })

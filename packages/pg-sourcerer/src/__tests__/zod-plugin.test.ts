@@ -19,6 +19,7 @@ import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { getEnumEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 
 // Load introspection data from fixture
@@ -259,7 +260,7 @@ describe("Zod Plugin", () => {
         const content = userFile?.content ?? ""
 
         // If Role enum exists, should use z.enum
-        if (ir.enums.has("Role")) {
+        if (getEnumEntities(ir).some(e => e.name === "Role")) {
           expect(content).toContain("z.enum([")
         }
       })

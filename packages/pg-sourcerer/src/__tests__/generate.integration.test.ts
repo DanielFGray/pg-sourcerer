@@ -113,28 +113,32 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           expect(userContent).toMatch(/name\??: string \| null/)
           expect(userContent).toMatch(/avatarUrl\??: string \| null/)
 
-          // Enum reference import
-          expect(userContent).toContain('import type { UserRole } from "./enums.js"')
+          // Enum reference import - now imports from individual enum file
+          expect(userContent).toContain('import type { UserRole } from "./UserRole.js"')
           expect(userContent).toContain("role: UserRole")
 
           // ================================================================
-          // Verify enums.ts file content
+          // Verify enum files (now separate files per enum)
           // ================================================================
-          const enumsWrite = result.writeResults.find((r) => r.path.endsWith("/enums.ts"))
-          expect(enumsWrite).toBeDefined()
+          const userRoleWrite = result.writeResults.find((r) => r.path.endsWith("/UserRole.ts"))
+          expect(userRoleWrite).toBeDefined()
 
-          const enumsContent = yield* fs.readFileString(enumsWrite!.path)
+          const userRoleContent = yield* fs.readFileString(userRoleWrite!.path)
 
           // UserRole enum (from user_role type in users table)
-          expect(enumsContent).toContain("export type UserRole")
-          expect(enumsContent).toContain('"admin"')
-          expect(enumsContent).toContain('"moderator"')
-          expect(enumsContent).toContain('"user"')
+          expect(userRoleContent).toContain("export type UserRole")
+          expect(userRoleContent).toContain('"admin"')
+          expect(userRoleContent).toContain('"moderator"')
+          expect(userRoleContent).toContain('"user"')
 
-          // VoteType enum (from vote_type)
-          expect(enumsContent).toContain("export type VoteType")
-          expect(enumsContent).toContain('"up"')
-          expect(enumsContent).toContain('"down"')
+          // VoteType enum (from vote_type) - separate file
+          const voteTypeWrite = result.writeResults.find((r) => r.path.endsWith("/VoteType.ts"))
+          expect(voteTypeWrite).toBeDefined()
+          
+          const voteTypeContent = yield* fs.readFileString(voteTypeWrite!.path)
+          expect(voteTypeContent).toContain("export type VoteType")
+          expect(voteTypeContent).toContain('"up"')
+          expect(voteTypeContent).toContain('"down"')
         } finally {
           yield* fs.remove(tmpDir, { recursive: true })
         }
