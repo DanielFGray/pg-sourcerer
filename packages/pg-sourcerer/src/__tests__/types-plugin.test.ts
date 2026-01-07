@@ -4,16 +4,18 @@
  * Tests for the types plugin that generates TypeScript interfaces for entities.
  * Uses the fixture introspection data from the example database.
  */
-import { describe, expect, layer, it } from "@effect/vitest"
+/* eslint-disable @typescript-eslint/no-explicit-any -- Test helpers use flexible typing */
+/* eslint-disable @typescript-eslint/no-unsafe-return -- Effect type inference in tests */
+import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { typesPlugin } from "../plugins/types.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive, Inflection } from "../services/inflection.js"
+import { ClassicInflectionLive } from "../services/inflection.js"
 import { Emissions, createEmissionBuffer } from "../services/emissions.js"
 import { Symbols, createSymbolRegistry } from "../services/symbols.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { TypeHint } from "../config.js"
-import { ArtifactStoreLive, ArtifactStore } from "../services/artifact-store.js"
+import { ArtifactStoreLive } from "../services/artifact-store.js"
 import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
@@ -356,7 +358,7 @@ describe("Types Plugin", () => {
         
         // Check if any file contains JsonValue type
         // This verifies the type hint was applied
-        const hasJsonValue = all.some(e => e.content.includes("JsonValue"))
+        const _hasJsonValue = all.some(e => e.content.includes("JsonValue"))
         
         // If the fixture has jsonb columns, they should now use JsonValue
         // If not, this test just verifies no errors occur

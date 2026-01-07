@@ -11,13 +11,13 @@
  *
  * This test proves all components work together end-to-end.
  */
-import { it, describe, expect, layer } from "@effect/vitest"
+import { describe, expect, layer } from "@effect/vitest"
 import { Effect, Layer, Schema as S } from "effect"
 import { FileSystem, Path } from "@effect/platform"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 
 import { PluginRunner, type ConfiguredPlugin, type Plugin } from "../services/plugin-runner.js"
-import { definePlugin, type SimplePluginContext } from "../services/plugin.js"
+import { definePlugin } from "../services/plugin.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { createFileWriter } from "../services/file-writer.js"
@@ -334,7 +334,7 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
           provides: ["types"],
           configSchema: S.Unknown,
           inflection: { outputFile: () => "a.ts", symbolName: () => "a" },
-          run: () => {},
+          run: () => { /* noop - testing conflict detection */ },
         })
 
         const plugin2 = definePlugin({
@@ -342,7 +342,7 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
           provides: ["types"],
           configSchema: S.Unknown,
           inflection: { outputFile: () => "b.ts", symbolName: () => "b" },
-          run: () => {},
+          run: () => { /* noop - testing conflict detection */ },
         })
 
         const result = yield* runner

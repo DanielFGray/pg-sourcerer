@@ -30,6 +30,16 @@ export default tseslint.config(
 
       // No useless template expressions (`` `${string}` `` → just use string)
       "@typescript-eslint/no-unnecessary-template-expression": "error",
+
+      // Allow unused variables prefixed with underscore
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
     },
   },
   {
