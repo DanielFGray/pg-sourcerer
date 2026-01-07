@@ -39,9 +39,9 @@ export default defineConfig({
   // Plugins to run
   plugins: [
     // Generate TypeScript interfaces
-    { plugin: typesPlugin, config: { outputDir: "types" } },
+    typesPlugin({ outputDir: "types" }),
 
     // Generate Zod validation schemas with inferred types
-    { plugin: zodPlugin, config: { outputDir: "schemas", exportTypes: true } },
+    zodPlugin({ outputDir: "schemas", exportTypes: true }),
   ],
 })

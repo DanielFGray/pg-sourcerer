@@ -122,6 +122,18 @@ export interface Plugin<TConfig = unknown> {
 }
 
 /**
+ * A plugin factory function that creates ConfiguredPlugin instances.
+ * 
+ * The factory also exposes the underlying plugin for inspection:
+ * - `factory.plugin` - The Plugin object with name, provides, requires, etc.
+ */
+export interface PluginFactory<TConfig> {
+  (config: TConfig): ConfiguredPlugin
+  /** The underlying plugin definition */
+  readonly plugin: Plugin<TConfig>
+}
+
+/**
  * A plugin with its validated configuration
  */
 export interface ConfiguredPlugin {
@@ -243,9 +255,9 @@ export interface SimplePluginDef<TConfig = unknown> {
 }
 
 /**
- * Create an Effect-native plugin from a simple function-based definition.
+ * Create a plugin factory from a simple function-based definition.
  *
- * This helper allows writing plugins without Effect knowledge:
+ * Returns a curried function that accepts config and returns a ConfiguredPlugin.
  *
  * @example
  * ```typescript
@@ -261,21 +273,15 @@ export interface SimplePluginDef<TConfig = unknown> {
  *     }
  *   }
  * })
- * ```
  *
- * Async plugins are also supported:
- * ```typescript
- * const asyncPlugin = definePlugin({
- *   ...
- *   run: async (ctx, config) => {
- *     const data = await fetchExternalSchema()
- *     ctx.emit("schema.ts", generateFromData(data))
- *   }
- * })
+ * // Usage in config:
+ * plugins: [
+ *   myPlugin({ outputDir: "types" }),
+ * ]
  * ```
  */
-export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): Plugin<TConfig> {
-  // Build the plugin object, conditionally including requires
+export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFactory<TConfig> {
+  // Build the internal plugin object
   const plugin: Plugin<TConfig> = {
     name: def.name,
     provides: def.provides,
@@ -375,13 +381,20 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): Plugin<TCo
   }
 
   // Add optional properties only if defined (exactOptionalPropertyTypes)
-  let result = plugin
+  let finalPlugin: Plugin<TConfig> = plugin
   if (def.requires !== undefined) {
-    result = { ...result, requires: def.requires }
+    finalPlugin = { ...finalPlugin, requires: def.requires }
   }
   if (def.inflectionDefaults !== undefined) {
-    result = { ...result, inflectionDefaults: def.inflectionDefaults }
+    finalPlugin = { ...finalPlugin, inflectionDefaults: def.inflectionDefaults }
   }
 
-  return result
+  // Return the curried factory function with plugin attached for inspection
+  return Object.assign(
+    (config: TConfig): ConfiguredPlugin => ({
+      plugin: finalPlugin as Plugin<unknown>,
+      config,
+    }),
+    { plugin: finalPlugin }
+  )
 }

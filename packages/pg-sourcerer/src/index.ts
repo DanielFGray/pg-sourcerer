@@ -50,6 +50,7 @@ export { PluginMeta, type PluginMetaInfo } from "./services/plugin-meta.js"
 // Services - Plugin Types (Effect-native plugin interface)
 export {
   type Plugin,
+  type PluginFactory,
   type PluginInflection,
   type PluginServices,
   type ConfiguredPlugin,

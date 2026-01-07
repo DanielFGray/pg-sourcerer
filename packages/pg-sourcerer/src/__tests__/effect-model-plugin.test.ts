@@ -69,16 +69,16 @@ function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
 describe("Effect Model Plugin", () => {
   describe("plugin structure", () => {
     it("has correct name", () => {
-      expect(effectModelPlugin.name).toBe("effect-model")
+      expect(effectModelPlugin.plugin.name).toBe("effect-model")
     })
 
     it("provides model capabilities", () => {
-      expect(effectModelPlugin.provides).toContain("models:effect")
-      expect(effectModelPlugin.provides).toContain("models")
+      expect(effectModelPlugin.plugin.provides).toContain("models:effect")
+      expect(effectModelPlugin.plugin.provides).toContain("models")
     })
 
     it("has no requirements", () => {
-      expect(effectModelPlugin.requires).toBeUndefined()
+      expect(effectModelPlugin.plugin.requires).toBeUndefined()
     })
   })
 
@@ -89,7 +89,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -107,7 +107,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -124,7 +124,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -142,7 +142,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -159,7 +159,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -176,7 +176,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -193,7 +193,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -210,7 +210,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -231,7 +231,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -250,7 +250,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -267,7 +267,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -299,7 +299,7 @@ describe("Effect Model Plugin", () => {
         // Run the plugin and verify view fields with defaults get Model.Generated
         const testLayer = createTestLayer(ir)
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -329,7 +329,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -355,7 +355,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -375,7 +375,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models", enumStyle: "separate" })
+          .plugin.run({ outputDir: "models", enumStyle: "separate" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -398,7 +398,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -417,7 +417,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -435,7 +435,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -463,7 +463,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
@@ -486,7 +486,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "custom/models" })
+          .plugin.run({ outputDir: "custom/models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -506,7 +506,7 @@ describe("Effect Model Plugin", () => {
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -550,8 +550,7 @@ describe("Effect Model Plugin", () => {
           
           const testLayer = createTestLayer(ir)
           
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayer))
 
           const all = yield* runPluginAndGetEmissions(testLayer)
@@ -574,8 +573,7 @@ describe("Effect Model Plugin", () => {
           
           const testLayer = createTestLayer(ir)
           
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayer))
 
           const all = yield* runPluginAndGetEmissions(testLayer)
@@ -598,8 +596,7 @@ describe("Effect Model Plugin", () => {
           
           const testLayer = createTestLayer(ir)
           
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayer))
 
           const all = yield* runPluginAndGetEmissions(testLayer)
@@ -628,8 +625,7 @@ describe("Effect Model Plugin", () => {
           
           // First, run WITHOUT insert:required to verify it normally uses Model.Generated
           const testLayerBefore = createTestLayer(ir)
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayerBefore))
 
           const allBefore = yield* runPluginAndGetEmissions(testLayerBefore)
@@ -643,8 +639,7 @@ describe("Effect Model Plugin", () => {
           addSmartTagToField(ir, "User", "id", { "effect:model": { insert: "required" } })
           
           const testLayerAfter = createTestLayer(ir)
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayerAfter))
 
           const allAfter = yield* runPluginAndGetEmissions(testLayerAfter)
@@ -673,8 +668,7 @@ describe("Effect Model Plugin", () => {
           
           const testLayer = createTestLayer(ir)
           
-          yield* effectModelPlugin
-            .run({ outputDir: "models" })
+          yield* effectModelPlugin.plugin.run({ outputDir: "models" })
             .pipe(Effect.provide(testLayer))
 
           const all = yield* runPluginAndGetEmissions(testLayer)
