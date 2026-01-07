@@ -14,6 +14,13 @@ bun run test:watch  # Watch mode
 bun run typecheck   # Type check without emit
 ```
 
+### Database for Integration Tests
+Some tests require the example PostgreSQL database. To start it:
+```bash
+cd packages/example && bun db:ensure
+```
+This runs Docker, initializes database, applies migrations, and post-migration hook runs the generate script. The database stays running for subsequent test runs.
+
 ## Key Libraries
 
 ### Effect-ts

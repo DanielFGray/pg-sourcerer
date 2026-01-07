@@ -6,7 +6,7 @@
  */
 import { Context, Effect, Layer, Schema as S, ParseResult, pipe } from "effect";
 import { lilconfig } from "lilconfig";
-import { Config, type ResolvedConfig } from "../config.js";
+import { Config, type ConfigInput, type ResolvedConfig } from "../config.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
 
 /**
@@ -127,6 +127,8 @@ export function createConfigLoader(): ConfigLoader {
           schemas: parseResult.schemas,
           outputDir: parseResult.outputDir,
           typeHints: parseResult.typeHints,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- inflection is S.Any in schema, validated by plugin system
+          inflection: parseResult.inflection,
           plugins: parseResult.plugins,
         };
 
@@ -142,21 +144,9 @@ export const ConfigLoaderLive = Layer.succeed(ConfigLoaderService, createConfigL
 
 /**
  * Helper to define a config (provides type safety for users)
+ *
+ * Uses `ConfigInput` which properly types `inflection` and `plugins`.
  */
-export function defineConfig(config: {
-  connectionString: string;
-  schemas?: string[];
-  outputDir?: string;
-  typeHints?: {
-    match: {
-      schema?: string;
-      table?: string;
-      column?: string;
-      pgType?: string;
-    };
-    hints: Record<string, unknown>;
-  }[];
-  plugins?: unknown[];
-}) {
+export function defineConfig(config: ConfigInput): ConfigInput {
   return config;
 }

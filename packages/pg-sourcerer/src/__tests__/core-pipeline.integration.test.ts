@@ -33,7 +33,7 @@ const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
 // Combined layer for tests that need PluginRunner
 const TestLayer = Layer.mergeAll(
-  PluginRunner.Default,
+  Layer.provide(PluginRunner.Default, ClassicInflectionLive),
   PlatformLayer,
   TypeHintsLive([]) // Empty type hints for tests
 )
@@ -52,7 +52,7 @@ const typesPlugin = definePlugin({
     outputDir: S.String,
   }),
   inflection: {
-    outputFile: (entity) => `types/${entity}.ts`,
+    outputFile: (ctx) => `types/${ctx.entityName}.ts`,
     symbolName: (entity, kind) => `${entity}${kind}`,
   },
   run: (ctx, config) => {
@@ -95,7 +95,7 @@ const validatorsPlugin = definePlugin({
     outputDir: S.String,
   }),
   inflection: {
-    outputFile: (entity) => `validators/${entity}.ts`,
+    outputFile: (ctx) => `validators/${ctx.entityName}.ts`,
     symbolName: (entity, kind) => `validate${entity}${kind}`,
   },
   run: (ctx, config) => {

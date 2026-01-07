@@ -1,10 +1,10 @@
 // @ts-check
-import { typesPlugin, zodPlugin, defineConfig } from "@danielfgray/pg-sourcerer"
+import { effectModelPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
 
 /**
  * pg-sourcerer configuration for the example project
  *
- * Generates TypeScript types and Zod schemas from the database schema.
+ * Generates Effect Model classes from the database schema.
  */
 export default defineConfig({
   // Database connection - uses environment variables
@@ -16,32 +16,17 @@ export default defineConfig({
   // Output directory (relative to config file location)
   outputDir: "./generated",
 
-  // Type hints for custom type mappings
-  typeHints: [
-    {
-      match: { pgType: "url" },
-      hints: { tsType: "string" },
-    },
-    {
-      match: { pgType: "username" },
-      hints: { tsType: "string" },
-    },
-    {
-      match: { pgType: "tsvector" },
-      hints: { tsType: "string" },
-    },
-    {
-      match: { pgType: "citext" },
-      hints: { tsType: "string" },
-    },
-  ],
+  // Inflection: PascalCase entities/enums, camelCase fields
+  inflection: {
+    entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+    fieldName: inflect.camelCase,
+    enumName: inflect.pascalCase,
+    shapeSuffix: inflect.capitalize,
+  },
 
   // Plugins to run
   plugins: [
-    // Generate TypeScript interfaces
-    typesPlugin({ outputDir: "types" }),
-
-    // Generate Zod validation schemas with inferred types
-    zodPlugin({ outputDir: "schemas", exportTypes: true }),
+    // Generate Effect Model classes
+    effectModelPlugin({ outputDir: "models" }),
   ],
 })

@@ -106,7 +106,6 @@ export const generate = (
   GenerateError,
   | ConfigLoaderService
   | DatabaseIntrospectionService
-  | PluginRunner
   | FileSystem.FileSystem
   | Path.Path
 > =>
@@ -147,7 +146,7 @@ export const generate = (
       yield* Effect.logDebug(`Views: ${viewNames.join(", ")}`)
     }
 
-    // 3. Build IR
+    // 3. Build IR with user's inflection config
     yield* Effect.log("Building semantic IR...")
     const irBuilder = createIRBuilderService()
 
@@ -170,24 +169,31 @@ export const generate = (
     }
 
     // 4. Prepare and run plugins
+    // NOTE: We create the PluginRunner with the user's inflection layer
+    // so plugins use the same naming conventions as the IR
     yield* Effect.log("Running plugins...")
-    const runner = yield* PluginRunner
-
+    
     // Cast plugins from config to ConfiguredPlugin[]
     // The config stores them as unknown[], but they should be ConfiguredPlugin[]
     const plugins = config.plugins as readonly ConfiguredPlugin[]
 
-    const prepared = yield* runner.prepare(plugins)
-
-    const pluginNames = prepared.map((p) => p.plugin.name)
-    yield* Effect.log(`Plugin order: ${pluginNames.join(" → ")}`)
-
     // Create TypeHints layer from config
     const typeHintsLayer = TypeHintsLive(config.typeHints)
 
-    const pluginResult = yield* runner
-      .run(prepared, ir)
-      .pipe(Effect.provide(typeHintsLayer))
+    // Run plugins with user's inflection (not default identity inflection)
+    const pluginResult = yield* Effect.gen(function* () {
+      const runner = yield* PluginRunner
+      const prepared = yield* runner.prepare(plugins)
+      
+      const pluginNames = prepared.map((p) => p.plugin.name)
+      yield* Effect.log(`Plugin order: ${pluginNames.join(" → ")}`)
+      
+      return yield* runner.run(prepared, ir)
+    }).pipe(
+      Effect.provide(typeHintsLayer),
+      Effect.provide(PluginRunner.Default),
+      Effect.provide(inflectionLayer)
+    )
 
     const emissions = pluginResult.emissions.getAll()
     yield* Effect.log(`Generated ${emissions.length} files`)
@@ -226,11 +232,14 @@ export const generate = (
 
 /**
  * Layer that provides all services needed for generate()
+ * 
+ * Note: PluginRunner is NOT included here because it needs to be
+ * created with the user's inflection config (from loaded config).
+ * The generate() function creates the PluginRunner internally.
  */
 export const GenerateLive = Layer.mergeAll(
   ConfigLoaderLive,
   Layer.effect(DatabaseIntrospectionService, DatabaseIntrospectionLive),
-  PluginRunner.Default
 )
 
 /**

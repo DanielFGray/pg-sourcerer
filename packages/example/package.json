@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "bun ../pg-sourcerer/src/cli.ts generate --log-level debug",
-    "generate:dry": "bun ../pg-sourcerer/src/cli.ts generate --log-level debug --dry-run",
+    "dry": "bun ../pg-sourcerer/src/cli.ts generate --log-level debug --dry-run",
     "dev": "bun run-p db:watch generate:watch",
+    "start": "bun run generate",
+    "generate": "bun ../pg-sourcerer/src/cli.ts generate --log-level debug",
     "generate:watch": "bun --watch ../pg-sourcerer/src/cli.ts generate --log-level debug",
     "predev": "bun db:ensure",
     "gm": "bun node_modules/.bin/graphile-migrate",

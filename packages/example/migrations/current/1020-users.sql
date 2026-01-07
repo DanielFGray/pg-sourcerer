@@ -9,7 +9,7 @@
  * `user_secrets`.
  */
 
--- create type app_public.user_role as enum('admin', 'moderator', 'user');
+create type app_public.user_role as enum('admin', 'moderator', 'user');
 create domain app_public.username as citext check(length(value) >= 2 and length(value) <= 24 and value ~ '^[a-zA-Z][a-zA-Z0-9_-]+$');
 create domain app_public.url as text check(value ~ '^https?://\S+');
 
@@ -18,8 +18,7 @@ create table app_public.users (
   username app_public.username not null unique,
   name text,
   avatar_url app_public.url,
-  -- role app_public.user_role not null default 'user',
-  role text not null default 'user',
+  role app_public.user_role not null default 'user',
   bio text not null check(length(bio) <= 4000) default '',
   is_verified boolean not null default false,
   created_at timestamptz not null default now(),

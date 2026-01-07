@@ -5,7 +5,7 @@ import { describe, it, expect } from "@effect/vitest"
 import { 
   defaultInflection, 
   createInflection,
-  applyTransformChain,
+  inflect,
 } from "../services/inflection.js"
 import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
 import type { SmartTags } from "../ir/index.js"
@@ -288,20 +288,21 @@ describe("createInflection", () => {
     })
   })
 
-  describe("with empty chains", () => {
-    it("returns defaultInflection when all chains empty", () => {
-      const inflection = createInflection({
-        entityName: [],
-        fieldName: [],
-      })
-      expect(inflection).toBe(defaultInflection)
+  describe("with empty config", () => {
+    it("behaves like defaultInflection when config is empty object", () => {
+      const inflection = createInflection({})
+      
+      // Should have same behavior as defaultInflection (identity transforms)
+      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("users")
+      expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("user_id")
+      expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("user_status")
     })
   })
 
   describe("with entityName chain", () => {
     it("applies pascalCase transform", () => {
       const inflection = createInflection({
-        entityName: ["pascalCase"],
+        entityName: inflect.pascalCase,
       })
 
       // "users" → "Users" (pascalCase only, no singularize)
@@ -311,7 +312,7 @@ describe("createInflection", () => {
 
     it("applies singularize + pascalCase chain", () => {
       const inflection = createInflection({
-        entityName: ["singularize", "pascalCase"],
+        entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
       })
 
       expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
@@ -320,7 +321,7 @@ describe("createInflection", () => {
 
     it("smart tags still take precedence", () => {
       const inflection = createInflection({
-        entityName: ["uppercase"],
+        entityName: inflect.uppercase,
       })
 
       const tags: SmartTags = { name: "CustomName" }
@@ -331,17 +332,17 @@ describe("createInflection", () => {
   describe("with fieldName chain", () => {
     it("applies camelCase transform", () => {
       const inflection = createInflection({
-        fieldName: ["camelCase"],
+        fieldName: inflect.camelCase,
       })
 
       expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("userId")
       expect(inflection.fieldName(mockPgAttribute("created_at"), emptyTags)).toBe("createdAt")
     })
 
-    it("empty chain preserves original", () => {
+    it("undefined config fields preserve original", () => {
       const inflection = createInflection({
-        fieldName: [],
-        entityName: ["pascalCase"], // need at least one non-empty to avoid returning default
+        entityName: inflect.pascalCase, // need at least one to avoid returning default
+        // fieldName is undefined, so it should preserve original
       })
 
       expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("user_id")
@@ -349,7 +350,7 @@ describe("createInflection", () => {
 
     it("smart tags still take precedence", () => {
       const inflection = createInflection({
-        fieldName: ["uppercase"],
+        fieldName: inflect.uppercase,
       })
 
       const tags: SmartTags = { name: "customField" }
@@ -360,7 +361,7 @@ describe("createInflection", () => {
   describe("with enumName chain", () => {
     it("applies pascalCase transform", () => {
       const inflection = createInflection({
-        enumName: ["pascalCase"],
+        enumName: inflect.pascalCase,
       })
 
       expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
@@ -370,7 +371,7 @@ describe("createInflection", () => {
   describe("with enumValue chain", () => {
     it("applies uppercase transform", () => {
       const inflection = createInflection({
-        enumValue: ["uppercase"],
+        enumValue: inflect.uppercase,
       })
 
       expect(inflection.enumValueName("active")).toBe("ACTIVE")
@@ -379,7 +380,7 @@ describe("createInflection", () => {
 
     it("applies lowercase transform", () => {
       const inflection = createInflection({
-        enumValue: ["lowercase"],
+        enumValue: inflect.lowercase,
       })
 
       expect(inflection.enumValueName("ACTIVE")).toBe("active")
@@ -389,7 +390,7 @@ describe("createInflection", () => {
   describe("with shapeSuffix chain", () => {
     it("applies capitalize transform", () => {
       const inflection = createInflection({
-        shapeSuffix: ["capitalize"],
+        shapeSuffix: inflect.capitalize,
       })
 
       expect(inflection.shapeName("User", "row")).toBe("UserRow")
@@ -398,7 +399,7 @@ describe("createInflection", () => {
 
     it("applies uppercase transform", () => {
       const inflection = createInflection({
-        shapeSuffix: ["uppercase"],
+        shapeSuffix: inflect.uppercase,
       })
 
       expect(inflection.shapeName("User", "row")).toBe("UserROW")
@@ -409,7 +410,7 @@ describe("createInflection", () => {
   describe("with relationName chain", () => {
     it("applies camelCase transform", () => {
       const inflection = createInflection({
-        relationName: ["camelCase"],
+        relationName: inflect.camelCase,
       })
 
       // After cleaning: "posts_author_id_fkey" → "author" → "author" (already camel)
@@ -421,10 +422,10 @@ describe("createInflection", () => {
   describe("with multiple chains", () => {
     it("applies all configured chains", () => {
       const inflection = createInflection({
-        entityName: ["singularize", "pascalCase"],
-        fieldName: ["camelCase"],
-        enumName: ["pascalCase"],
-        shapeSuffix: ["capitalize"],
+        entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+        fieldName: inflect.camelCase,
+        enumName: inflect.pascalCase,
+        shapeSuffix: inflect.capitalize,
       })
 
       expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
@@ -437,7 +438,7 @@ describe("createInflection", () => {
   describe("primitive transforms are unchanged", () => {
     it("camelCase, pascalCase, pluralize, singularize, safeIdentifier are from default", () => {
       const inflection = createInflection({
-        entityName: ["uppercase"],
+        entityName: inflect.uppercase,
       })
 
       // These should still work normally
@@ -447,37 +448,5 @@ describe("createInflection", () => {
       expect(inflection.singularize("users")).toBe("user")
       expect(inflection.safeIdentifier("class")).toBe("class_")
     })
-  })
-})
-
-describe("applyTransformChain", () => {
-  it("returns input unchanged for empty chain", () => {
-    expect(applyTransformChain("hello", [])).toBe("hello")
-  })
-
-  it("applies single transform", () => {
-    expect(applyTransformChain("user_name", ["camelCase"])).toBe("userName")
-    expect(applyTransformChain("user_name", ["pascalCase"])).toBe("UserName")
-    expect(applyTransformChain("hello", ["uppercase"])).toBe("HELLO")
-  })
-
-  it("applies transforms in order", () => {
-    // singularize first, then pascalCase
-    expect(applyTransformChain("users", ["singularize", "pascalCase"])).toBe("User")
-    
-    // pascalCase first, then... (order matters)
-    expect(applyTransformChain("user_name", ["pascalCase", "uppercase"])).toBe("USERNAME")
-  })
-
-  it("supports all transform names", () => {
-    expect(applyTransformChain("user_name", ["camelCase"])).toBe("userName")
-    expect(applyTransformChain("user_name", ["pascalCase"])).toBe("UserName")
-    expect(applyTransformChain("userName", ["snakeCase"])).toBe("user_name")
-    expect(applyTransformChain("users", ["singularize"])).toBe("user")
-    expect(applyTransformChain("user", ["pluralize"])).toBe("users")
-    expect(applyTransformChain("hello", ["capitalize"])).toBe("Hello")
-    expect(applyTransformChain("Hello", ["uncapitalize"])).toBe("hello")
-    expect(applyTransformChain("Hello", ["lowercase"])).toBe("hello")
-    expect(applyTransformChain("hello", ["uppercase"])).toBe("HELLO")
   })
 })

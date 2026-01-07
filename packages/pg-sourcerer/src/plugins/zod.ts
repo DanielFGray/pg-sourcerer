@@ -7,16 +7,16 @@
 import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import { definePlugin } from "../services/plugin.js";
-import {
-  defaultPgToTs,
-  findEnumByPgName,
-  getExtensionTypeMapping,
-  TsType,
-  PgTypeOid,
-} from "../services/pg-types.js";
+import type { FileNameContext } from "../services/plugin.js";
+import { TsType } from "../services/pg-types.js";
 import type { Field, Shape, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
+import {
+  isUuidType,
+  isDateType,
+  resolveFieldType,
+} from "../lib/field-utils.js";
 
 const { ts, exp, obj } = conjure;
 
@@ -33,50 +33,6 @@ const ZodPluginConfig = S.Struct({
   /** Export inferred types alongside schemas */
   exportTypes: S.Boolean,
 });
-
-/**
- * Get the TypeScript type OID from a field's pg attribute
- */
-function getTypeOid(field: Field): number | undefined {
-  const pgType = field.pgAttribute.getType();
-  if (!pgType?._id) return undefined;
-  return Number(pgType._id);
-}
-
-/**
- * Check if a field's type is an enum
- */
-function isEnumType(field: Field): boolean {
-  const pgType = field.pgAttribute.getType();
-  return pgType?.typtype === "e";
-}
-
-/**
- * Get the PostgreSQL type name from a field
- */
-function getPgTypeName(field: Field): string | undefined {
-  // For arrays, get the element type name
-  if (field.isArray && field.elementTypeName) {
-    return field.elementTypeName;
-  }
-  return field.pgAttribute.getType()?.typname;
-}
-
-/**
- * Check if this field is a UUID type
- */
-function isUuidType(field: Field): boolean {
-  const oid = getTypeOid(field);
-  return oid === PgTypeOid.Uuid;
-}
-
-/**
- * Check if this field is a date/timestamp type
- */
-function isDateType(field: Field): boolean {
-  const oid = getTypeOid(field);
-  return oid === PgTypeOid.Date || oid === PgTypeOid.Timestamp || oid === PgTypeOid.TimestampTz;
-}
 
 /**
  * Build a Zod method chain expression.
@@ -118,7 +74,7 @@ function buildZodArray(inner: n.Expression): n.Expression {
 /**
  * Add method calls to an expression
  */
-function chainMethods(expr: n.Expression, methods: string[]): n.Expression {
+function chainZodMethods(expr: n.Expression, methods: string[]): n.Expression {
   let chain = conjure.chain(expr);
   for (const method of methods) {
     chain = chain.method(method);
@@ -134,97 +90,50 @@ function resolveFieldZodSchema(
   enums: ReadonlyMap<string, EnumDef>,
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
-  // modifiers array reserved for future use (e.g., .min(), .max() from smart tags)
+  // Use shared field type resolution
+  const resolved = resolveFieldType(field, enums, extensions);
 
-  // Check for enum first
-  if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field);
-    if (pgTypeName) {
-      const enumDef = findEnumByPgName(enums, pgTypeName);
-      if (enumDef) {
-        let schema = buildZodEnum(enumDef.values);
-        if (field.isArray) {
-          schema = buildZodArray(schema);
-        }
-        if (field.nullable) {
-          schema = chainMethods(schema, ["nullable"]);
-        }
-        if (field.optional) {
-          schema = chainMethods(schema, ["optional"]);
-        }
-        return schema;
-      }
+  // If resolved to an enum, use z.enum([...values])
+  if (resolved.enumDef) {
+    let schema = buildZodEnum(resolved.enumDef.values);
+    if (field.isArray) {
+      schema = buildZodArray(schema);
     }
+    if (field.nullable) {
+      schema = chainZodMethods(schema, ["nullable"]);
+    }
+    if (field.optional) {
+      schema = chainZodMethods(schema, ["optional"]);
+    }
+    return schema;
   }
 
   // Determine base Zod type and modifiers
   let baseZodType = "unknown";
   const zodModifiers: string[] = [];
 
-  // Check for UUID - use z.string().uuid()
+  // Special case: UUID - use z.string().uuid()
   if (isUuidType(field)) {
     baseZodType = "string";
     zodModifiers.push("uuid");
   }
-  // Check for date/timestamp - use z.coerce.date()
+  // Special case: date/timestamp - use z.coerce.date()
   else if (isDateType(field)) {
-    // z.coerce.date() is different - needs special handling
     let schema: n.Expression = conjure.id("z").prop("coerce").method("date").build();
 
     if (field.isArray) {
       schema = buildZodArray(schema);
     }
     if (field.nullable) {
-      schema = chainMethods(schema, ["nullable"]);
+      schema = chainZodMethods(schema, ["nullable"]);
     }
     if (field.optional) {
-      schema = chainMethods(schema, ["optional"]);
+      schema = chainZodMethods(schema, ["optional"]);
     }
     return schema;
   } else {
-    // Try OID-based mapping
-    const oid = getTypeOid(field);
-    if (oid !== undefined) {
-      const tsType = defaultPgToTs(oid);
-      if (tsType) {
-        baseZodType = tsTypeToZodMethod(tsType);
-      }
-    }
-
-    // Try domain base type mapping
-    if (baseZodType === "unknown" && field.domainBaseType) {
-      const tsType = defaultPgToTs(field.domainBaseType.typeOid);
-      if (tsType) {
-        baseZodType = tsTypeToZodMethod(tsType);
-      }
-    }
-
-    // Try extension-based mapping
-    if (baseZodType === "unknown") {
-      const pgType = field.pgAttribute.getType();
-      if (pgType) {
-        const tsType = getExtensionTypeMapping(
-          pgType.typname,
-          String(pgType.typnamespace),
-          extensions,
-        );
-        if (tsType) {
-          baseZodType = tsTypeToZodMethod(tsType);
-        }
-      }
-    }
-
-    // Try extension mapping for domain base types
-    if (baseZodType === "unknown" && field.domainBaseType) {
-      const tsType = getExtensionTypeMapping(
-        field.domainBaseType.typeName,
-        field.domainBaseType.namespaceOid,
-        extensions,
-      );
-      if (tsType) {
-        baseZodType = tsTypeToZodMethod(tsType);
-      }
-    }
+    // Use the resolved TsType
+    baseZodType = tsTypeToZodMethod(resolved.tsType);
   }
 
   // Build the schema
@@ -234,10 +143,10 @@ function resolveFieldZodSchema(
     schema = buildZodArray(schema);
   }
   if (field.nullable) {
-    schema = chainMethods(schema, ["nullable"]);
+    schema = chainZodMethods(schema, ["nullable"]);
   }
   if (field.optional) {
-    schema = chainMethods(schema, ["optional"]);
+    schema = chainZodMethods(schema, ["optional"]);
   }
 
   return schema;
@@ -333,7 +242,7 @@ export const zodPlugin = definePlugin({
   provides: ["schemas:zod", "schemas"],
   configSchema: ZodPluginConfig,
   inflection: {
-    outputFile: (entityName, _artifactKind) => `${entityName}.ts`,
+    outputFile: (ctx) => `${ctx.entityName}.ts`,
     symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
   },
 
@@ -395,7 +304,17 @@ export const zodPlugin = definePlugin({
         );
       }
 
-      const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`;
+      // Build file name context for outputFile
+      const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
+      const fileNameCtx: FileNameContext = {
+        entityName,
+        tableName: entity.tableName,
+        schema: entity.schemaName,
+        inflection: ctx.inflection,
+        entity,
+      };
+      const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
+      const filePath = `${config.outputDir}/${fileName}`;
 
       ctx
         .file(filePath)
