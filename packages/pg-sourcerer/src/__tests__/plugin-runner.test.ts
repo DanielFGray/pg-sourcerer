@@ -5,11 +5,8 @@
  * topological sorting, and plugin execution behavior.
  */
 import { describe, expect, layer } from "@effect/vitest"
-import { Effect, Layer, Schema as S } from "effect"
-import {
-  PluginRunner,
-  type Plugin,
-} from "../services/plugin-runner.js"
+import { Effect, Schema as S } from "effect"
+import { PluginRunner, type Plugin } from "../services/plugin-runner.js"
 import {
   CapabilityConflict,
   CapabilityCycle,
@@ -19,15 +16,8 @@ import {
 } from "../errors.js"
 import { createIRBuilder, freezeIR } from "../ir/index.js"
 import { definePlugin, type SimplePluginContext, type PluginFactory } from "../services/plugin.js"
-import { TypeHintsLive } from "../services/type-hints.js"
-import { InflectionLive } from "../services/inflection.js"
+import { PluginRunnerTestLayer } from "../testing.js"
 import { conjure } from "../lib/conjure.js"
-
-// Test layer: PluginRunner + empty TypeHints + Inflection
-const TestLayer = Layer.mergeAll(
-  Layer.provide(PluginRunner.Default, InflectionLive),
-  TypeHintsLive([])
-)
 
 // Helper to create a minimal test plugin factory using definePlugin
 function testPlugin(
@@ -64,7 +54,7 @@ function createTestIR() {
 // All tests use PluginRunner.Default layer
 // ============================================================================
 
-layer(TestLayer)("PluginRunner", (it) => {
+layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
   // ==========================================================================
   // PluginRunner.prepare tests
   // ==========================================================================
