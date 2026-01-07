@@ -40,8 +40,3 @@ export const SmartTags = S.Struct({
 )
 
 export type SmartTags = S.Schema.Type<typeof SmartTags>
-
-/**
- * Empty smart tags constant
- */
-export const emptySmartTags: SmartTags = {}

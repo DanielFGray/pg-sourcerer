@@ -6,7 +6,7 @@
  * with optional description text after a newline.
  */
 import { Effect, Schema as S, pipe } from "effect"
-import { SmartTags, emptySmartTags } from "../ir/smart-tags.js"
+import { SmartTags } from "../ir/smart-tags.js"
 import { TagParseError } from "../errors.js"
 
 /**
@@ -49,14 +49,14 @@ export function parseSmartTags(
 ): Effect.Effect<ParsedComment, TagParseError> {
   // Handle null/undefined/empty
   if (!comment || comment.trim() === "") {
-    return Effect.succeed({ tags: emptySmartTags, description: undefined })
+    return Effect.succeed({ tags: {}, description: undefined })
   }
 
   const trimmed = comment.trim()
 
   // If doesn't start with {, it's plain text description
   if (!trimmed.startsWith("{")) {
-    return Effect.succeed({ tags: emptySmartTags, description: trimmed })
+    return Effect.succeed({ tags: {}, description: trimmed })
   }
 
   // Find the end of JSON and start of description
@@ -98,7 +98,7 @@ export function parseSmartTags(
     Effect.flatMap((wrapper) => {
       if (wrapper.sourcerer === undefined) {
         // Valid JSON but no sourcerer key - other tool's namespace
-        return Effect.succeed({ tags: emptySmartTags, description: descriptionPart })
+        return Effect.succeed({ tags: {}, description: descriptionPart })
       }
 
       // Validate sourcerer against SmartTags schema
