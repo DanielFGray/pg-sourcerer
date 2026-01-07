@@ -3,8 +3,9 @@
  * 
  * Buffers code emissions from plugins before writing to disk.
  * Supports both string content and AST nodes (serialized by the plugin runner).
+ * AST emissions to the same file are merged automatically.
  */
-import { Context, Effect, Layer } from "effect"
+import { Array as Arr, Context, Effect, Layer, MutableHashMap, MutableHashSet, Option, pipe } from "effect"
 import type { namedTypes as n } from "ast-types"
 import type {
   ImportSpecifierKind,
@@ -49,6 +50,7 @@ export interface EmissionBuffer {
 
   /**
    * Emit an AST program to a file (buffered, serialized later by runner)
+   * Multiple emissions to the same path are merged automatically.
    */
   readonly emitAst: (
     path: string,
@@ -84,7 +86,8 @@ export interface EmissionBuffer {
   ) => void
 
   /**
-   * Check for conflicts (same path from different plugins)
+   * Check for conflicts (same path from different plugins for string emissions)
+   * Note: AST emissions are merged, not conflicted.
    */
   readonly validate: () => Effect.Effect<void, EmitConflict>
 
@@ -204,101 +207,149 @@ function prependImports(
   return b.program([...statements, ...ast.body])
 }
 
+// =============================================================================
+// AST Emission Merging (Pure Functions)
+// =============================================================================
+
+/** Merge two import arrays */
+const mergeImports = (
+  a?: readonly ImportRef[],
+  b?: readonly ImportRef[]
+): readonly ImportRef[] => [...(a ?? []), ...(b ?? [])]
+
+/** Merge two plugin attribution strings */
+const mergePluginAttribution = (a: string, b: string): string => `${a}, ${b}`
+
+/** Create an AST entry, only including optional fields when defined */
+const makeAstEntry = (
+  path: string,
+  ast: n.Program,
+  plugin: string,
+  header?: string,
+  imports?: readonly ImportRef[]
+): AstEmissionEntry =>
+  pipe(
+    { path, ast, plugin } as AstEmissionEntry,
+    (entry) => header !== undefined ? { ...entry, header } : entry,
+    (entry) => imports && imports.length > 0 ? { ...entry, imports } : entry
+  )
+
+/** Merge a new emission into an existing one (keeps first header) */
+const mergeAstEntries = (
+  existing: AstEmissionEntry,
+  ast: n.Program,
+  plugin: string,
+  _header?: string,
+  imports?: readonly ImportRef[]
+): AstEmissionEntry =>
+  makeAstEntry(
+    existing.path,
+    b.program([...existing.ast.body, ...ast.body]),
+    mergePluginAttribution(existing.plugin, plugin),
+    existing.header,
+    mergeImports(existing.imports, imports)
+  )
+
+// =============================================================================
+// Emission Buffer Implementation
+// =============================================================================
+
 /**
  * Create a new emission buffer
  */
 export function createEmissionBuffer(): EmissionBuffer {
-  const emissions = new Map<string, EmissionEntry>()
-  const astEmissions = new Map<string, AstEmissionEntry>()
-  // Track all plugins that have written to each path (for conflict detection)
-  const pluginsByPath = new Map<string, Set<string>>()
-
-  const trackPlugin = (path: string, plugin: string) => {
-    const plugins = pluginsByPath.get(path) ?? new Set()
-    plugins.add(plugin)
-    pluginsByPath.set(path, plugins)
-  }
+  const emissions = MutableHashMap.empty<string, EmissionEntry>()
+  const astEmissions = MutableHashMap.empty<string, AstEmissionEntry>()
+  // Track plugins per path for string emission conflict detection
+  const stringEmitPlugins = MutableHashMap.empty<string, MutableHashSet.MutableHashSet<string>>()
 
   return {
     emit: (path, content, plugin) => {
-      trackPlugin(path, plugin)
-      // Store the emission (last write wins for content)
-      emissions.set(path, { path, content, plugin })
+      // Track plugin for conflict detection
+      MutableHashMap.modifyAt(stringEmitPlugins, path, Option.match({
+        onNone: () => Option.some(MutableHashSet.make(plugin)),
+        onSome: (set) => Option.some(MutableHashSet.add(set, plugin))
+      }))
+      MutableHashMap.set(emissions, path, { path, content, plugin })
     },
 
     emitAst: (path, ast, plugin, header, imports) => {
-      trackPlugin(path, plugin)
-      // Store the AST emission (last write wins)
-      // Build entry conditionally to handle exactOptionalPropertyTypes
-      let entry: AstEmissionEntry = { path, ast, plugin }
-      if (header !== undefined) {
-        entry = { ...entry, header }
-      }
-      if (imports !== undefined && imports.length > 0) {
-        entry = { ...entry, imports }
-      }
-      astEmissions.set(path, entry)
+      MutableHashMap.modifyAt(astEmissions, path, Option.match({
+        onNone: () => Option.some(makeAstEntry(path, ast, plugin, header, imports)),
+        onSome: (existing) => Option.some(mergeAstEntries(existing, ast, plugin, header, imports))
+      }))
     },
 
     appendEmit: (path, content, plugin) => {
-      const existing = emissions.get(path)
-      if (!existing) {
-        trackPlugin(path, plugin)
-        emissions.set(path, { path, content, plugin })
-        return
-      }
-      if (existing.plugin !== plugin) {
-        // Track the conflict - different plugin trying to append
-        trackPlugin(path, plugin)
-        return
-      }
-      emissions.set(path, {
-        path,
-        content: existing.content + content,
-        plugin,
-      })
+      pipe(
+        MutableHashMap.get(emissions, path),
+        Option.match({
+          onNone: () => {
+            MutableHashMap.modifyAt(stringEmitPlugins, path, Option.match({
+              onNone: () => Option.some(MutableHashSet.make(plugin)),
+              onSome: (set) => Option.some(MutableHashSet.add(set, plugin))
+            }))
+            MutableHashMap.set(emissions, path, { path, content, plugin })
+          },
+          onSome: (existing) => {
+            if (existing.plugin === plugin) {
+              MutableHashMap.set(emissions, path, {
+                path,
+                content: existing.content + content,
+                plugin,
+              })
+            } else {
+              // Track conflict for validation
+              MutableHashMap.modifyAt(stringEmitPlugins, path, Option.match({
+                onNone: () => Option.some(MutableHashSet.make(plugin)),
+                onSome: (set) => Option.some(MutableHashSet.add(set, plugin))
+              }))
+            }
+          }
+        })
+      )
     },
 
-    getAll: () => [...emissions.values()],
+    getAll: () => MutableHashMap.values(emissions),
 
-    getAstEmissions: () => [...astEmissions.values()],
+    getAstEmissions: () => MutableHashMap.values(astEmissions),
 
     serializeAst: (serialize, symbols) => {
-      for (const [path, entry] of astEmissions) {
-        // Resolve imports if any
-        let finalAst = entry.ast
-        if (entry.imports && entry.imports.length > 0) {
-          finalAst = prependImports(entry.ast, entry.imports, path, symbols)
-        }
+      for (const entry of MutableHashMap.values(astEmissions)) {
+        const finalAst = entry.imports && entry.imports.length > 0
+          ? prependImports(entry.ast, entry.imports, entry.path, symbols)
+          : entry.ast
         
         const code = serialize(finalAst)
         const content = entry.header ? entry.header + code : code
-        emissions.set(path, { path, content, plugin: entry.plugin })
+        MutableHashMap.set(emissions, entry.path, { path: entry.path, content, plugin: entry.plugin })
       }
-      // Clear AST emissions after serialization
-      astEmissions.clear()
+      MutableHashMap.clear(astEmissions)
     },
 
     validate: () =>
-      Effect.gen(function* () {
-        // Check for conflicts using the tracked plugins per path
-        for (const [path, plugins] of pluginsByPath) {
-          if (plugins.size > 1) {
-            yield* Effect.fail(
+      pipe(
+        [...stringEmitPlugins],
+        Arr.findFirst(([_, plugins]) => MutableHashSet.size(plugins) > 1),
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: ([path, plugins]) => {
+            const pluginList = [...plugins].join(", ")
+            return Effect.fail(
               new EmitConflict({
-                message: `Multiple plugins emitted to the same file: ${path}`,
+                message: `Multiple plugins emitted to the same file: ${path} (plugins: ${pluginList})`,
                 path,
                 plugins: [...plugins],
               })
             )
           }
-        }
-      }),
+        })
+      ),
 
     clear: () => {
-      emissions.clear()
-      astEmissions.clear()
-      pluginsByPath.clear()
+      MutableHashMap.clear(emissions)
+      MutableHashMap.clear(astEmissions)
+      MutableHashMap.clear(stringEmitPlugins)
     },
   }
 }
