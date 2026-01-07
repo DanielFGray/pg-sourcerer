@@ -31,7 +31,7 @@ import { PluginRunner } from "./services/plugin-runner.js"
 import { createFileWriter, type WriteResult } from "./services/file-writer.js"
 import { TypeHintsLive } from "./services/type-hints.js"
 import { makeInflectionLayer } from "./services/inflection.js"
-import { getEnumEntities, type SemanticIR } from "./ir/semantic-ir.js"
+import { getEnumEntities, getTableEntities, getDomainEntities, getCompositeEntities, type SemanticIR } from "./ir/semantic-ir.js"
 import {
   ConfigNotFound,
   ConfigInvalid,
@@ -158,8 +158,17 @@ export const generate = (
       .pipe(Effect.provide(inflectionLayer))
 
     const enumEntities = getEnumEntities(ir)
-    const tableCount = ir.entities.size - enumEntities.length
-    yield* Effect.log(`Built ${tableCount} tables/views, ${enumEntities.length} enums`)
+    const tableEntities = getTableEntities(ir)
+    const domainEntities = getDomainEntities(ir)
+    const compositeEntities = getCompositeEntities(ir)
+    
+    const counts = [
+      `${tableEntities.length} tables/views`,
+      `${enumEntities.length} enums`,
+    ]
+    if (domainEntities.length > 0) counts.push(`${domainEntities.length} domains`)
+    if (compositeEntities.length > 0) counts.push(`${compositeEntities.length} composites`)
+    yield* Effect.log(`Built ${counts.join(", ")}`)
 
     if (ir.entities.size > 0) {
       const entityNames = [...ir.entities.keys()].sort()

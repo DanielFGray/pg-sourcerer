@@ -10,7 +10,7 @@ import type { Introspection } from "pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
-import { isTableEntity, getEnumEntities, type TableEntity } from "../ir/semantic-ir.js"
+import { isTableEntity, getEnumEntities, getDomainEntities, getCompositeEntities, isDomainEntity, isCompositeEntity, type TableEntity, type DomainEntity, type CompositeEntity } from "../ir/semantic-ir.js"
 import { beforeAll } from "vitest"
 
 // Connection string for example database
@@ -408,6 +408,141 @@ describe("IR Builder Integration", () => {
             expect(updateField.permissions.canSelect).toBe(rowField.permissions.canSelect)
             expect(updateField.permissions.canInsert).toBe(rowField.permissions.canInsert)
             expect(updateField.permissions.canUpdate).toBe(rowField.permissions.canUpdate)
+          }
+        }
+      })
+    )
+  })
+
+  describe("domain entities", () => {
+    it.effect("builds domains from database", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const domains = getDomainEntities(result)
+        // app_public has 2 domains: url and username
+        expect(domains.length).toBeGreaterThanOrEqual(2)
+
+        // With ClassicInflectionLive, names are PascalCase
+        const domainNames = domains.map(d => d.name)
+        expect(domainNames).toContain("Url")
+        expect(domainNames).toContain("Username")
+      })
+    )
+
+    it.effect("domains have correct properties", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const domains = getDomainEntities(result)
+        const username = domains.find(d => d.pgName === "username")
+
+        expect(username).toBeDefined()
+        if (username) {
+          expect(username.kind).toBe("domain")
+          expect(username.baseTypeName).toBeDefined()
+          expect(username.baseTypeOid).toBeGreaterThan(0)
+          expect(typeof username.notNull).toBe("boolean")
+          expect(Array.isArray(username.constraints)).toBe(true)
+          expect(username.pgType).toBeDefined()
+          expect(username.tags).toBeDefined()
+        }
+      })
+    )
+
+    it.effect("domains have constraints", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const domains = getDomainEntities(result)
+        const username = domains.find(d => d.pgName === "username")
+
+        expect(username).toBeDefined()
+        if (username) {
+          // username domain has CHECK constraints for length and pattern
+          expect(username.constraints.length).toBeGreaterThan(0)
+          for (const constraint of username.constraints) {
+            expect(constraint.name).toBeDefined()
+          }
+        }
+      })
+    )
+
+    it.effect("isDomainEntity type guard works", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        for (const entity of result.entities.values()) {
+          if (isDomainEntity(entity)) {
+            expect(entity.kind).toBe("domain")
+            expect(entity.baseTypeName).toBeDefined()
+          }
+        }
+      })
+    )
+  })
+
+  describe("composite entities", () => {
+    it.effect("builds composites from database", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const composites = getCompositeEntities(result)
+        // app_public has 2 composite types: username_search and tag_search_result
+        expect(composites.length).toBeGreaterThanOrEqual(2)
+
+        const compositeNames = composites.map(c => c.pgName)
+        expect(compositeNames).toContain("username_search")
+        expect(compositeNames).toContain("tag_search_result")
+      })
+    )
+
+    it.effect("composites have correct properties", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const composites = getCompositeEntities(result)
+        const usernameSearch = composites.find(c => c.pgName === "username_search")
+
+        expect(usernameSearch).toBeDefined()
+        if (usernameSearch) {
+          expect(usernameSearch.kind).toBe("composite")
+          expect(Array.isArray(usernameSearch.fields)).toBe(true)
+          expect(usernameSearch.fields.length).toBeGreaterThan(0)
+          expect(usernameSearch.pgType).toBeDefined()
+          expect(usernameSearch.tags).toBeDefined()
+        }
+      })
+    )
+
+    it.effect("composite fields have correct structure", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        const composites = getCompositeEntities(result)
+        const composite = composites[0]
+
+        expect(composite).toBeDefined()
+        if (composite && composite.fields.length > 0) {
+          const field = composite.fields[0]!
+          expect(field.name).toBeDefined()
+          expect(field.attributeName).toBeDefined()
+          expect(field.pgAttribute).toBeDefined()
+          expect(typeof field.nullable).toBe("boolean")
+          expect(typeof field.isArray).toBe("boolean")
+          expect(field.tags).toBeDefined()
+        }
+      })
+    )
+
+    it.effect("isCompositeEntity type guard works", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        for (const entity of result.entities.values()) {
+          if (isCompositeEntity(entity)) {
+            expect(entity.kind).toBe("composite")
+            expect(Array.isArray(entity.fields)).toBe(true)
           }
         }
       })
