@@ -15,7 +15,7 @@
       "dependencies": {
         "@danielfgray/pg-sourcerer": "workspace:*",
         "@effect/platform": "catalog:",
-        "@effect/platform-bun": "^0.87.0",
+        "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
         "graphile-migrate": "next",
@@ -29,9 +29,9 @@
     },
     "packages/pg-sourcerer": {
       "name": "@danielfgray/pg-sourcerer",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "bin": {
-        "pgsourcerer": "src/cli.ts",
+        "pgsourcerer": "dist/cli.js",
       },
       "dependencies": {
         "@effect/cli": "catalog:",
@@ -55,8 +55,9 @@
   "catalog": {
     "@effect/cli": "^0.73.0",
     "@effect/platform": "^0.94.1",
+    "@effect/platform-bun": "^0.87.0",
     "@effect/platform-node": "^0.104.0",
-    "@effect/vitest": "^0.20.17",
+    "@effect/vitest": "^0.27.0",
     "@types/bun": "^1.1.14",
     "@types/pg": "^8.15.4",
     "effect": "^3.19.14",
@@ -92,7 +93,7 @@
 
     "@effect/typeclass": ["@effect/typeclass@0.35.14", "", { "peerDependencies": { "effect": "^3.16.14" } }, "sha512-IYpbpTcqJ/h7v561dV9ZbBXYxCBS7gdIZYCysFl+Yjdi91k5Vj4F12MijJB6tWVT5JB8xgfgAX4vwbotQ7/G6Q=="],
 
-    "@effect/vitest": ["@effect/vitest@0.20.17", "", { "peerDependencies": { "effect": "^3.14.16", "vitest": "^3.0.0" } }, "sha512-CFieUpcFCMkaeppdTztMaXEQTA6SikCQig5fAQDbS7HxSeEf2NBeoojht0//357tKiueEqM6GRG05x9axO+5iw=="],
+    "@effect/vitest": ["@effect/vitest@0.27.0", "", { "peerDependencies": { "effect": "^3.19.0", "vitest": "^3.2.0" } }, "sha512-8bM7n9xlMUYw9GqPIVgXFwFm2jf27m/R7psI64PGpwU5+26iwyxp9eAXEsfT5S6lqztYfpQQ1Ubp5o6HfNYzJQ=="],
 
     "@effect/workflow": ["@effect/workflow@0.16.0", "", { "peerDependencies": { "@effect/experimental": "^0.58.0", "@effect/platform": "^0.94.0", "@effect/rpc": "^0.73.0", "effect": "^3.19.13" } }, "sha512-MiAdlxx3TixkgHdbw+Yf1Z3tHAAE0rOQga12kIydJqj05Fnod+W/I+kQGRMY/XWRg+QUsVxhmh1qTr7Ype6lrw=="],
 
