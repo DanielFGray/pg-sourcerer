@@ -1,5 +1,5 @@
 // @ts-check
-import { effectModelPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
+import { effectModelPlugin, typesPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
 
 /**
  * pg-sourcerer configuration for the example project
@@ -26,6 +26,8 @@ export default defineConfig({
 
   // Plugins to run
   plugins: [
+    // Generate TypeScript types
+    typesPlugin({ outputDir: "types" }),
     // Generate Effect Model classes
     effectModelPlugin({ outputDir: "models" }),
   ],

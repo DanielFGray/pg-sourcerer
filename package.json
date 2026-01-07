@@ -1,19 +1,16 @@
 {
   "name": "pg-sourcerer-monorepo",
-  "devDependencies": {
-    "@eslint/js": "^9.39.2",
-    "eslint": "^9.39.2",
-    "typescript-eslint": "^8.52.0"
-  },
   "private": true,
   "scripts": {
     "dev": "bun run --filter=pgsourcerer-demo dev",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": " cd packages/pg-sourcerer && bun run test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
   "workspaces": {
-    "packages": ["packages/*"],
+    "packages": [
+      "packages/*"
+    ],
     "catalog": {
       "effect": "^3.19.14",
       "@effect/cli": "^0.73.0",
@@ -28,5 +25,10 @@
       "typescript": "^5.7.2",
       "@types/bun": "^1.1.14"
     }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "eslint": "^9.39.2",
+    "typescript-eslint": "^8.52.0"
   }
 }
