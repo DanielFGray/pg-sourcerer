@@ -1,0 +1,261 @@
+/**
+ * Generate Pipeline Integration Tests
+ *
+ * Tests the generate() function end-to-end with stubbed services.
+ * This covers generate.ts and config-loader.ts through real usage.
+ *
+ * Requires the example database to be running (cd packages/example && bun db:ensure)
+ */
+import { describe, expect, layer } from "@effect/vitest"
+import { Effect, Layer, Logger, LogLevel } from "effect"
+import { FileSystem, Path } from "@effect/platform"
+import { NodeFileSystem, NodePath } from "@effect/platform-node"
+
+import { generate } from "../generate.js"
+import { ConfigLoaderService } from "../services/config-loader.js"
+import { DatabaseIntrospectionLive, DatabaseIntrospectionService } from "../services/introspection.js"
+import { typesPlugin } from "../plugins/types.js"
+import { zodPlugin } from "../plugins/zod.js"
+import { inflect, classicInflectionConfig } from "../services/inflection.js"
+import type { ResolvedConfig } from "../config.js"
+
+// Connection string from environment (set via --env-file in package.json)
+const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://localhost:5432/test"
+
+// Platform layers
+const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
+
+// Suppress logs during tests
+const QuietLogger = Logger.minimumLogLevel(LogLevel.None)
+
+// Real database introspection service
+const IntrospectionLayer = Layer.effect(
+  DatabaseIntrospectionService,
+  DatabaseIntrospectionLive
+)
+
+/**
+ * Create a stub ConfigLoader that returns the given config
+ */
+const makeConfigLoaderStub = (config: ResolvedConfig) =>
+  Layer.succeed(ConfigLoaderService, {
+    load: () => Effect.succeed(config),
+  })
+
+// Base test layer with platform + introspection
+const BaseTestLayer = Layer.mergeAll(PlatformLayer, IntrospectionLayer)
+
+layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
+  describe("generate() with stubbed config", () => {
+    it.effect("types plugin generates correct interfaces and enums", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const pathSvc = yield* Path.Path
+        const tmpDir = yield* fs.makeTempDirectory({ prefix: "generate-test-" })
+
+        try {
+          const config: ResolvedConfig = {
+            connectionString: DATABASE_URL,
+            schemas: ["app_public"],
+            outputDir: tmpDir,
+            typeHints: [],
+            inflection: classicInflectionConfig,
+            plugins: [typesPlugin({ outputDir: "types" })],
+          }
+
+          const result = yield* generate({ outputDir: tmpDir }).pipe(
+            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(QuietLogger)
+          )
+
+          // Verify pipeline results
+          expect(result.ir.entities.size).toBeGreaterThan(0)
+          expect(result.writeResults.length).toBeGreaterThan(0)
+
+          // With classicInflectionConfig, "users" → "User"
+          const entityNames = [...result.ir.entities.keys()]
+          expect(entityNames).toContain("User")
+
+          // ================================================================
+          // Verify User.ts file content
+          // ================================================================
+          const userWrite = result.writeResults.find((r) => r.path.endsWith("/User.ts"))
+          expect(userWrite).toBeDefined()
+          expect(userWrite?.written).toBe(true)
+
+          const userContent = yield* fs.readFileString(userWrite!.path)
+
+          // Header comment
+          expect(userContent).toContain("AUTO-GENERATED")
+
+          // All four shape interfaces should exist
+          expect(userContent).toContain("export interface UserRow")
+          expect(userContent).toContain("export interface UserInsert")
+          expect(userContent).toContain("export interface UserUpdate")
+          expect(userContent).toContain("export interface UserPatch")
+
+          // Fields should be camelCase (from classicInflectionConfig)
+          expect(userContent).toContain("avatarUrl")
+          expect(userContent).toContain("isVerified")
+          expect(userContent).toContain("createdAt")
+          expect(userContent).toContain("updatedAt")
+          expect(userContent).not.toContain("avatar_url")
+          expect(userContent).not.toContain("is_verified")
+          expect(userContent).not.toContain("created_at")
+
+          // TypeScript types
+          expect(userContent).toContain("id: string")       // uuid → string
+          expect(userContent).toContain("username: string") // domain → string
+          expect(userContent).toContain("isVerified: boolean")
+          expect(userContent).toContain("createdAt: Date")  // timestamptz → Date
+
+          // Nullable fields should have null union
+          expect(userContent).toMatch(/name\??: string \| null/)
+          expect(userContent).toMatch(/avatarUrl\??: string \| null/)
+
+          // Enum reference import
+          expect(userContent).toContain('import type { UserRole } from "./enums.js"')
+          expect(userContent).toContain("role: UserRole")
+
+          // ================================================================
+          // Verify enums.ts file content
+          // ================================================================
+          const enumsWrite = result.writeResults.find((r) => r.path.endsWith("/enums.ts"))
+          expect(enumsWrite).toBeDefined()
+
+          const enumsContent = yield* fs.readFileString(enumsWrite!.path)
+
+          // UserRole enum (from user_role type in users table)
+          expect(enumsContent).toContain("export type UserRole")
+          expect(enumsContent).toContain('"admin"')
+          expect(enumsContent).toContain('"moderator"')
+          expect(enumsContent).toContain('"user"')
+
+          // VoteType enum (from vote_type)
+          expect(enumsContent).toContain("export type VoteType")
+          expect(enumsContent).toContain('"up"')
+          expect(enumsContent).toContain('"down"')
+        } finally {
+          yield* fs.remove(tmpDir, { recursive: true })
+        }
+      }),
+      { timeout: 30000 }
+    )
+
+    it.effect("dry run does not write files", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const tmpDir = yield* fs.makeTempDirectory({ prefix: "generate-dry-" })
+
+        try {
+          const config: ResolvedConfig = {
+            connectionString: DATABASE_URL,
+            schemas: ["app_public"],
+            outputDir: tmpDir,
+            typeHints: [],
+            plugins: [typesPlugin({ outputDir: "types" })],
+          }
+
+          const result = yield* generate({ outputDir: tmpDir, dryRun: true }).pipe(
+            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(QuietLogger)
+          )
+
+          // Should have results but nothing written
+          expect(result.writeResults.length).toBeGreaterThan(0)
+          expect(result.writeResults.every((r) => !r.written)).toBe(true)
+
+          // types directory should not exist
+          const typesDir = yield* fs.exists(`${tmpDir}/types`)
+          expect(typesDir).toBe(false)
+        } finally {
+          yield* fs.remove(tmpDir, { recursive: true })
+        }
+      }),
+      { timeout: 30000 }
+    )
+
+    it.effect("runs multiple plugins together", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const pathSvc = yield* Path.Path
+        const tmpDir = yield* fs.makeTempDirectory({ prefix: "generate-multi-" })
+
+        try {
+          const config: ResolvedConfig = {
+            connectionString: DATABASE_URL,
+            schemas: ["app_public"],
+            outputDir: tmpDir,
+            typeHints: [],
+            inflection: classicInflectionConfig,
+            plugins: [
+              typesPlugin({ outputDir: "types" }),
+              zodPlugin({ outputDir: "zod", exportTypes: false }),
+            ],
+          }
+
+          const result = yield* generate({ outputDir: tmpDir }).pipe(
+            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(QuietLogger)
+          )
+
+          // Should have files from both plugins
+          const typeFiles = result.writeResults.filter((r) => r.path.includes("/types/"))
+          const zodFiles = result.writeResults.filter((r) => r.path.includes("/zod/"))
+
+          expect(typeFiles.length).toBeGreaterThan(0)
+          expect(zodFiles.length).toBeGreaterThan(0)
+
+          // Both directories should exist
+          expect(yield* fs.exists(pathSvc.join(tmpDir, "types"))).toBe(true)
+          expect(yield* fs.exists(pathSvc.join(tmpDir, "zod"))).toBe(true)
+        } finally {
+          yield* fs.remove(tmpDir, { recursive: true })
+        }
+      }),
+      { timeout: 30000 }
+    )
+
+    it.effect("applies inflection config correctly", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const pathSvc = yield* Path.Path
+        const tmpDir = yield* fs.makeTempDirectory({ prefix: "generate-inflect-" })
+
+        try {
+          const config: ResolvedConfig = {
+            connectionString: DATABASE_URL,
+            schemas: ["app_public"],
+            outputDir: tmpDir,
+            typeHints: [],
+            inflection: {
+              entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+              fieldName: inflect.camelCase,
+              shapeSuffix: inflect.capitalize,
+            },
+            plugins: [typesPlugin({ outputDir: "types" })],
+          }
+
+          const result = yield* generate({ outputDir: tmpDir }).pipe(
+            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(QuietLogger)
+          )
+
+          // Entity should be "User" not "users"
+          const entityNames = [...result.ir.entities.keys()]
+          expect(entityNames).toContain("User")
+          expect(entityNames).not.toContain("users")
+
+          // File should have camelCase fields
+          const userWrite = result.writeResults.find((r) => r.path.includes("User.ts"))
+          expect(userWrite).toBeDefined()
+          const content = yield* fs.readFileString(userWrite!.path)
+          expect(content).toContain("createdAt") // not created_at
+        } finally {
+          yield* fs.remove(tmpDir, { recursive: true })
+        }
+      }),
+      { timeout: 30000 }
+    )
+  })
+})
