@@ -3,3 +3,4 @@ generated
 .env
 .idea
 dist
+packages/pg-sourcerer/coverage
