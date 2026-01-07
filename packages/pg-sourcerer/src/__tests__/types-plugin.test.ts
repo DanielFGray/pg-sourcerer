@@ -72,15 +72,15 @@ function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
 describe("Types Plugin", () => {
   describe("plugin structure", () => {
     it("has correct name", () => {
-      expect(typesPlugin.name).toBe("types")
+      expect(typesPlugin.plugin.name).toBe("types")
     })
 
     it("provides types capability", () => {
-      expect(typesPlugin.provides).toContain("types")
+      expect(typesPlugin.plugin.provides).toContain("types")
     })
 
     it("has no requirements", () => {
-      expect(typesPlugin.requires).toBeUndefined()
+      expect(typesPlugin.plugin.requires).toBeUndefined()
     })
   })
 
@@ -90,8 +90,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -111,8 +110,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -136,8 +134,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -161,8 +158,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -179,8 +175,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -199,8 +194,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -222,8 +216,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -249,8 +242,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
@@ -270,8 +262,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
@@ -294,8 +285,7 @@ describe("Types Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* typesPlugin
-          .run({ outputDir: "custom/path" })
+        yield* typesPlugin.plugin.run({ outputDir: "custom/path" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -322,8 +312,7 @@ describe("Types Plugin", () => {
           // The plugin implementation checks entity.tags.omit === true
           const testLayer = createTestLayer(ir)
 
-          yield* typesPlugin
-            .run({ outputDir: "types" })
+          yield* typesPlugin.plugin.run({ outputDir: "types" })
             .pipe(Effect.provide(testLayer))
 
           const all = yield* runPluginAndGetEmissions(testLayer)
@@ -350,8 +339,7 @@ describe("Types Plugin", () => {
         
         const testLayer = createTestLayer(ir, hints)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -383,8 +371,7 @@ describe("Types Plugin", () => {
         
         const testLayer = createTestLayer(ir, hints)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -412,8 +399,7 @@ describe("Types Plugin", () => {
         
         const testLayer = createTestLayer(ir, hints)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -456,8 +442,7 @@ describe("Types Plugin", () => {
         
         const testLayer = createTestLayer(ir, hints)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -484,8 +469,7 @@ describe("Types Plugin", () => {
         
         const testLayer = createTestLayer(ir, hints)
 
-        yield* typesPlugin
-          .run({ outputDir: "types" })
+        yield* typesPlugin.plugin.run({ outputDir: "types" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)

@@ -69,16 +69,16 @@ function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
 describe("Zod Plugin", () => {
   describe("plugin structure", () => {
     it("has correct name", () => {
-      expect(zodPlugin.name).toBe("zod")
+      expect(zodPlugin.plugin.name).toBe("zod")
     })
 
     it("provides schemas capabilities", () => {
-      expect(zodPlugin.provides).toContain("schemas:zod")
-      expect(zodPlugin.provides).toContain("schemas")
+      expect(zodPlugin.plugin.provides).toContain("schemas:zod")
+      expect(zodPlugin.plugin.provides).toContain("schemas")
     })
 
     it("has no requirements", () => {
-      expect(zodPlugin.requires).toBeUndefined()
+      expect(zodPlugin.plugin.requires).toBeUndefined()
     })
   })
 
@@ -88,8 +88,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -109,8 +108,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -125,8 +123,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -149,8 +146,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -170,8 +166,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -191,8 +186,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -209,8 +203,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -231,8 +224,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: false })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: false })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -255,8 +247,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -281,8 +272,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
@@ -303,8 +293,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
@@ -327,8 +316,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "custom/zod", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "custom/zod", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -347,8 +335,7 @@ describe("Zod Plugin", () => {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
-        yield* zodPlugin
-          .run({ outputDir: "schemas", exportTypes: true })
+        yield* zodPlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)

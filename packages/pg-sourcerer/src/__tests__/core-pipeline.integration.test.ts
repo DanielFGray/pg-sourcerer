@@ -16,7 +16,7 @@ import { Effect, Layer, Schema as S } from "effect"
 import { FileSystem, Path } from "@effect/platform"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 
-import { PluginRunner, type ConfiguredPlugin, type Plugin } from "../services/plugin-runner.js"
+import { PluginRunner, type ConfiguredPlugin } from "../services/plugin-runner.js"
 import { definePlugin } from "../services/plugin.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
@@ -189,13 +189,6 @@ const buildTestIR = Effect.gen(function* () {
   return yield* builder.build(introspection, { schemas: ["app_public"] })
 }).pipe(Effect.provide(ClassicInflectionLive))
 
-/**
- * Helper to cast typed plugins to Plugin<unknown> for ConfiguredPlugin array
- */
-function configured<T>(plugin: Plugin<T>, config: T): ConfiguredPlugin {
-  return { plugin: plugin as Plugin<unknown>, config }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -211,10 +204,10 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
         // 2. Get PluginRunner
         const runner = yield* PluginRunner
 
-        // 3. Configure plugins
+        // 3. Configure plugins (new curried syntax)
         const plugins: ConfiguredPlugin[] = [
-          configured(typesPlugin, { outputDir: "types" }),
-          configured(validatorsPlugin, { outputDir: "validators" }),
+          typesPlugin({ outputDir: "types" }),
+          validatorsPlugin({ outputDir: "validators" }),
         ]
 
         // 4. Prepare plugins (validates capabilities, orders by deps)
@@ -257,8 +250,8 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
         const runner = yield* PluginRunner
 
         const plugins: ConfiguredPlugin[] = [
-          configured(metadataPlugin, {}),
-          configured(indexPlugin, {}),
+          metadataPlugin({}),
+          indexPlugin({}),
         ]
 
         const prepared = yield* runner.prepare(plugins)
@@ -293,7 +286,7 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
         try {
           // Prepare and run plugins
           const plugins: ConfiguredPlugin[] = [
-            configured(typesPlugin, { outputDir: "types" }),
+            typesPlugin({ outputDir: "types" }),
           ]
 
           const prepared = yield* runner.prepare(plugins)
@@ -347,8 +340,8 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
 
         const result = yield* runner
           .prepare([
-            configured(plugin1, {}),
-            configured(plugin2, {}),
+            plugin1({}),
+            plugin2({}),
           ])
           .pipe(Effect.either)
 
@@ -365,7 +358,7 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
 
         // Plugin that requires types but types not provided
         const result = yield* runner
-          .prepare([configured(validatorsPlugin, { outputDir: "validators" })])
+          .prepare([validatorsPlugin({ outputDir: "validators" })])
           .pipe(Effect.either)
 
         expect(result._tag).toBe("Left")
@@ -390,7 +383,7 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
           },
         })
 
-        const prepared = yield* runner.prepare([configured(failingPlugin, {})])
+        const prepared = yield* runner.prepare([failingPlugin({})])
         const result = yield* runner.run(prepared, ir).pipe(Effect.either)
 
         expect(result._tag).toBe("Left")

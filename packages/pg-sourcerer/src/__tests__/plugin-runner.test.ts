@@ -8,8 +8,8 @@ import { describe, expect, layer } from "@effect/vitest"
 import { Effect, Layer, Schema as S } from "effect"
 import {
   PluginRunner,
-  type Plugin,
   type ConfiguredPlugin,
+  type Plugin,
 } from "../services/plugin-runner.js"
 import {
   CapabilityConflict,
@@ -19,7 +19,7 @@ import {
   PluginConfigInvalid,
 } from "../errors.js"
 import { createIRBuilder, freezeIR } from "../ir/index.js"
-import { definePlugin, type SimplePluginContext } from "../services/plugin.js"
+import { definePlugin, type SimplePluginContext, type PluginFactory } from "../services/plugin.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import { conjure } from "../lib/conjure.js"
 
@@ -29,13 +29,13 @@ const TestLayer = Layer.merge(
   TypeHintsLive([])
 )
 
-// Helper to create a minimal test plugin using definePlugin
+// Helper to create a minimal test plugin factory using definePlugin
 function testPlugin(
   name: string,
   provides: string[],
   requires: string[] = [],
   run: (ctx: SimplePluginContext, config: unknown) => void = () => { /* noop */ }
-): Plugin<unknown> {
+): PluginFactory<unknown> {
   const baseDef = {
     name,
     provides,
@@ -52,11 +52,6 @@ function testPlugin(
     return definePlugin({ ...baseDef, requires })
   }
   return definePlugin(baseDef)
-}
-
-// Helper to create configured plugin
-function configured(plugin: Plugin<unknown>, config: unknown = {}): ConfiguredPlugin {
-  return { plugin, config }
 }
 
 // Helper to create a minimal IR for tests
@@ -85,8 +80,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           
           // schemas:zod should satisfy "schemas" requirement
           const result = yield* runner.prepare([
-            configured(zodPlugin),
-            configured(typesPlugin),
+            zodPlugin({}),
+            typesPlugin({}),
           ])
           
           // Should succeed - schemas:zod provides schemas
@@ -104,8 +99,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const consumerPlugin = testPlugin("consumer", ["output"], ["level1"])
           
           const result = yield* runner.prepare([
-            configured(deepPlugin),
-            configured(consumerPlugin),
+            deepPlugin({}),
+            consumerPlugin({}),
           ])
           
           // Should succeed - level1:level2:level3:level4 provides level1
@@ -123,8 +118,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const zodConsumer = testPlugin("zod-consumer", ["output"], ["schemas:zod"])
           
           const result = yield* runner.prepare([
-            configured(basePlugin),
-            configured(zodConsumer),
+            basePlugin({}),
+            zodConsumer({}),
           ]).pipe(Effect.either)
           
           // Should fail - "schemas" does NOT provide "schemas:zod"
@@ -147,8 +142,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const plugin2 = testPlugin("plugin-b", ["types"])
           
           const result = yield* runner.prepare([
-            configured(plugin1),
-            configured(plugin2),
+            plugin1({}),
+            plugin2({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -172,8 +167,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const plugin2 = testPlugin("effect-schema", ["schemas"])
           
           const result = yield* runner.prepare([
-            configured(plugin1),
-            configured(plugin2),
+            plugin1({}),
+            plugin2({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -192,7 +187,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           const plugin = testPlugin("queries", ["queries"], ["schemas"]) // requires schemas
           
           const result = yield* runner.prepare([
-            configured(plugin),
+            plugin({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -218,9 +213,9 @@ layer(TestLayer)("PluginRunner", (it) => {
           
           // Provide in wrong order
           const result = yield* runner.prepare([
-            configured(queriesPlugin),
-            configured(typesPlugin),
-            configured(schemasPlugin),
+            queriesPlugin({}),
+            typesPlugin({}),
+            schemasPlugin({}),
           ])
           
           // Should be sorted: types → schemas → queries
@@ -246,10 +241,10 @@ layer(TestLayer)("PluginRunner", (it) => {
           const top = testPlugin("top", ["cap-top"], ["cap-left", "cap-right"])
           
           const result = yield* runner.prepare([
-            configured(top),
-            configured(left),
-            configured(right),
-            configured(bottom),
+            top({}),
+            left({}),
+            right({}),
+            bottom({}),
           ])
           
           // bottom must come before left and right; left and right must come before top
@@ -276,9 +271,9 @@ layer(TestLayer)("PluginRunner", (it) => {
           const pluginC = testPlugin("plugin-c", ["cap-c"], ["cap-b"])
           
           const result = yield* runner.prepare([
-            configured(pluginA),
-            configured(pluginB),
-            configured(pluginC),
+            pluginA({}),
+            pluginB({}),
+            pluginC({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -299,8 +294,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const pluginB = testPlugin("plugin-b", ["cap-b"], ["cap-a"])
           
           const result = yield* runner.prepare([
-            configured(pluginA),
-            configured(pluginB),
+            pluginA({}),
+            pluginB({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -320,8 +315,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const plugin2 = testPlugin("schemas", ["schemas"])
           
           const result = yield* runner.prepare([
-            configured(plugin1),
-            configured(plugin2),
+            plugin1({}),
+            plugin2({}),
           ])
           
           expect(result.length).toBe(2)
@@ -344,7 +339,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           
           const plugin = testPlugin("solo", ["cap-solo"])
           
-          const result = yield* runner.prepare([configured(plugin)])
+          const result = yield* runner.prepare([plugin({})])
           
           expect(result.length).toBe(1)
           expect(result[0]?.plugin.name).toBe("solo")
@@ -361,8 +356,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const consumer = testPlugin("consumer", ["output"], ["types", "helpers"])
           
           const result = yield* runner.prepare([
-            configured(consumer),
-            configured(multiProvider),
+            consumer({}),
+            multiProvider({}),
           ])
           
           expect(result.length).toBe(2)
@@ -382,9 +377,9 @@ layer(TestLayer)("PluginRunner", (it) => {
           const consumer = testPlugin("consumer", ["output"], ["types", "schemas"])
           
           const result = yield* runner.prepare([
-            configured(consumer),
-            configured(typesPlugin),
-            configured(schemasPlugin),
+            consumer({}),
+            typesPlugin({}),
+            schemasPlugin({}),
           ])
           
           expect(result.length).toBe(3)
@@ -400,7 +395,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           // This is a bit odd but should work - plugin provides and requires same cap
           const selfRef = testPlugin("self-ref", ["cap-a"], ["cap-a"])
           
-          const result = yield* runner.prepare([configured(selfRef)])
+          const result = yield* runner.prepare([selfRef({})])
           
           expect(result.length).toBe(1)
         })
@@ -417,8 +412,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const effectPlugin = testPlugin("effect-schema", ["schemas:effect"])
           
           const result = yield* runner.prepare([
-            configured(zodPlugin),
-            configured(effectPlugin),
+            zodPlugin({}),
+            effectPlugin({}),
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -437,8 +432,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const plugin = testPlugin("types", ["types"])
           
           const result = yield* runner.prepare([
-            configured(plugin),
-            configured(plugin), // duplicate
+            plugin({}),
+            plugin({}), // duplicate
           ]).pipe(Effect.either)
           
           expect(result._tag).toBe("Left")
@@ -457,7 +452,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           // Plugin that provides nothing (maybe just does side effects)
           const noopPlugin = testPlugin("noop", [])
           
-          const result = yield* runner.prepare([configured(noopPlugin)])
+          const result = yield* runner.prepare([noopPlugin({})])
           
           expect(result.length).toBe(1)
         })
@@ -476,11 +471,11 @@ layer(TestLayer)("PluginRunner", (it) => {
           
           // Provide in reverse order
           const result = yield* runner.prepare([
-            configured(p5),
-            configured(p3),
-            configured(p1),
-            configured(p4),
-            configured(p2),
+            p5({}),
+            p3({}),
+            p1({}),
+            p4({}),
+            p2({}),
           ])
           
           const names = result.map(cp => cp.plugin.name)
@@ -498,8 +493,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           const consumer = testPlugin("consumer", ["output"], ["a:b"])
           
           const result = yield* runner.prepare([
-            configured(provider),
-            configured(consumer),
+            provider({}),
+            consumer({}),
           ])
           
           // Should work - a:b:c provides a:b
@@ -621,7 +616,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            { plugin, config: { count: 42 } },
+            { plugin: plugin.plugin, config: { count: 42 } },
           ])
           
           yield* runner.run(prepared, ir)
@@ -697,9 +692,9 @@ layer(TestLayer)("PluginRunner", (it) => {
           
           // Prepare in wrong order, then run
           const prepared = yield* runner.prepare([
-            configured(third),
-            configured(first),
-            configured(second),
+            third({}),
+            first({}),
+            second({}),
           ])
           
           yield* runner.run(prepared, ir)
@@ -725,8 +720,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(alpha),
-            configured(beta),
+            alpha({}),
+            beta({}),
           ])
           
           yield* runner.run(prepared, ir)
@@ -751,7 +746,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           yield* runner.run(prepared, ir)
           
           expect(receivedName).toBe("my-plugin")
@@ -769,7 +764,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           yield* runner.run(prepared, ir)
           
           expect(receivedIR).toBe(ir)
@@ -792,7 +787,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           yield* runner.run(prepared, ir)
           
           // Verify emit was called (we capture in the plugin for now)
@@ -818,8 +813,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(consumer),
-            configured(producer),
+            consumer({}),
+            producer({}),
           ])
           
           yield* runner.run(prepared, ir)
@@ -854,9 +849,9 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(first),
-            configured(failing),
-            configured(third),
+            first({}),
+            failing({}),
+            third({}),
           ])
           
           const result = yield* runner.run(prepared, ir).pipe(Effect.either)
@@ -888,7 +883,7 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(plugin, { outputDir: "./out", verbose: true }),
+            plugin({ outputDir: "./out", verbose: true }),
           ])
           
           yield* runner.run(prepared, ir)
@@ -910,7 +905,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           const result = yield* runner.run(prepared, ir)
           
           const emissions = result.emissions.getAll()
@@ -941,7 +936,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           const result = yield* runner.run(prepared, ir)
           
           const symbols = result.symbols.getAll()
@@ -961,7 +956,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             return Effect.void
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           const result = yield* runner.run(prepared, ir)
           
           const artifact = result.artifacts.get("schema-data")
@@ -988,8 +983,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(plugin1),
-            configured(plugin2),
+            plugin1({}),
+            plugin2({}),
           ])
           
           // run() should fail with EmitConflict
@@ -1031,8 +1026,8 @@ layer(TestLayer)("PluginRunner", (it) => {
           })
           
           const prepared = yield* runner.prepare([
-            configured(plugin1),
-            configured(plugin2),
+            plugin1({}),
+            plugin2({}),
           ])
           
           // run() should fail with SymbolConflict
@@ -1066,7 +1061,7 @@ layer(TestLayer)("PluginRunner", (it) => {
               .emit()
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           const result = yield* runner.run(prepared, ir)
           
           // Check symbols were registered
@@ -1118,7 +1113,7 @@ layer(TestLayer)("PluginRunner", (it) => {
               .emit()
           })
           
-          const prepared = yield* runner.prepare([configured(plugin)])
+          const prepared = yield* runner.prepare([plugin({})])
           const result = yield* runner.run(prepared, ir)
           
           expect(result.symbols.getAll()).toHaveLength(2)
