@@ -8,7 +8,7 @@ import { it, describe, expect } from "@effect/vitest"
 import { Effect } from "effect"
 import type { Introspection } from "pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { InflectionLive } from "../services/inflection.js"
+import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
 import { beforeAll } from "vitest"
 
@@ -42,7 +42,7 @@ const buildIR = (schemas: readonly string[]) =>
   Effect.gen(function* () {
     const builder = createIRBuilderService()
     return yield* builder.build(introspection, { schemas })
-  }).pipe(Effect.provide(InflectionLive))
+  }).pipe(Effect.provide(ClassicInflectionLive))
 
 describe("IR Builder Integration", () => {
   describe("with real database", () => {

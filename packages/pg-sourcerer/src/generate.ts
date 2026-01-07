@@ -24,7 +24,7 @@ import { createIRBuilderService } from "./services/ir-builder.js"
 import { PluginRunner } from "./services/plugin-runner.js"
 import { createFileWriter, type WriteResult } from "./services/file-writer.js"
 import { TypeHintsLive } from "./services/type-hints.js"
-import { InflectionLive } from "./services/inflection.js"
+import { makeInflectionLayer } from "./services/inflection.js"
 import type { SemanticIR } from "./ir/semantic-ir.js"
 import {
   ConfigNotFound,
@@ -140,9 +140,13 @@ export const generate = (
     // 3. Build IR
     if (verbose) yield* Console.log("Building semantic IR...")
     const irBuilder = createIRBuilderService()
+    
+    // Create inflection layer from config (or use defaults)
+    const inflectionLayer = makeInflectionLayer(config.inflection)
+    
     const ir = yield* irBuilder
       .build(introspection, { schemas: config.schemas as string[] })
-      .pipe(Effect.provide(InflectionLive))
+      .pipe(Effect.provide(inflectionLayer))
     if (verbose) {
       yield* Console.log(`  Entities: ${ir.entities.size}`)
       yield* Console.log(`  Enums: ${ir.enums.size}`)

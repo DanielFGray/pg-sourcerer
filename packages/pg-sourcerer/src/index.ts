@@ -63,9 +63,17 @@ export {
 // Services - Inflection
 export {
   type CoreInflection,
+  type InflectionConfig,
+  type TransformName,
+  type TransformChain,
   Inflection,
-  liveInflection,
+  defaultInflection,
+  createInflection,
+  makeInflectionLayer,
+  applyTransformChain,
   InflectionLive,
+  classicInflectionConfig,
+  ClassicInflectionLive,
 } from "./services/inflection.js"
 
 // Services - Type Hints
