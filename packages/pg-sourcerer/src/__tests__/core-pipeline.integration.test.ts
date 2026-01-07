@@ -19,7 +19,7 @@ import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { PluginRunner, type ConfiguredPlugin, type Plugin } from "../services/plugin-runner.js"
 import { definePlugin, type SimplePluginContext } from "../services/plugin.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { InflectionLive } from "../services/inflection.js"
+import { ClassicInflectionLive } from "../services/inflection.js"
 import { createFileWriter } from "../services/file-writer.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
@@ -187,7 +187,7 @@ const indexPlugin = definePlugin({
 const buildTestIR = Effect.gen(function* () {
   const builder = createIRBuilderService()
   return yield* builder.build(introspection, { schemas: ["app_public"] })
-}).pipe(Effect.provide(InflectionLive))
+}).pipe(Effect.provide(ClassicInflectionLive))
 
 /**
  * Helper to cast typed plugins to Plugin<unknown> for ConfiguredPlugin array

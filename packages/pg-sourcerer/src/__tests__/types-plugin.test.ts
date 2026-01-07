@@ -8,7 +8,7 @@ import { describe, expect, layer, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { typesPlugin } from "../plugins/types.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { InflectionLive, Inflection } from "../services/inflection.js"
+import { ClassicInflectionLive, Inflection } from "../services/inflection.js"
 import { Emissions, createEmissionBuffer } from "../services/emissions.js"
 import { Symbols, createSymbolRegistry } from "../services/symbols.js"
 import { TypeHintsLive } from "../services/type-hints.js"
@@ -29,7 +29,7 @@ const introspection = loadIntrospectionFixture()
 async function buildTestIR(schemas: readonly string[]): Promise<SemanticIR> {
   const builder = createIRBuilderService()
   return Effect.runPromise(
-    builder.build(introspection, { schemas }).pipe(Effect.provide(InflectionLive))
+    builder.build(introspection, { schemas }).pipe(Effect.provide(ClassicInflectionLive))
   )
 }
 
@@ -47,7 +47,7 @@ function createTestLayer(ir: SemanticIR, typeHints: readonly TypeHint[] = []) {
     Layer.succeed(Emissions, emissions),
     Layer.succeed(Symbols, symbols),
     Layer.succeed(PluginMeta, { name: "types" }),
-    InflectionLive,
+    ClassicInflectionLive,
     TypeHintsLive(typeHints),
     ArtifactStoreLive
   )

@@ -2,6 +2,7 @@
  * Configuration schema for pg-sourcerer
  */
 import { Schema as S } from "effect"
+import type { InflectionConfig } from "./services/inflection.js"
 
 /**
  * Type hint match criteria
@@ -25,6 +26,9 @@ export type TypeHint = S.Schema.Type<typeof TypeHint>
 
 /**
  * Main configuration schema
+ *
+ * Note: `inflection` is typed as `InflectionConfig | undefined` but stored
+ * as S.Any in the schema since functions can't be validated at runtime.
  */
 export const Config = S.Struct({
   /** Database connection string */
@@ -38,6 +42,22 @@ export const Config = S.Struct({
 
   /** Type hints for custom type mapping */
   typeHints: S.optionalWith(S.Array(TypeHint), { default: () => [] }),
+
+  /**
+   * Inflection configuration for customizing naming conventions.
+   * Each property is a function that transforms names.
+   *
+   * @example
+   * ```typescript
+   * inflection: {
+   *   // Skip singularization for entity names
+   *   entityName: (tableName) => Str.snakeToPascal(tableName),
+   *   // Keep column names as snake_case
+   *   fieldName: (columnName) => columnName,
+   * }
+   * ```
+   */
+  inflection: S.optional(S.Any),
 
   /** Plugins to run (validated individually per plugin) */
   plugins: S.Array(S.Any),
@@ -53,5 +73,6 @@ export interface ResolvedConfig {
   readonly schemas: readonly string[]
   readonly outputDir: string
   readonly typeHints: readonly TypeHint[]
+  readonly inflection?: InflectionConfig
   readonly plugins: readonly unknown[]
 }

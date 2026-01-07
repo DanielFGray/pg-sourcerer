@@ -2,7 +2,12 @@
  * Inflection Service Unit Tests
  */
 import { describe, it, expect } from "@effect/vitest"
-import { liveInflection } from "../services/inflection.js"
+import { 
+  defaultInflection, 
+  createInflection,
+  applyTransformChain,
+  type TransformChain,
+} from "../services/inflection.js"
 import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
 import type { SmartTags } from "../ir/index.js"
 
@@ -24,258 +29,456 @@ const emptyTags: SmartTags = {}
 describe("Inflection Service", () => {
   describe("camelCase", () => {
     it("converts snake_case to camelCase", () => {
-      expect(liveInflection.camelCase("user_name")).toBe("userName")
-      expect(liveInflection.camelCase("created_at")).toBe("createdAt")
-      expect(liveInflection.camelCase("foo_bar_baz")).toBe("fooBarBaz")
+      expect(defaultInflection.camelCase("user_name")).toBe("userName")
+      expect(defaultInflection.camelCase("created_at")).toBe("createdAt")
+      expect(defaultInflection.camelCase("foo_bar_baz")).toBe("fooBarBaz")
     })
 
     it("handles single words", () => {
-      expect(liveInflection.camelCase("user")).toBe("user")
-      expect(liveInflection.camelCase("id")).toBe("id")
+      expect(defaultInflection.camelCase("user")).toBe("user")
+      expect(defaultInflection.camelCase("id")).toBe("id")
     })
 
     it("handles snake_case with numbers", () => {
-      expect(liveInflection.camelCase("user_v2")).toBe("userV2")
-      expect(liveInflection.camelCase("api_v2_endpoint")).toBe("apiV2Endpoint")
+      expect(defaultInflection.camelCase("user_v2")).toBe("userV2")
+      expect(defaultInflection.camelCase("api_v2_endpoint")).toBe("apiV2Endpoint")
     })
 
     it("handles already camelCase input", () => {
       // Effect's snakeToCamel only transforms underscores
-      expect(liveInflection.camelCase("userName")).toBe("userName")
+      expect(defaultInflection.camelCase("userName")).toBe("userName")
     })
 
     it("preserves leading underscores", () => {
       // Effect's snakeToCamel preserves single leading underscore
-      expect(liveInflection.camelCase("_private")).toBe("_private")
+      expect(defaultInflection.camelCase("_private")).toBe("_private")
       // Double underscore: first preserved, second treated as separator
-      expect(liveInflection.camelCase("__double")).toBe("_Double")
+      expect(defaultInflection.camelCase("__double")).toBe("_Double")
     })
 
     it("handles consecutive underscores (preserves one)", () => {
       // Effect's snakeToCamel treats double underscore specially
-      expect(liveInflection.camelCase("foo__bar")).toBe("foo_bar")
+      expect(defaultInflection.camelCase("foo__bar")).toBe("foo_bar")
     })
   })
 
   describe("pascalCase", () => {
     it("converts snake_case to PascalCase", () => {
-      expect(liveInflection.pascalCase("user_name")).toBe("UserName")
-      expect(liveInflection.pascalCase("created_at")).toBe("CreatedAt")
+      expect(defaultInflection.pascalCase("user_name")).toBe("UserName")
+      expect(defaultInflection.pascalCase("created_at")).toBe("CreatedAt")
     })
 
     it("handles single words", () => {
-      expect(liveInflection.pascalCase("user")).toBe("User")
-      expect(liveInflection.pascalCase("id")).toBe("Id")
+      expect(defaultInflection.pascalCase("user")).toBe("User")
+      expect(defaultInflection.pascalCase("id")).toBe("Id")
     })
 
     it("handles snake_case with numbers", () => {
-      expect(liveInflection.pascalCase("user_v2")).toBe("UserV2")
+      expect(defaultInflection.pascalCase("user_v2")).toBe("UserV2")
     })
   })
 
   describe("pluralize", () => {
     it("adds 's' to regular words", () => {
-      expect(liveInflection.pluralize("user")).toBe("users")
-      expect(liveInflection.pluralize("post")).toBe("posts")
-      expect(liveInflection.pluralize("tag")).toBe("tags")
+      expect(defaultInflection.pluralize("user")).toBe("users")
+      expect(defaultInflection.pluralize("post")).toBe("posts")
+      expect(defaultInflection.pluralize("tag")).toBe("tags")
     })
 
     it("adds 'es' to words ending in s, x, z, ch, sh", () => {
-      expect(liveInflection.pluralize("bus")).toBe("buses")
-      expect(liveInflection.pluralize("box")).toBe("boxes")
-      expect(liveInflection.pluralize("quiz")).toBe("quizes") // naive impl doesn't double z
-      expect(liveInflection.pluralize("watch")).toBe("watches")
-      expect(liveInflection.pluralize("dish")).toBe("dishes")
+      expect(defaultInflection.pluralize("bus")).toBe("buses")
+      expect(defaultInflection.pluralize("box")).toBe("boxes")
+      expect(defaultInflection.pluralize("quiz")).toBe("quizes") // naive impl doesn't double z
+      expect(defaultInflection.pluralize("watch")).toBe("watches")
+      expect(defaultInflection.pluralize("dish")).toBe("dishes")
     })
 
     it("handles words ending in consonant + y", () => {
-      expect(liveInflection.pluralize("city")).toBe("cities")
-      expect(liveInflection.pluralize("category")).toBe("categories")
+      expect(defaultInflection.pluralize("city")).toBe("cities")
+      expect(defaultInflection.pluralize("category")).toBe("categories")
     })
 
     it("handles words ending in vowel + y", () => {
-      expect(liveInflection.pluralize("day")).toBe("days")
-      expect(liveInflection.pluralize("key")).toBe("keys")
+      expect(defaultInflection.pluralize("day")).toBe("days")
+      expect(defaultInflection.pluralize("key")).toBe("keys")
     })
 
     // Note: naive implementation - doesn't handle irregular plurals
     it("handles regular words (naive - no irregular support)", () => {
       // person -> persons (not people)
-      expect(liveInflection.pluralize("person")).toBe("persons")
+      expect(defaultInflection.pluralize("person")).toBe("persons")
       // child -> childs (not children)
-      expect(liveInflection.pluralize("child")).toBe("childs")
+      expect(defaultInflection.pluralize("child")).toBe("childs")
     })
   })
 
   describe("singularize", () => {
     it("removes 's' from regular plurals", () => {
-      expect(liveInflection.singularize("users")).toBe("user")
-      expect(liveInflection.singularize("posts")).toBe("post")
+      expect(defaultInflection.singularize("users")).toBe("user")
+      expect(defaultInflection.singularize("posts")).toBe("post")
     })
 
     it("handles 'ies' -> 'y'", () => {
-      expect(liveInflection.singularize("cities")).toBe("city")
-      expect(liveInflection.singularize("categories")).toBe("category")
+      expect(defaultInflection.singularize("cities")).toBe("city")
+      expect(defaultInflection.singularize("categories")).toBe("category")
     })
 
     it("handles 'sses' -> 'ss'", () => {
-      expect(liveInflection.singularize("classes")).toBe("class")
-      expect(liveInflection.singularize("passes")).toBe("pass")
+      expect(defaultInflection.singularize("classes")).toBe("class")
+      expect(defaultInflection.singularize("passes")).toBe("pass")
     })
 
     it("handles 'xes' -> 'x'", () => {
-      expect(liveInflection.singularize("boxes")).toBe("box")
+      expect(defaultInflection.singularize("boxes")).toBe("box")
     })
 
     it("handles 'ches' -> 'ch'", () => {
-      expect(liveInflection.singularize("watches")).toBe("watch")
+      expect(defaultInflection.singularize("watches")).toBe("watch")
     })
 
     it("handles 'shes' -> 'sh'", () => {
-      expect(liveInflection.singularize("dishes")).toBe("dish")
+      expect(defaultInflection.singularize("dishes")).toBe("dish")
     })
 
     it("does not remove 's' from words ending in 'ss'", () => {
-      expect(liveInflection.singularize("class")).toBe("class")
-      expect(liveInflection.singularize("boss")).toBe("boss")
+      expect(defaultInflection.singularize("class")).toBe("class")
+      expect(defaultInflection.singularize("boss")).toBe("boss")
     })
 
     it("handles single character words", () => {
-      expect(liveInflection.singularize("s")).toBe("s")
+      expect(defaultInflection.singularize("s")).toBe("s")
     })
   })
 
   describe("safeIdentifier", () => {
     it("appends underscore to reserved words", () => {
-      expect(liveInflection.safeIdentifier("class")).toBe("class_")
-      expect(liveInflection.safeIdentifier("type")).toBe("type_")
-      expect(liveInflection.safeIdentifier("default")).toBe("default_")
-      expect(liveInflection.safeIdentifier("enum")).toBe("enum_")
-      expect(liveInflection.safeIdentifier("function")).toBe("function_")
+      expect(defaultInflection.safeIdentifier("class")).toBe("class_")
+      expect(defaultInflection.safeIdentifier("type")).toBe("type_")
+      expect(defaultInflection.safeIdentifier("default")).toBe("default_")
+      expect(defaultInflection.safeIdentifier("enum")).toBe("enum_")
+      expect(defaultInflection.safeIdentifier("function")).toBe("function_")
     })
 
     it("leaves non-reserved words unchanged", () => {
-      expect(liveInflection.safeIdentifier("user")).toBe("user")
-      expect(liveInflection.safeIdentifier("name")).toBe("name")
-      expect(liveInflection.safeIdentifier("myClass")).toBe("myClass")
+      expect(defaultInflection.safeIdentifier("user")).toBe("user")
+      expect(defaultInflection.safeIdentifier("name")).toBe("name")
+      expect(defaultInflection.safeIdentifier("myClass")).toBe("myClass")
     })
 
     it("handles TypeScript-specific reserved words", () => {
-      expect(liveInflection.safeIdentifier("readonly")).toBe("readonly_")
-      expect(liveInflection.safeIdentifier("keyof")).toBe("keyof_")
-      expect(liveInflection.safeIdentifier("infer")).toBe("infer_")
+      expect(defaultInflection.safeIdentifier("readonly")).toBe("readonly_")
+      expect(defaultInflection.safeIdentifier("keyof")).toBe("keyof_")
+      expect(defaultInflection.safeIdentifier("infer")).toBe("infer_")
     })
 
     it("handles primitive type names", () => {
-      expect(liveInflection.safeIdentifier("string")).toBe("string_")
-      expect(liveInflection.safeIdentifier("number")).toBe("number_")
-      expect(liveInflection.safeIdentifier("boolean")).toBe("boolean_")
-      expect(liveInflection.safeIdentifier("object")).toBe("object_")
-      expect(liveInflection.safeIdentifier("symbol")).toBe("symbol_")
-      expect(liveInflection.safeIdentifier("bigint")).toBe("bigint_")
+      expect(defaultInflection.safeIdentifier("string")).toBe("string_")
+      expect(defaultInflection.safeIdentifier("number")).toBe("number_")
+      expect(defaultInflection.safeIdentifier("boolean")).toBe("boolean_")
+      expect(defaultInflection.safeIdentifier("object")).toBe("object_")
+      expect(defaultInflection.safeIdentifier("symbol")).toBe("symbol_")
+      expect(defaultInflection.safeIdentifier("bigint")).toBe("bigint_")
     })
   })
 
   describe("entityName", () => {
     it("uses @name tag if present", () => {
       const tags: SmartTags = { name: "CustomName" }
-      expect(liveInflection.entityName(mockPgClass("users"), tags)).toBe("CustomName")
+      expect(defaultInflection.entityName(mockPgClass("users"), tags)).toBe("CustomName")
     })
 
-    it("singularizes and PascalCases table name", () => {
-      expect(liveInflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
-      expect(liveInflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("BlogPost")
-    })
-
-    it("handles already singular names", () => {
-      expect(liveInflection.entityName(mockPgClass("user"), emptyTags)).toBe("User")
-    })
-
-    it("handles complex plurals", () => {
-      expect(liveInflection.entityName(mockPgClass("categories"), emptyTags)).toBe("Category")
-      expect(liveInflection.entityName(mockPgClass("companies"), emptyTags)).toBe("Company")
+    it("returns table name unchanged (identity - no transforms)", () => {
+      // defaultInflection applies no transforms - use createInflection for transforms
+      expect(defaultInflection.entityName(mockPgClass("users"), emptyTags)).toBe("users")
+      expect(defaultInflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("blog_posts")
+      expect(defaultInflection.entityName(mockPgClass("user"), emptyTags)).toBe("user")
+      expect(defaultInflection.entityName(mockPgClass("categories"), emptyTags)).toBe("categories")
     })
   })
 
   describe("shapeName", () => {
-    it("appends capitalized kind to entity name", () => {
-      expect(liveInflection.shapeName("User", "row")).toBe("UserRow")
-      expect(liveInflection.shapeName("User", "insert")).toBe("UserInsert")
-      expect(liveInflection.shapeName("User", "update")).toBe("UserUpdate")
-      expect(liveInflection.shapeName("User", "patch")).toBe("UserPatch")
+    it("appends kind unchanged to entity name (identity - no transforms)", () => {
+      // defaultInflection applies no transforms to shapeSuffix
+      expect(defaultInflection.shapeName("User", "row")).toBe("Userrow")
+      expect(defaultInflection.shapeName("User", "insert")).toBe("Userinsert")
+      expect(defaultInflection.shapeName("User", "update")).toBe("Userupdate")
+      expect(defaultInflection.shapeName("User", "patch")).toBe("Userpatch")
     })
   })
 
   describe("fieldName", () => {
     it("uses @name tag if present", () => {
       const tags: SmartTags = { name: "customField" }
-      expect(liveInflection.fieldName(mockPgAttribute("user_id"), tags)).toBe("customField")
+      expect(defaultInflection.fieldName(mockPgAttribute("user_id"), tags)).toBe("customField")
     })
 
-    it("converts snake_case column to camelCase", () => {
-      expect(liveInflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("userId")
-      expect(liveInflection.fieldName(mockPgAttribute("created_at"), emptyTags)).toBe("createdAt")
-    })
-
-    it("handles single word columns", () => {
-      expect(liveInflection.fieldName(mockPgAttribute("id"), emptyTags)).toBe("id")
-      expect(liveInflection.fieldName(mockPgAttribute("name"), emptyTags)).toBe("name")
+    it("returns column name unchanged (identity - no transforms)", () => {
+      // defaultInflection applies no transforms - use createInflection for transforms
+      expect(defaultInflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("user_id")
+      expect(defaultInflection.fieldName(mockPgAttribute("created_at"), emptyTags)).toBe("created_at")
+      expect(defaultInflection.fieldName(mockPgAttribute("id"), emptyTags)).toBe("id")
+      expect(defaultInflection.fieldName(mockPgAttribute("name"), emptyTags)).toBe("name")
     })
   })
 
   describe("enumName", () => {
     it("uses @name tag if present", () => {
       const tags: SmartTags = { name: "CustomEnum" }
-      expect(liveInflection.enumName(mockPgType("user_status"), tags)).toBe("CustomEnum")
+      expect(defaultInflection.enumName(mockPgType("user_status"), tags)).toBe("CustomEnum")
     })
 
-    it("converts snake_case to PascalCase", () => {
-      expect(liveInflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
-      expect(liveInflection.enumName(mockPgType("order_type"), emptyTags)).toBe("OrderType")
+    it("returns type name unchanged (identity - no transforms)", () => {
+      // defaultInflection applies no transforms - use createInflection for transforms
+      expect(defaultInflection.enumName(mockPgType("user_status"), emptyTags)).toBe("user_status")
+      expect(defaultInflection.enumName(mockPgType("order_type"), emptyTags)).toBe("order_type")
     })
   })
 
   describe("enumValueName", () => {
     it("preserves original value", () => {
-      expect(liveInflection.enumValueName("ACTIVE")).toBe("ACTIVE")
-      expect(liveInflection.enumValueName("pending")).toBe("pending")
-      expect(liveInflection.enumValueName("in_progress")).toBe("in_progress")
+      expect(defaultInflection.enumValueName("ACTIVE")).toBe("ACTIVE")
+      expect(defaultInflection.enumValueName("pending")).toBe("pending")
+      expect(defaultInflection.enumValueName("in_progress")).toBe("in_progress")
     })
   })
 
   describe("relationName", () => {
     it("uses @fieldName tag for local side", () => {
       const tags: SmartTags = { fieldName: "author" }
-      expect(liveInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", tags))
+      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", tags))
         .toBe("author")
     })
 
     it("uses @foreignFieldName tag for foreign side", () => {
       const tags: SmartTags = { foreignFieldName: "posts" }
-      expect(liveInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "foreign", tags))
+      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "foreign", tags))
         .toBe("posts")
     })
 
-    it("derives name from constraint when no tags", () => {
+    it("derives name from constraint when no tags (identity - no transforms)", () => {
       // "posts_author_id_fkey" -> remove _fkey -> "posts_author_id" 
       // -> remove _id -> "posts_author" -> remove table prefix -> "author"
-      expect(liveInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", emptyTags))
+      // No additional transforms applied by defaultInflection
+      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", emptyTags))
         .toBe("author")
     })
 
-    it("handles various constraint naming patterns", () => {
-      expect(liveInflection.relationName(mockPgConstraint("comments_user_id_fkey"), "local", emptyTags))
+    it("handles various constraint naming patterns (identity - no transforms)", () => {
+      expect(defaultInflection.relationName(mockPgConstraint("comments_user_id_fkey"), "local", emptyTags))
         .toBe("user")
       
       // Multi-word table prefix: only first segment is stripped
       // "order_items_product_id_fkey" -> "items_product" (after removing order_ prefix and _id_fkey suffix)
-      expect(liveInflection.relationName(mockPgConstraint("order_items_product_id_fkey"), "local", emptyTags))
-        .toBe("itemsProduct")
+      // No transforms applied, so underscore preserved
+      expect(defaultInflection.relationName(mockPgConstraint("order_items_product_id_fkey"), "local", emptyTags))
+        .toBe("items_product")
     })
 
     it("handles constraint without _id suffix", () => {
-      expect(liveInflection.relationName(mockPgConstraint("posts_category_fkey"), "local", emptyTags))
+      expect(defaultInflection.relationName(mockPgConstraint("posts_category_fkey"), "local", emptyTags))
         .toBe("category")
     })
+  })
+})
+
+describe("createInflection", () => {
+  describe("with no config", () => {
+    it("returns defaultInflection", () => {
+      const inflection = createInflection()
+      expect(inflection).toBe(defaultInflection)
+    })
+  })
+
+  describe("with empty chains", () => {
+    it("returns defaultInflection when all chains empty", () => {
+      const inflection = createInflection({
+        entityName: [],
+        fieldName: [],
+      })
+      expect(inflection).toBe(defaultInflection)
+    })
+  })
+
+  describe("with entityName chain", () => {
+    it("applies pascalCase transform", () => {
+      const inflection = createInflection({
+        entityName: ["pascalCase"],
+      })
+
+      // "users" → "Users" (pascalCase only, no singularize)
+      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("Users")
+      expect(inflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("BlogPosts")
+    })
+
+    it("applies singularize + pascalCase chain", () => {
+      const inflection = createInflection({
+        entityName: ["singularize", "pascalCase"],
+      })
+
+      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
+      expect(inflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("BlogPost")
+    })
+
+    it("smart tags still take precedence", () => {
+      const inflection = createInflection({
+        entityName: ["uppercase"],
+      })
+
+      const tags: SmartTags = { name: "CustomName" }
+      expect(inflection.entityName(mockPgClass("users"), tags)).toBe("CustomName")
+    })
+  })
+
+  describe("with fieldName chain", () => {
+    it("applies camelCase transform", () => {
+      const inflection = createInflection({
+        fieldName: ["camelCase"],
+      })
+
+      expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("userId")
+      expect(inflection.fieldName(mockPgAttribute("created_at"), emptyTags)).toBe("createdAt")
+    })
+
+    it("empty chain preserves original", () => {
+      const inflection = createInflection({
+        fieldName: [],
+        entityName: ["pascalCase"], // need at least one non-empty to avoid returning default
+      })
+
+      expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("user_id")
+    })
+
+    it("smart tags still take precedence", () => {
+      const inflection = createInflection({
+        fieldName: ["uppercase"],
+      })
+
+      const tags: SmartTags = { name: "customField" }
+      expect(inflection.fieldName(mockPgAttribute("user_id"), tags)).toBe("customField")
+    })
+  })
+
+  describe("with enumName chain", () => {
+    it("applies pascalCase transform", () => {
+      const inflection = createInflection({
+        enumName: ["pascalCase"],
+      })
+
+      expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
+    })
+  })
+
+  describe("with enumValue chain", () => {
+    it("applies uppercase transform", () => {
+      const inflection = createInflection({
+        enumValue: ["uppercase"],
+      })
+
+      expect(inflection.enumValueName("active")).toBe("ACTIVE")
+      expect(inflection.enumValueName("pending")).toBe("PENDING")
+    })
+
+    it("applies lowercase transform", () => {
+      const inflection = createInflection({
+        enumValue: ["lowercase"],
+      })
+
+      expect(inflection.enumValueName("ACTIVE")).toBe("active")
+    })
+  })
+
+  describe("with shapeSuffix chain", () => {
+    it("applies capitalize transform", () => {
+      const inflection = createInflection({
+        shapeSuffix: ["capitalize"],
+      })
+
+      expect(inflection.shapeName("User", "row")).toBe("UserRow")
+      expect(inflection.shapeName("User", "insert")).toBe("UserInsert")
+    })
+
+    it("applies uppercase transform", () => {
+      const inflection = createInflection({
+        shapeSuffix: ["uppercase"],
+      })
+
+      expect(inflection.shapeName("User", "row")).toBe("UserROW")
+      expect(inflection.shapeName("User", "insert")).toBe("UserINSERT")
+    })
+  })
+
+  describe("with relationName chain", () => {
+    it("applies camelCase transform", () => {
+      const inflection = createInflection({
+        relationName: ["camelCase"],
+      })
+
+      // After cleaning: "posts_author_id_fkey" → "author" → "author" (already camel)
+      expect(inflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", emptyTags))
+        .toBe("author")
+    })
+  })
+
+  describe("with multiple chains", () => {
+    it("applies all configured chains", () => {
+      const inflection = createInflection({
+        entityName: ["singularize", "pascalCase"],
+        fieldName: ["camelCase"],
+        enumName: ["pascalCase"],
+        shapeSuffix: ["capitalize"],
+      })
+
+      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
+      expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("userId")
+      expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
+      expect(inflection.shapeName("User", "row")).toBe("UserRow")
+    })
+  })
+
+  describe("primitive transforms are unchanged", () => {
+    it("camelCase, pascalCase, pluralize, singularize, safeIdentifier are from default", () => {
+      const inflection = createInflection({
+        entityName: ["uppercase"],
+      })
+
+      // These should still work normally
+      expect(inflection.camelCase("user_name")).toBe("userName")
+      expect(inflection.pascalCase("user_name")).toBe("UserName")
+      expect(inflection.pluralize("user")).toBe("users")
+      expect(inflection.singularize("users")).toBe("user")
+      expect(inflection.safeIdentifier("class")).toBe("class_")
+    })
+  })
+})
+
+describe("applyTransformChain", () => {
+  it("returns input unchanged for empty chain", () => {
+    expect(applyTransformChain("hello", [])).toBe("hello")
+  })
+
+  it("applies single transform", () => {
+    expect(applyTransformChain("user_name", ["camelCase"])).toBe("userName")
+    expect(applyTransformChain("user_name", ["pascalCase"])).toBe("UserName")
+    expect(applyTransformChain("hello", ["uppercase"])).toBe("HELLO")
+  })
+
+  it("applies transforms in order", () => {
+    // singularize first, then pascalCase
+    expect(applyTransformChain("users", ["singularize", "pascalCase"])).toBe("User")
+    
+    // pascalCase first, then... (order matters)
+    expect(applyTransformChain("user_name", ["pascalCase", "uppercase"])).toBe("USERNAME")
+  })
+
+  it("supports all transform names", () => {
+    expect(applyTransformChain("user_name", ["camelCase"])).toBe("userName")
+    expect(applyTransformChain("user_name", ["pascalCase"])).toBe("UserName")
+    expect(applyTransformChain("userName", ["snakeCase"])).toBe("user_name")
+    expect(applyTransformChain("users", ["singularize"])).toBe("user")
+    expect(applyTransformChain("user", ["pluralize"])).toBe("users")
+    expect(applyTransformChain("hello", ["capitalize"])).toBe("Hello")
+    expect(applyTransformChain("Hello", ["uncapitalize"])).toBe("hello")
+    expect(applyTransformChain("Hello", ["lowercase"])).toBe("hello")
+    expect(applyTransformChain("hello", ["uppercase"])).toBe("HELLO")
   })
 })
