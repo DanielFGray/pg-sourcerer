@@ -947,4 +947,179 @@ describe("Conjure", () => {
       expect(code).toContain('throw new Error("Access denied")')
     })
   })
+
+  describe("export helpers (exp.*)", () => {
+    it("creates exported interface with symbol metadata", () => {
+      const iface = conjure.exp.interface(
+        "UserRow",
+        { capability: "types", entity: "User", shape: "row" },
+        [
+          { name: "id", type: conjure.ts.string() },
+          { name: "email", type: conjure.ts.string() },
+          { name: "age", type: conjure.ts.number(), optional: true },
+        ]
+      )
+
+      expect(iface._tag).toBe("SymbolStatement")
+      expect(iface.symbol).toEqual({
+        name: "UserRow",
+        capability: "types",
+        entity: "User",
+        shape: "row",
+        isType: true,
+      })
+
+      const code = printStmt(iface.node)
+      expect(code).toContain("export interface UserRow")
+      expect(code).toContain("id: string")
+      expect(code).toContain("email: string")
+      expect(code).toContain("age?: number")
+    })
+
+    it("creates exported type alias with symbol metadata", () => {
+      const alias = conjure.exp.typeAlias(
+        "Role",
+        { capability: "types", entity: "Role" },
+        conjure.ts.union(
+          conjure.ts.literal("admin"),
+          conjure.ts.literal("user"),
+          conjure.ts.literal("guest")
+        )
+      )
+
+      expect(alias._tag).toBe("SymbolStatement")
+      expect(alias.symbol).toEqual({
+        name: "Role",
+        capability: "types",
+        entity: "Role",
+        isType: true,
+      })
+
+      const code = printStmt(alias.node)
+      expect(code).toContain("export type Role")
+      expect(code).toContain('"admin"')
+      expect(code).toContain('"user"')
+      expect(code).toContain('"guest"')
+    })
+
+    it("creates exported const with symbol metadata", () => {
+      const schema = conjure.exp.const(
+        "UserSchema",
+        { capability: "schemas:zod", entity: "User", shape: "row" },
+        conjure.id("z").method("object", [conjure.obj().build()]).build()
+      )
+
+      expect(schema._tag).toBe("SymbolStatement")
+      expect(schema.symbol).toEqual({
+        name: "UserSchema",
+        capability: "schemas:zod",
+        entity: "User",
+        shape: "row",
+        isType: false,
+      })
+
+      const code = printStmt(schema.node)
+      expect(code).toContain("export const UserSchema = z.object")
+    })
+
+    it("creates exported const with type annotation", () => {
+      const schema = conjure.exp.const(
+        "config",
+        { capability: "config", entity: "Config" },
+        conjure.obj().prop("debug", conjure.bool(true)).build(),
+        conjure.ts.ref("AppConfig")
+      )
+
+      const code = printStmt(schema.node)
+      expect(code).toContain("export const config: AppConfig")
+    })
+
+    it("creates exported type for inferred types", () => {
+      const inferredType = conjure.exp.type(
+        "User",
+        { capability: "schemas:zod", entity: "User", shape: "row" },
+        conjure.ts.typeof("UserSchema")
+      )
+
+      expect(inferredType._tag).toBe("SymbolStatement")
+      expect(inferredType.symbol.isType).toBe(true)
+
+      const code = printStmt(inferredType.node)
+      expect(code).toContain("export type User = typeof UserSchema")
+    })
+  })
+
+  describe("symbolProgram", () => {
+    it("extracts symbols from SymbolStatements", () => {
+      const prog = conjure.symbolProgram(
+        conjure.exp.interface(
+          "UserRow",
+          { capability: "types", entity: "User", shape: "row" },
+          [{ name: "id", type: conjure.ts.string() }]
+        ),
+        conjure.exp.typeAlias(
+          "Role",
+          { capability: "types", entity: "Role" },
+          conjure.ts.literal("admin")
+        )
+      )
+
+      expect(prog._tag).toBe("SymbolProgram")
+      expect(prog.symbols).toHaveLength(2)
+      expect(prog.symbols[0]).toEqual({
+        name: "UserRow",
+        capability: "types",
+        entity: "User",
+        shape: "row",
+        isType: true,
+      })
+      expect(prog.symbols[1]).toEqual({
+        name: "Role",
+        capability: "types",
+        entity: "Role",
+        isType: true,
+      })
+    })
+
+    it("handles mix of regular statements and SymbolStatements", () => {
+      const prog = conjure.symbolProgram(
+        conjure.stmt.const("x", conjure.num(1)),
+        conjure.exp.interface(
+          "UserRow",
+          { capability: "types", entity: "User" },
+          []
+        ),
+        conjure.stmt.const("y", conjure.num(2))
+      )
+
+      expect(prog._tag).toBe("SymbolProgram")
+      expect(prog.symbols).toHaveLength(1)
+      expect(prog.symbols[0]!.name).toBe("UserRow")
+
+      const code = conjure.print(prog.node)
+      expect(code).toContain("const x = 1")
+      expect(code).toContain("export interface UserRow")
+      expect(code).toContain("const y = 2")
+    })
+
+    it("preserves statement order in generated code", () => {
+      const prog = conjure.symbolProgram(
+        conjure.exp.typeAlias(
+          "First",
+          { capability: "types", entity: "First" },
+          conjure.ts.string()
+        ),
+        conjure.exp.typeAlias(
+          "Second",
+          { capability: "types", entity: "Second" },
+          conjure.ts.number()
+        )
+      )
+
+      const code = conjure.print(prog.node)
+      const firstIdx = code.indexOf("First")
+      const secondIdx = code.indexOf("Second")
+      expect(firstIdx).toBeLessThan(secondIdx)
+    })
+  })
 })

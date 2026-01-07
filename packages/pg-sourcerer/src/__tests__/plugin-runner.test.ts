@@ -22,6 +22,7 @@ import {
 import { createIRBuilder, freezeIR } from "../ir/index.js"
 import { definePlugin, type SimplePluginContext } from "../services/plugin.js"
 import { TypeHintsLive } from "../services/type-hints.js"
+import { conjure } from "../lib/conjure.js"
 
 // Test layer: PluginRunner + empty TypeHints
 const TestLayer = Layer.merge(
@@ -1041,6 +1042,88 @@ layer(TestLayer)("PluginRunner", (it) => {
           if (result._tag === "Left") {
             expect(result.left._tag).toBe("SymbolConflict")
           }
+        })
+      )
+    })
+
+    describe("ctx.file() FileBuilder", () => {
+      it.effect("emits AST via file() and registers symbols", () =>
+        Effect.gen(function* () {
+          const runner = yield* PluginRunner
+          const ir = createTestIR()
+          
+          const plugin = testPlugin("types", ["types"], [], (ctx) => {
+            ctx.file("types/User.ts")
+              .header("// Auto-generated")
+              .ast(
+                conjure.symbolProgram(
+                  conjure.exp.interface(
+                    "UserRow",
+                    { capability: "types", entity: "User", shape: "row" },
+                    [{ name: "id", type: conjure.ts.string() }]
+                  )
+                )
+              )
+              .emit()
+          })
+          
+          const prepared = yield* runner.prepare([configured(plugin)])
+          const result = yield* runner.run(prepared, ir)
+          
+          // Check symbols were registered
+          const symbols = result.symbols.getAll()
+          expect(symbols).toHaveLength(1)
+          expect(symbols[0]!.name).toBe("UserRow")
+          expect(symbols[0]!.file).toBe("types/User.ts")
+          expect(symbols[0]!.capability).toBe("types")
+          expect(symbols[0]!.entity).toBe("User")
+          expect(symbols[0]!.shape).toBe("row")
+          
+          // Check emission was serialized (AST → string)
+          const emissions = result.emissions.getAll()
+          expect(emissions).toHaveLength(1)
+          expect(emissions[0]!.path).toBe("types/User.ts")
+          expect(emissions[0]!.content).toContain("// Auto-generated")
+          expect(emissions[0]!.content).toContain("export interface UserRow")
+        })
+      )
+
+      it.effect("allows multiple file() calls for different files", () =>
+        Effect.gen(function* () {
+          const runner = yield* PluginRunner
+          const ir = createTestIR()
+          
+          const plugin = testPlugin("types", ["types"], [], (ctx) => {
+            ctx.file("types/User.ts")
+              .ast(
+                conjure.symbolProgram(
+                  conjure.exp.interface(
+                    "UserRow",
+                    { capability: "types", entity: "User" },
+                    []
+                  )
+                )
+              )
+              .emit()
+            
+            ctx.file("types/Post.ts")
+              .ast(
+                conjure.symbolProgram(
+                  conjure.exp.interface(
+                    "PostRow",
+                    { capability: "types", entity: "Post" },
+                    []
+                  )
+                )
+              )
+              .emit()
+          })
+          
+          const prepared = yield* runner.prepare([configured(plugin)])
+          const result = yield* runner.run(prepared, ir)
+          
+          expect(result.symbols.getAll()).toHaveLength(2)
+          expect(result.emissions.getAll()).toHaveLength(2)
         })
       )
     })
