@@ -151,7 +151,7 @@ function resolveDomainBaseType(
   pgType: PgType | undefined,
   introspection: Introspection
 ): DomainBaseTypeInfo | undefined {
-  if (!pgType || pgType.typtype !== "d") {
+  if (pgType?.typtype !== "d") {
     return undefined
   }
 

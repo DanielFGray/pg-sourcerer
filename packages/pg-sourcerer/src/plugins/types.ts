@@ -34,7 +34,7 @@ const TypesPluginConfig = S.Struct({
 })
 
 /** Default configuration values */
-const defaultConfig = { outputDir: "types" } as const
+const _defaultConfig = { outputDir: "types" } as const
 
 /**
  * Get the TypeScript type OID from a field's pg attribute
@@ -124,7 +124,7 @@ function resolveFieldType(
   field: Field,
   entity: Entity,
   enums: ReadonlyMap<string, EnumDef>,
-  extensions: ReadonlyArray<ExtensionInfo>,
+  extensions: readonly ExtensionInfo[],
   typeHints: TypeHintRegistry
 ): ResolvedFieldType {
   // 1. Check TypeHints first (highest priority)
@@ -254,7 +254,7 @@ function generateShapeStatement(
   shape: Shape,
   entity: Entity,
   enums: ReadonlyMap<string, EnumDef>,
-  extensions: ReadonlyArray<ExtensionInfo>,
+  extensions: readonly ExtensionInfo[],
   entityName: string,
   shapeKind: "row" | "insert" | "update" | "patch",
   typeHints: TypeHintRegistry

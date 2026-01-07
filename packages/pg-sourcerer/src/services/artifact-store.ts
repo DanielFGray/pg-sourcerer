@@ -7,7 +7,7 @@
  *
  * This service is stateful - created once per run and shared across plugins.
  */
-import { Context, Effect, Layer } from "effect"
+import { Context, Layer } from "effect"
 import type { Artifact, CapabilityKey } from "../ir/semantic-ir.js"
 
 /**

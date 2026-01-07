@@ -330,7 +330,7 @@ export const ExtensionTypeMap: Readonly<Record<string, Readonly<Record<string, T
 export function getExtensionTypeMapping(
   typeName: string,
   typeNamespaceOid: string,
-  extensions: ReadonlyArray<ExtensionInfo>
+  extensions: readonly ExtensionInfo[]
 ): TsType | undefined {
   // Find extension that owns this namespace and has a mapping for this type
   for (const ext of extensions) {

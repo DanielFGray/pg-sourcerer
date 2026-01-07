@@ -17,7 +17,6 @@ import {
   CapabilityNotSatisfied,
   DuplicatePlugin,
   PluginConfigInvalid,
-  PluginExecutionFailed,
 } from "../errors.js"
 import { createIRBuilder, freezeIR } from "../ir/index.js"
 import { definePlugin, type SimplePluginContext } from "../services/plugin.js"
@@ -35,7 +34,7 @@ function testPlugin(
   name: string,
   provides: string[],
   requires: string[] = [],
-  run: (ctx: SimplePluginContext, config: unknown) => void = () => {}
+  run: (ctx: SimplePluginContext, config: unknown) => void = () => { /* noop */ }
 ): Plugin<unknown> {
   const baseDef = {
     name,

@@ -35,8 +35,109 @@
  */
 import recast from "recast"
 import type { namedTypes as n } from "ast-types"
+import type {
+  ExpressionKind,
+  StatementKind,
+  PatternKind,
+  TSTypeKind,
+  PropertyKind,
+  ObjectMethodKind,
+  ObjectPropertyKind,
+  SpreadPropertyKind,
+  SpreadElementKind,
+  RestElementKind,
+  IdentifierKind,
+  ArrayPatternKind,
+  ObjectPatternKind,
+  TSCallSignatureDeclarationKind,
+  TSConstructSignatureDeclarationKind,
+  TSIndexSignatureKind,
+  TSMethodSignatureKind,
+  TSPropertySignatureKind,
+} from "ast-types/lib/gen/kinds.js"
 
 const b = recast.types.builders
+
+// =============================================================================
+// Recast Interop Types
+// =============================================================================
+
+/**
+ * The ast-types library uses "Kind" union types that are incompatible with
+ * exactOptionalPropertyTypes. We define explicit cast functions that convert
+ * from the namedTypes interfaces (n.Expression, n.Statement, etc.) to the
+ * Kind types that recast builders expect.
+ *
+ * This is safe because every member of n.Expression is a member of ExpressionKind.
+ */
+
+/** Cast n.Expression to ExpressionKind for recast builder compatibility */
+function toExpr(node: n.Expression): ExpressionKind {
+  return node as ExpressionKind
+}
+
+/** Cast n.Statement to StatementKind for recast builder compatibility */
+function toStmt(node: n.Statement): StatementKind {
+  return node as StatementKind
+}
+
+/** Cast n.TSType to TSTypeKind for recast builder compatibility */
+function toTSType(node: n.TSType): TSTypeKind {
+  return node as TSTypeKind
+}
+
+/**
+ * Array element types that recast accepts
+ */
+type ArrayElementLike = ExpressionKind | SpreadElementKind | RestElementKind | null
+
+/**
+ * Object property types that recast accepts for objectExpression
+ */
+type ObjectPropertyLike =
+  | PropertyKind
+  | ObjectMethodKind
+  | ObjectPropertyKind
+  | SpreadPropertyKind
+  | SpreadElementKind
+
+/**
+ * Function parameter types that recast accepts
+ */
+type FnParamKind = IdentifierKind | RestElementKind | ArrayPatternKind | ObjectPatternKind
+
+/**
+ * Interface body member types that recast accepts
+ */
+type InterfaceBodyMember =
+  | TSCallSignatureDeclarationKind
+  | TSConstructSignatureDeclarationKind
+  | TSIndexSignatureKind
+  | TSMethodSignatureKind
+  | TSPropertySignatureKind
+
+// =============================================================================
+// Type Casts (Public API)
+// =============================================================================
+
+/**
+ * Type cast helpers for raw recast interop.
+ *
+ * Use these when mixing conjure with direct recast builder calls.
+ * These provide the same functionality as the internal cast functions
+ * but are exported for external use.
+ */
+export const cast = {
+  /** Cast n.Expression to ExpressionKind */
+  toExpr,
+  /** Cast array element (expression or spread) */
+  asArrayElem: (node: n.Expression | n.SpreadElement): ArrayElementLike =>
+    node as ArrayElementLike,
+  /** Cast n.Statement to StatementKind */
+  toStmt,
+  /** Cast n.TSType to TSTypeKind */
+  toTSType,
+} as const
 
 // =============================================================================
 // Symbol Metadata Types
@@ -84,49 +185,6 @@ export interface SymbolProgram {
 }
 
 // =============================================================================
-// Type Casts
-// =============================================================================
-
-/**
- * Typed wrappers for recast AST nodes.
- *
- * The recast/ast-types library has type definitions that conflict with
- * exactOptionalPropertyTypes. These helpers provide safe casts for interop.
- */
-
-/** Cast to expression for call arguments */
-const asExpr = (node: n.Expression): any => node
-
-/** Cast for member expression object */
-const asMemberObj = (node: n.Expression): any => node
-
-/** Cast for array elements (handles expressions and spreads) */
-const asArrayElem = (node: n.Expression | n.SpreadElement): any => node
-
-/** Cast for object property values */
-const asPropValue = (node: n.Expression): any => node
-
-/** Cast for statement arrays */
-const asStatement = (node: n.Statement): any => node
-
-/** Cast for TypeScript types */
-const asTSType = (node: n.TSType): any => node
-
-/**
- * Type cast helpers for raw recast interop.
- *
- * Use these when mixing conjure with direct recast builder calls.
- */
-export const cast = {
-  asExpr,
-  asMemberObj,
-  asArrayElem,
-  asPropValue,
-  asStatement,
-  asTSType,
-} as const
-
-// =============================================================================
 // Chain Builder
 // =============================================================================
 
@@ -159,28 +217,28 @@ function createChain(start: n.Expression): ChainBuilder {
 
     prop(name) {
       return createChain(
-        b.memberExpression(asMemberObj(this.node), b.identifier(name))
+        b.memberExpression(toExpr(this.node), b.identifier(name))
       )
     },
 
     method(name, args = []) {
       return createChain(
         b.callExpression(
-          b.memberExpression(asMemberObj(this.node), b.identifier(name)),
-          args.map(asExpr)
+          b.memberExpression(toExpr(this.node), b.identifier(name)),
+          args.map(toExpr)
         )
       )
     },
 
     call(args = []) {
       return createChain(
-        b.callExpression(asMemberObj(this.node), args.map(asExpr))
+        b.callExpression(toExpr(this.node), args.map(toExpr))
       )
     },
 
     index(expr) {
       return createChain(
-        b.memberExpression(asMemberObj(this.node), asExpr(expr), true)
+        b.memberExpression(toExpr(this.node), toExpr(expr), true)
       )
     },
 
@@ -214,24 +272,26 @@ export interface ObjBuilder {
   build(): n.ObjectExpression
 }
 
-// Internal: use any[] to avoid exactOptionalPropertyTypes issues with recast
-function createObj(props: any[] = []): ObjBuilder {
+// Internal: properly typed for recast builder compatibility
+function createObj(props: ObjectPropertyLike[] = []): ObjBuilder {
   return {
     prop(key, value) {
-      return createObj([
-        ...props,
-        b.objectProperty(b.identifier(key), asPropValue(value)),
-      ])
+      const newProp = b.objectProperty(
+        b.identifier(key),
+        toExpr(value)
+      )
+      return createObj([...props, newProp])
     },
 
     computed(key, value) {
-      const prop = b.objectProperty(asExpr(key), asPropValue(value))
+      const prop = b.objectProperty(toExpr(key), toExpr(value))
       prop.computed = true
       return createObj([...props, prop])
     },
 
     spread(expr) {
-      return createObj([...props, b.spreadElement(asExpr(expr))])
+      const spreadElem = b.spreadElement(toExpr(expr))
+      return createObj([...props, spreadElem])
     },
 
     shorthand(key) {
@@ -264,15 +324,17 @@ export interface ArrBuilder {
   build(): n.ArrayExpression
 }
 
-// Internal: use any[] to avoid exactOptionalPropertyTypes issues
-function createArr(elems: any[] = []): ArrBuilder {
+// Internal: properly typed for recast builder compatibility
+function createArr(elems: ArrayElementLike[] = []): ArrBuilder {
   return {
     add(...exprs) {
-      return createArr([...elems, ...exprs])
+      const newElems = exprs.map((e) => toExpr(e) as ArrayElementLike)
+      return createArr([...elems, ...newElems])
     },
 
     spread(expr) {
-      return createArr([...elems, b.spreadElement(asExpr(expr))])
+      const spreadElem = b.spreadElement(toExpr(expr))
+      return createArr([...elems, spreadElem])
     },
 
     build() {
@@ -349,34 +411,31 @@ export interface FnBuilder {
 }
 
 function createFn(config: FnConfig): FnBuilder {
-  const buildParams = (): any[] =>
-    config.params.map((p) => {
-      let param: any
-
+  const buildParams = (): PatternKind[] =>
+    config.params.map((p): PatternKind => {
       if (p.rest) {
         const restId = b.identifier(p.name)
         if (p.type) {
-          restId.typeAnnotation = b.tsTypeAnnotation(asTSType(p.type))
+          restId.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
         }
-        param = b.restElement(restId)
+        return b.restElement(restId) as PatternKind
       } else if (p.defaultValue) {
         // For default params, type annotation goes on the identifier
         const id = b.identifier(p.name)
         if (p.type) {
-          id.typeAnnotation = b.tsTypeAnnotation(asTSType(p.type))
+          id.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
         }
-        param = b.assignmentPattern(id, asExpr(p.defaultValue))
+        return b.assignmentPattern(id, toExpr(p.defaultValue)) as PatternKind
       } else {
-        param = b.identifier(p.name)
+        const param = b.identifier(p.name)
         if (p.type) {
-          param.typeAnnotation = b.tsTypeAnnotation(asTSType(p.type))
+          param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
         }
         if (p.optional) {
           param.optional = true
         }
+        return param as PatternKind
       }
-
-      return param
     })
 
   return {
@@ -430,20 +489,20 @@ function createFn(config: FnConfig): FnBuilder {
 
     build() {
       const params = buildParams()
-      const block = b.blockStatement(config.body.map(asStatement))
+      const block = b.blockStatement(config.body.map(toStmt))
 
       if (config.isArrow) {
         const fn = b.arrowFunctionExpression(params, block, false)
         fn.async = config.isAsync
         if (config.returnType) {
-          fn.returnType = b.tsTypeAnnotation(asTSType(config.returnType))
+          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
         }
         return fn
       } else {
         const fn = b.functionExpression(null, params, block, config.isGenerator)
         fn.async = config.isAsync
         if (config.returnType) {
-          fn.returnType = b.tsTypeAnnotation(asTSType(config.returnType))
+          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
         }
         return fn
       }
@@ -451,7 +510,7 @@ function createFn(config: FnConfig): FnBuilder {
 
     toDeclaration(name) {
       const params = buildParams()
-      const block = b.blockStatement(config.body.map(asStatement))
+      const block = b.blockStatement(config.body.map(toStmt))
       const fn = b.functionDeclaration(
         b.identifier(name),
         params,
@@ -460,7 +519,7 @@ function createFn(config: FnConfig): FnBuilder {
       )
       fn.async = config.isAsync
       if (config.returnType) {
-        fn.returnType = b.tsTypeAnnotation(asTSType(config.returnType))
+        fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
       }
       return fn
     },
@@ -507,54 +566,58 @@ type AssignOp = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "??=" | "||=" | "&&="
 const op = {
   /** Generic binary expression */
   binary: (left: n.Expression, operator: BinaryOp, right: n.Expression) =>
-    b.binaryExpression(operator, asExpr(left), asExpr(right)),
+    b.binaryExpression(operator, toExpr(left), toExpr(right)),
 
   /** Logical expression (&&, ||, ??) */
   logical: (left: n.Expression, operator: LogicalOp, right: n.Expression) =>
-    b.logicalExpression(operator, asExpr(left), asExpr(right)),
+    b.logicalExpression(operator, toExpr(left), toExpr(right)),
 
   /** Unary expression */
   unary: (operator: UnaryOp, argument: n.Expression) =>
-    b.unaryExpression(operator, asExpr(argument)),
+    b.unaryExpression(operator, toExpr(argument)),
 
   /** Assignment expression */
-  assign: (left: n.Expression, operator: AssignOp, right: n.Expression) =>
-    b.assignmentExpression(operator, asExpr(left), asExpr(right)),
+  assign: (
+    left: n.Identifier | n.MemberExpression | n.Pattern,
+    operator: AssignOp,
+    right: n.Expression
+  ) =>
+    b.assignmentExpression(operator, left as PatternKind, toExpr(right)),
 
   /** Ternary/conditional expression */
   ternary: (
     test: n.Expression,
     consequent: n.Expression,
     alternate: n.Expression
-  ) => b.conditionalExpression(asExpr(test), asExpr(consequent), asExpr(alternate)),
+  ) => b.conditionalExpression(toExpr(test), toExpr(consequent), toExpr(alternate)),
 
   /** New expression */
   new: (callee: n.Expression, args: n.Expression[] = []) =>
-    b.newExpression(asMemberObj(callee), args.map(asExpr)),
+    b.newExpression(toExpr(callee), args.map(toExpr)),
 
   // Common shortcuts
   /** Strict equality: `===` */
   eq: (left: n.Expression, right: n.Expression) =>
-    b.binaryExpression("===", asExpr(left), asExpr(right)),
+    b.binaryExpression("===", toExpr(left), toExpr(right)),
 
   /** Strict inequality: `!==` */
   neq: (left: n.Expression, right: n.Expression) =>
-    b.binaryExpression("!==", asExpr(left), asExpr(right)),
+    b.binaryExpression("!==", toExpr(left), toExpr(right)),
 
   /** Logical not: `!` */
-  not: (expr: n.Expression) => b.unaryExpression("!", asExpr(expr)),
+  not: (expr: n.Expression) => b.unaryExpression("!", toExpr(expr)),
 
   /** Logical and: `&&` */
   and: (left: n.Expression, right: n.Expression) =>
-    b.logicalExpression("&&", asExpr(left), asExpr(right)),
+    b.logicalExpression("&&", toExpr(left), toExpr(right)),
 
   /** Logical or: `||` */
   or: (left: n.Expression, right: n.Expression) =>
-    b.logicalExpression("||", asExpr(left), asExpr(right)),
+    b.logicalExpression("||", toExpr(left), toExpr(right)),
 
   /** Nullish coalescing: `??` */
   nullish: (left: n.Expression, right: n.Expression) =>
-    b.logicalExpression("??", asExpr(left), asExpr(right)),
+    b.logicalExpression("??", toExpr(left), toExpr(right)),
 } as const
 
 // =============================================================================
@@ -569,28 +632,28 @@ const stmt = {
   const: (name: string, init: n.Expression, type?: n.TSType) => {
     const id = b.identifier(name)
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(asTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
     }
-    return b.variableDeclaration("const", [b.variableDeclarator(id, asExpr(init))])
+    return b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))])
   },
 
   /** `let name = init` */
   let: (name: string, init?: n.Expression, type?: n.TSType) => {
     const id = b.identifier(name)
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(asTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
     }
     return b.variableDeclaration("let", [
-      b.variableDeclarator(id, init ? asExpr(init) : null),
+      b.variableDeclarator(id, init ? toExpr(init) : null),
     ])
   },
 
   /** `return expr` */
   return: (expr?: n.Expression) =>
-    expr ? b.returnStatement(asExpr(expr)) : b.returnStatement(null),
+    expr ? b.returnStatement(toExpr(expr)) : b.returnStatement(null),
 
   /** Expression statement: `expr;` */
-  expr: (expr: n.Expression) => b.expressionStatement(asExpr(expr)),
+  expr: (expr: n.Expression) => b.expressionStatement(toExpr(expr)),
 
   /** If statement */
   if: (
@@ -599,13 +662,13 @@ const stmt = {
     alternate?: n.Statement[]
   ) =>
     b.ifStatement(
-      asExpr(test),
-      b.blockStatement(consequent.map(asStatement)),
-      alternate ? b.blockStatement(alternate.map(asStatement)) : null
+      toExpr(test),
+      b.blockStatement(consequent.map(toStmt)),
+      alternate ? b.blockStatement(alternate.map(toStmt)) : null
     ),
 
   /** Throw statement */
-  throw: (expr: n.Expression) => b.throwStatement(asExpr(expr)),
+  throw: (expr: n.Expression) => b.throwStatement(toExpr(expr)),
 
   /** Try-catch statement */
   try: (
@@ -615,13 +678,13 @@ const stmt = {
     finallyBlock?: n.Statement[]
   ) =>
     b.tryStatement(
-      b.blockStatement(block.map(asStatement)),
+      b.blockStatement(block.map(toStmt)),
       b.catchClause(
         b.identifier(catchParam),
         null,
-        b.blockStatement(catchBlock.map(asStatement))
+        b.blockStatement(catchBlock.map(toStmt))
       ),
-      finallyBlock ? b.blockStatement(finallyBlock.map(asStatement)) : null
+      finallyBlock ? b.blockStatement(finallyBlock.map(toStmt)) : null
     ),
 
   /** For...of statement */
@@ -635,13 +698,13 @@ const stmt = {
       b.variableDeclaration(varKind, [
         b.variableDeclarator(b.identifier(varName)),
       ]),
-      asExpr(iterable),
-      b.blockStatement(body.map(asStatement))
+      toExpr(iterable),
+      b.blockStatement(body.map(toStmt))
     ),
 
   /** Block statement */
   block: (...statements: n.Statement[]) =>
-    b.blockStatement(statements.map(asStatement)),
+    b.blockStatement(statements.map(toStmt)),
 } as const
 
 // =============================================================================
@@ -669,7 +732,7 @@ const ts = {
     const ref = b.tsTypeReference(b.identifier(name))
     if (typeParams && typeParams.length > 0) {
       ref.typeParameters = b.tsTypeParameterInstantiation(
-        typeParams.map(asTSType)
+        typeParams.map(toTSType)
       )
     }
     return ref
@@ -682,21 +745,21 @@ const ts = {
     )
     if (typeParams && typeParams.length > 0) {
       ref.typeParameters = b.tsTypeParameterInstantiation(
-        typeParams.map(asTSType)
+        typeParams.map(toTSType)
       )
     }
     return ref
   },
 
   /** Array type: `T[]` */
-  array: (elementType: n.TSType) => b.tsArrayType(asTSType(elementType)),
+  array: (elementType: n.TSType) => b.tsArrayType(toTSType(elementType)),
 
   /** Union type: `A | B | C` */
-  union: (...types: n.TSType[]) => b.tsUnionType(types.map(asTSType)),
+  union: (...types: n.TSType[]) => b.tsUnionType(types.map(toTSType)),
 
   /** Intersection type: `A & B` */
   intersection: (...types: n.TSType[]) =>
-    b.tsIntersectionType(types.map(asTSType)),
+    b.tsIntersectionType(types.map(toTSType)),
 
   /** Literal type: `"value"` or `42` */
   literal: (value: string | number | boolean) => {
@@ -710,23 +773,23 @@ const ts = {
   },
 
   /** Tuple type: `[A, B, C]` */
-  tuple: (...types: n.TSType[]) => b.tsTupleType(types.map(asTSType)),
+  tuple: (...types: n.TSType[]) => b.tsTupleType(types.map(toTSType)),
 
   /** Function type: `(a: A, b: B) => R` */
   fn: (
-    params: Array<{ name: string; type: n.TSType; optional?: boolean }>,
+    params: { name: string; type: n.TSType; optional?: boolean }[],
     returnType: n.TSType
   ) => {
-    const fnParams = params.map((p) => {
-      const param: any = b.identifier(p.name)
-      param.typeAnnotation = b.tsTypeAnnotation(asTSType(p.type))
+    const fnParams: FnParamKind[] = params.map((p) => {
+      const param = b.identifier(p.name)
+      param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
       if (p.optional) {
         param.optional = true
       }
-      return param
+      return param as FnParamKind
     })
     const fnType = b.tsFunctionType(fnParams)
-    fnType.typeAnnotation = b.tsTypeAnnotation(asTSType(returnType))
+    fnType.typeAnnotation = b.tsTypeAnnotation(toTSType(returnType))
     return fnType
   },
 
@@ -738,7 +801,7 @@ const ts = {
     ({
       type: "TSTypeOperator",
       operator: "keyof",
-      typeAnnotation: asTSType(type),
+      typeAnnotation: toTSType(type),
     }) as n.TSTypeOperator,
 
   /** Readonly type: `readonly T` */
@@ -746,7 +809,7 @@ const ts = {
     ({
       type: "TSTypeOperator",
       operator: "readonly",
-      typeAnnotation: asTSType(type),
+      typeAnnotation: toTSType(type),
     }) as n.TSTypeOperator,
 } as const
 
@@ -791,11 +854,11 @@ interface TSPropertySignature {
 /**
  * Build interface properties from property signature objects
  */
-function buildInterfaceProperties(props: TSPropertySignature[]): any[] {
-  return props.map((p) => {
+function buildInterfaceProperties(props: TSPropertySignature[]): InterfaceBodyMember[] {
+  return props.map((p): InterfaceBodyMember => {
     const sig = b.tsPropertySignature(
       b.identifier(p.name),
-      b.tsTypeAnnotation(asTSType(p.type))
+      b.tsTypeAnnotation(toTSType(p.type))
     )
     if (p.optional) sig.optional = true
     if (p.readonly) sig.readonly = true
@@ -832,7 +895,7 @@ export const exp = {
     ctx: SymbolContext,
     type: n.TSType
   ): SymbolStatement => {
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), asTSType(type))
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
     const exportDecl = b.exportNamedDeclaration(decl, [])
     return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
   },
@@ -848,10 +911,10 @@ export const exp = {
   ): SymbolStatement => {
     const id = b.identifier(name)
     if (typeAnnotation) {
-      id.typeAnnotation = b.tsTypeAnnotation(asTSType(typeAnnotation))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation))
     }
     const decl = b.variableDeclaration("const", [
-      b.variableDeclarator(id, asExpr(init)),
+      b.variableDeclarator(id, toExpr(init)),
     ])
     const exportDecl = b.exportNamedDeclaration(decl, [])
     return symbolStatement(exportDecl, createSymbolMeta(name, ctx, false))
@@ -868,7 +931,7 @@ export const exp = {
   ): SymbolStatement => {
     // This is the same as typeAlias but semantically distinct -
     // used for inferred types like `z.infer<typeof Schema>`
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), asTSType(type))
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
     const exportDecl = b.exportNamedDeclaration(decl, [])
     return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
   },
@@ -913,7 +976,7 @@ function createSymbolProgram(
 
   return {
     _tag: "SymbolProgram",
-    node: b.program(nodes.map(asStatement)),
+    node: b.program(nodes.map(toStmt)),
     symbols,
   }
 }
@@ -942,7 +1005,8 @@ export const conjure = {
   obj: () => createObj(),
 
   /** Start an array literal builder */
-  arr: (...elements: n.Expression[]) => createArr(elements),
+  arr: (...elements: n.Expression[]) =>
+    createArr(elements.map((e) => toExpr(e) as ArrayElementLike)),
 
   /** Start a function builder */
   fn: () =>
@@ -977,7 +1041,7 @@ export const conjure = {
     const templateElements = quasis.map((raw, i) =>
       b.templateElement({ raw, cooked: raw }, i === quasis.length - 1)
     )
-    return b.templateLiteral(templateElements, expressions.map(asExpr))
+    return b.templateLiteral(templateElements, expressions.map(toExpr))
   },
 
   // === Operators ===
@@ -995,17 +1059,17 @@ export const conjure = {
   // === Helpers ===
 
   /** Await expression */
-  await: (expr: n.Expression) => b.awaitExpression(asExpr(expr)),
+  await: (expr: n.Expression) => b.awaitExpression(toExpr(expr)),
 
   /** Spread expression (for use in arrays/calls) */
-  spread: (expr: n.Expression) => b.spreadElement(asExpr(expr)),
+  spread: (expr: n.Expression) => b.spreadElement(toExpr(expr)),
 
   /** Print AST node to code string */
   print: (node: n.Node) => recast.print(node).code,
 
   /** Create a program from statements (backwards compatible) */
   program: (...statements: n.Statement[]) =>
-    b.program(statements.map(asStatement)),
+    b.program(statements.map(toStmt)),
 
   /**
    * Create a SymbolProgram from statements, extracting symbol metadata.

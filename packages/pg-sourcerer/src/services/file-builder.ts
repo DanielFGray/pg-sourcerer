@@ -6,6 +6,7 @@
  * - Import declarations (resolved after all plugins run)
  * - AST program body with symbol metadata extraction
  */
+import recast from "recast"
 import type { namedTypes as n } from "ast-types"
 import type { SymbolMeta, SymbolProgram } from "../lib/conjure.js"
 import type { EmissionBuffer } from "./emissions.js"
@@ -214,9 +215,9 @@ export function createFileBuilder(
       } else {
         // AST mode - create program and emit via emitAst
         // Import resolution will happen in a later pass
-        const recast = require("recast")
         const b = recast.types.builders
-        const program = b.program(state.statements)
+        // Type assertion needed: recast's StatementKind is compatible with n.Statement
+        const program = b.program(state.statements as Parameters<typeof b.program>[0])
 
         // Emit AST with imports for resolution during serializeAst
         emissions.emitAst(

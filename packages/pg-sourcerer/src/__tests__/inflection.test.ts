@@ -6,7 +6,6 @@ import {
   defaultInflection, 
   createInflection,
   applyTransformChain,
-  type TransformChain,
 } from "../services/inflection.js"
 import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
 import type { SmartTags } from "../ir/index.js"

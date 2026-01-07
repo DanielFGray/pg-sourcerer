@@ -53,8 +53,9 @@ export const input = (config: InputConfig): Effect.Effect<string, PromptError> =
     }
 
     // Interactive mode with optional validation retry
+    // Note: Bun's global `prompt` function returns string | null
     while (true) {
-      const value = prompt(config.message, config.default) ?? config.default ?? "";
+      const value: string = (prompt as (msg: string, def?: string) => string | null)(config.message, config.default) ?? config.default ?? "";
 
       // No validation - return immediately
       if (!config.validate) {

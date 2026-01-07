@@ -236,7 +236,7 @@ export interface SemanticIR {
   /** Artifacts from plugins, keyed by capability */
   readonly artifacts: ReadonlyMap<CapabilityKey, Artifact>
   /** Installed PostgreSQL extensions */
-  readonly extensions: ReadonlyArray<ExtensionInfo>
+  readonly extensions: readonly ExtensionInfo[]
 
   // Metadata
   /** When introspection was performed */

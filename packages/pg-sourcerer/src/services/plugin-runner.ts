@@ -12,7 +12,7 @@
  */
 import { Effect, HashMap, Array as Arr, pipe, Graph, Option, Schema as S, ParseResult, Layer } from "effect";
 import type { SemanticIR, CapabilityKey, Artifact } from "../ir/index.js";
-import type { Plugin, ConfiguredPlugin, PluginInflection } from "./plugin.js";
+import type { ConfiguredPlugin } from "./plugin.js";
 import {
   CapabilityConflict,
   CapabilityCycle,

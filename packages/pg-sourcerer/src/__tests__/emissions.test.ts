@@ -4,12 +4,13 @@
 import { describe, it, expect } from "@effect/vitest"
 import { Effect } from "effect"
 import recast from "recast"
+import type { ASTNode } from "ast-types"
 import { createEmissionBuffer } from "../services/emissions.js"
 import { createSymbolRegistry } from "../services/symbols.js"
 import type { ImportRef } from "../services/file-builder.js"
 
 const b = recast.types.builders
-const serialize = (ast: any) => recast.print(ast).code
+const serialize = (ast: ASTNode) => recast.print(ast).code
 
 describe("Emission Buffer", () => {
   describe("emit", () => {
@@ -312,8 +313,9 @@ describe("Emission Buffer", () => {
 
       const all = buffer.getAll()
       expect(all).toHaveLength(1)
-      // types are imported with type keyword
-      expect(all[0]!.content).toContain("type UserRow")
+      // types are imported with type-only import declaration
+      expect(all[0]!.content).toContain("import type")
+      expect(all[0]!.content).toContain("UserRow")
       expect(all[0]!.content).toContain("./types.js")
     })
 
@@ -376,9 +378,12 @@ describe("Emission Buffer", () => {
 
       const all = buffer.getAll()
       expect(all).toHaveLength(1)
-      // Should have one import statement with merged specifiers
-      const importMatches = all[0]!.content.match(/import.*from "effect"/g)
-      expect(importMatches).toHaveLength(1)
+      // Value imports and type imports are now in separate statements
+      // (both from the same source)
+      const valueImportMatches = all[0]!.content.match(/import \{.*\} from "effect"/g)
+      const typeImportMatches = all[0]!.content.match(/import type \{.*\} from "effect"/g)
+      expect(valueImportMatches).toHaveLength(1)
+      expect(typeImportMatches).toHaveLength(1)
       expect(all[0]!.content).toContain("Effect")
       expect(all[0]!.content).toContain("Context")
       expect(all[0]!.content).toContain("Layer")

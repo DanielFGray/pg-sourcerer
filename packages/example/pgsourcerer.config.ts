@@ -8,7 +8,7 @@ import { typesPlugin, zodPlugin, defineConfig } from "@danielfgray/pg-sourcerer"
  */
 export default defineConfig({
   // Database connection - uses environment variables
-  connectionString: process.env.AUTH_DATABASE_URL || process.env.DATABASE_URL || "",
+  connectionString: process.env.AUTH_DATABASE_URL ?? process.env.DATABASE_URL ?? "",
 
   // Schemas to introspect
   schemas: ["app_public", "app_private"],

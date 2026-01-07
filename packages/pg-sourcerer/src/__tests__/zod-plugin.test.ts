@@ -4,11 +4,13 @@
  * Tests for the Zod plugin that generates Zod schemas for entities.
  * Uses the fixture introspection data from the example database.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any -- Test helpers use flexible typing */
+/* eslint-disable @typescript-eslint/no-unsafe-return -- Effect type inference in tests */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { zodPlugin } from "../plugins/zod.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive, Inflection } from "../services/inflection.js"
+import { ClassicInflectionLive } from "../services/inflection.js"
 import { Emissions, createEmissionBuffer } from "../services/emissions.js"
 import { Symbols, createSymbolRegistry } from "../services/symbols.js"
 import { TypeHintsLive } from "../services/type-hints.js"

@@ -6,6 +6,12 @@
  */
 import { Context, Effect, Layer } from "effect"
 import type { namedTypes as n } from "ast-types"
+import type {
+  ImportSpecifierKind,
+  ImportNamespaceSpecifierKind,
+  ImportDefaultSpecifierKind,
+  StatementKind,
+} from "ast-types/lib/gen/kinds.js"
 import { EmitConflict } from "../errors.js"
 import type { ImportRef } from "./file-builder.js"
 import type { SymbolRegistry } from "./symbols.js"
@@ -112,7 +118,7 @@ function prependImports(
   forFile: string,
   symbols: SymbolRegistry
 ): n.Program {
-  const statements: n.Statement[] = []
+  const statements: StatementKind[] = []
 
   // Group imports by source path for merging
   const bySource = new Map<
@@ -160,35 +166,42 @@ function prependImports(
   }
 
   // Generate import statements
+  type ImportSpecifier = ImportSpecifierKind | ImportNamespaceSpecifierKind | ImportDefaultSpecifierKind
   for (const [source, { named, types, default: defaultImport }] of bySource) {
-    const specifiers: any[] = []
+    const valueSpecifiers: ImportSpecifier[] = []
 
     // Default import
     if (defaultImport) {
-      specifiers.push(b.importDefaultSpecifier(b.identifier(defaultImport)))
+      valueSpecifiers.push(b.importDefaultSpecifier(b.identifier(defaultImport)))
     }
 
-    // Named imports
+    // Named imports (value imports)
     for (const name of named) {
-      specifiers.push(
+      valueSpecifiers.push(
         b.importSpecifier(b.identifier(name), b.identifier(name))
       )
     }
 
-    // Type imports (using type-only import specifiers)
-    for (const name of types) {
-      const spec: any = b.importSpecifier(b.identifier(name), b.identifier(name))
-      spec.importKind = "type"
-      specifiers.push(spec)
+    if (valueSpecifiers.length > 0) {
+      statements.push(b.importDeclaration(valueSpecifiers, b.stringLiteral(source)))
     }
 
-    if (specifiers.length > 0) {
-      statements.push(b.importDeclaration(specifiers, b.stringLiteral(source)))
+    // Type imports as a separate type-only import declaration
+    if (types.size > 0) {
+      const typeSpecifiers: ImportSpecifier[] = []
+      for (const name of types) {
+        typeSpecifiers.push(
+          b.importSpecifier(b.identifier(name), b.identifier(name))
+        )
+      }
+      const typeImport = b.importDeclaration(typeSpecifiers, b.stringLiteral(source))
+      typeImport.importKind = "type"
+      statements.push(typeImport)
     }
   }
 
   // Prepend imports to program body
-  return b.program([...statements, ...(ast.body as any[])])
+  return b.program([...statements, ...ast.body])
 }
 
 /**

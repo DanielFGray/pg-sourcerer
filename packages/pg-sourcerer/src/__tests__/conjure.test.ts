@@ -5,13 +5,14 @@
  * ensuring it generates correct JavaScript/TypeScript AST nodes.
  */
 import { describe, it, expect } from "vitest"
+import type { namedTypes as n } from "ast-types"
 import { conjure, cast } from "../lib/conjure.js"
 
 /** Helper to get printed code from an expression */
-const printExpr = (expr: any) => conjure.print(conjure.stmt.expr(expr))
+const printExpr = (expr: n.Expression) => conjure.print(conjure.stmt.expr(expr))
 
 /** Helper to get printed code from a statement */
-const printStmt = (stmt: any) => conjure.print(stmt)
+const printStmt = (stmt: n.Node) => conjure.print(stmt)
 
 describe("Conjure", () => {
   describe("chain builder", () => {
@@ -808,7 +809,7 @@ describe("Conjure", () => {
     it("creates spread element", () => {
       const arr = conjure
         .arr(conjure.num(1))
-        .add(conjure.spread(conjure.id("rest").build()) as any)
+        .spread(conjure.id("rest").build())
         .build()
       expect(printExpr(arr)).toBe("[1, ...rest];")
     })
@@ -833,12 +834,10 @@ describe("Conjure", () => {
 
   describe("cast helpers", () => {
     it("exports cast helpers for raw recast interop", () => {
-      expect(cast.asExpr).toBeDefined()
-      expect(cast.asMemberObj).toBeDefined()
+      expect(cast.toExpr).toBeDefined()
       expect(cast.asArrayElem).toBeDefined()
-      expect(cast.asPropValue).toBeDefined()
-      expect(cast.asStatement).toBeDefined()
-      expect(cast.asTSType).toBeDefined()
+      expect(cast.toStmt).toBeDefined()
+      expect(cast.toTSType).toBeDefined()
     })
   })
 
@@ -899,7 +898,7 @@ describe("Conjure", () => {
       const userType = conjure.ts.ref("User")
       const arrayOfUsers = conjure.ts.array(userType)
       const promiseOfUsers = conjure.ts.ref("Promise", [arrayOfUsers])
-      const nullableUser = conjure.ts.union(userType, conjure.ts.null())
+      const _nullableUser = conjure.ts.union(userType, conjure.ts.null())
 
       const fnDecl = conjure
         .fn()
