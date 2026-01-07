@@ -5,7 +5,7 @@
  */
 
 // Config
-export { Config, TypeHint, TypeHintMatch, type ResolvedConfig } from "./config.js"
+export { Config, TypeHint, TypeHintMatch, type ResolvedConfig, type ConfigInput } from "./config.js"
 
 // Config Loader Service
 export {
@@ -160,6 +160,20 @@ export {
   PluginTestLayers,
   createPluginTestLayer,
 } from "./testing.js"
+
+// Conjure - AST builder DSL
+export {
+  conjure,
+  cast,
+  type ChainBuilder,
+  type ObjBuilder,
+  type ArrBuilder,
+  type FnBuilder,
+  type SymbolContext,
+  type SymbolMeta,
+  type SymbolStatement,
+  type SymbolProgram,
+} from "./lib/conjure.js"
 
 // Plugins
 export { typesPlugin } from "./plugins/types.js"

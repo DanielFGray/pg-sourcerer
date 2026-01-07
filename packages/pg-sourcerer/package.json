@@ -1,16 +1,53 @@
 {
   "name": "@danielfgray/pg-sourcerer",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "PostgreSQL code generation framework with a plugin ecosystem",
   "type": "module",
-  "main": "src/index.ts",
-  "bin": {
-    "pgsourcerer": "src/cli.ts"
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./plugins/*": {
+      "types": "./dist/plugins/*.d.ts",
+      "import": "./dist/plugins/*.js"
+    }
   },
+  "bin": {
+    "pgsourcerer": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run clean && bun run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
+  "keywords": [
+    "postgresql",
+    "postgres",
+    "codegen",
+    "code-generation",
+    "typescript",
+    "effect",
+    "zod",
+    "introspection"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/pg-sourcerer.git",
+    "directory": "packages/pg-sourcerer"
+  },
+  "license": "MIT",
+  "author": "Daniel Gray",
   "dependencies": {
     "@effect/cli": "catalog:",
     "@effect/platform": "catalog:",
