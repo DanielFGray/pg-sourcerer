@@ -7,7 +7,7 @@
  *
  * This service is stateful - created once per run and shared across plugins.
  */
-import { Context, Layer } from "effect"
+import { Context, Layer, MutableHashMap } from "effect"
 import type { Artifact, CapabilityKey } from "../ir/semantic-ir.js"
 
 /**
@@ -38,20 +38,29 @@ export interface ArtifactStoreImpl {
  * Used by PluginRunner to create a single shared instance per run.
  */
 export function createArtifactStore(): ArtifactStoreImpl {
-  const artifacts = new Map<CapabilityKey, Artifact>()
+  const artifacts = MutableHashMap.empty<CapabilityKey, Artifact>()
 
   return {
-    get: (capability: CapabilityKey) => artifacts.get(capability),
+    get: (capability: CapabilityKey) => {
+      const result = MutableHashMap.get(artifacts, capability)
+      return result._tag === "Some" ? result.value : undefined
+    },
 
     set: (capability: CapabilityKey, plugin: string, data: unknown) => {
-      artifacts.set(capability, {
+      MutableHashMap.set(artifacts, capability, {
         capability,
         plugin,
         data,
       })
     },
 
-    getAll: () => artifacts as ReadonlyMap<CapabilityKey, Artifact>,
+    getAll: () => {
+      const result = new Map<CapabilityKey, Artifact>()
+      for (const [key, value] of artifacts) {
+        result.set(key, value)
+      }
+      return result as ReadonlyMap<CapabilityKey, Artifact>
+    },
   }
 }
 

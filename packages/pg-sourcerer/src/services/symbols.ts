@@ -3,7 +3,7 @@
  *
  * Tracks emitted symbols for cross-file import resolution.
  */
-import { Context, Layer } from "effect"
+import { Context, Layer, MutableHashMap, Option, pipe } from "effect"
 import type { CapabilityKey } from "../ir/index.js"
 
 /**
@@ -89,7 +89,10 @@ export class Symbols extends Context.Tag("Symbols")<
  * Create a new symbol registry
  */
 export function createSymbolRegistry(): SymbolRegistry {
-  const symbols = new Map<string, { symbol: Symbol; plugin: string }[]>()
+  const symbols = MutableHashMap.empty<
+    string,
+    { symbol: Symbol; plugin: string }[]
+  >()
 
   // Key for deduplication: capability:entity:shape
   const makeKey = (ref: SymbolRef): string =>
@@ -98,15 +101,26 @@ export function createSymbolRegistry(): SymbolRegistry {
   return {
     register: (symbol, plugin) => {
       const key = makeKey(symbol)
-      const existing = symbols.get(key) ?? []
-      existing.push({ symbol, plugin })
-      symbols.set(key, existing)
+      pipe(
+        MutableHashMap.get(symbols, key),
+        Option.match({
+          onNone: () => MutableHashMap.set(symbols, key, [{ symbol, plugin }]),
+          onSome: (existing) => {
+            existing.push({ symbol, plugin })
+            MutableHashMap.set(symbols, key, existing)
+          }
+        })
+      )
     },
 
     resolve: (ref) => {
       const key = makeKey(ref)
-      const entries = symbols.get(key)
-      return entries?.[0]?.symbol
+      return pipe(
+        MutableHashMap.get(symbols, key),
+        Option.flatMap((entries) => Option.fromNullable(entries[0])),
+        Option.map((entry) => entry.symbol),
+        Option.getOrUndefined
+      )
     },
 
     importFor: (symbol, fromFile) => {
@@ -141,23 +155,33 @@ export function createSymbolRegistry(): SymbolRegistry {
       const collisions: SymbolCollision[] = []
       
       // Group by file + symbol name
-      const byFileAndName = new Map<string, { symbol: Symbol; plugin: string }[]>()
+      const byFileAndName = MutableHashMap.empty<
+        string,
+        { symbol: Symbol; plugin: string }[]
+      >()
       
-      for (const entries of symbols.values()) {
+      for (const entries of MutableHashMap.values(symbols)) {
         for (const entry of entries) {
           const key = `${entry.symbol.file}:${entry.symbol.name}`
-          const existing = byFileAndName.get(key) ?? []
-          existing.push(entry)
-          byFileAndName.set(key, existing)
+          pipe(
+            MutableHashMap.get(byFileAndName, key),
+            Option.match({
+              onNone: () => MutableHashMap.set(byFileAndName, key, [entry]),
+              onSome: (existing) => {
+                existing.push(entry)
+                MutableHashMap.set(byFileAndName, key, existing)
+              }
+            })
+          )
         }
       }
 
       for (const [key, entries] of byFileAndName) {
         if (entries.length > 1) {
-          const [file, symbol] = key.split(":")
+          const [file, symbol] = key.split(":") as [string, string]
           const plugins = [...new Set(entries.map(e => e.plugin))]
           if (plugins.length > 1) {
-            collisions.push({ symbol: symbol!, file: file!, plugins })
+            collisions.push({ symbol, file, plugins })
           }
         }
       }
@@ -167,7 +191,7 @@ export function createSymbolRegistry(): SymbolRegistry {
 
     getAll: () => {
       const all: Symbol[] = []
-      for (const entries of symbols.values()) {
+      for (const entries of MutableHashMap.values(symbols)) {
         for (const entry of entries) {
           all.push(entry.symbol)
         }
