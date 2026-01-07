@@ -6,8 +6,9 @@ import {
   defaultInflection, 
   createInflection,
   inflect,
+  composeInflection,
 } from "../services/inflection.js"
-import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
+import type { PgAttribute, PgClass, PgType } from "pg-introspection"
 import type { SmartTags } from "../ir/index.js"
 
 // Helper to create minimal mock objects
@@ -19,9 +20,6 @@ const mockPgAttribute = (attname: string): PgAttribute =>
 
 const mockPgType = (typname: string): PgType =>
   ({ typname }) as unknown as PgType
-
-const mockPgConstraint = (conname: string): PgConstraint =>
-  ({ conname }) as unknown as PgConstraint
 
 const emptyTags: SmartTags = {}
 
@@ -242,40 +240,10 @@ describe("Inflection Service", () => {
   })
 
   describe("relationName", () => {
-    it("uses @fieldName tag for local side", () => {
-      const tags: SmartTags = { fieldName: "author" }
-      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", tags))
-        .toBe("author")
-    })
-
-    it("uses @foreignFieldName tag for foreign side", () => {
-      const tags: SmartTags = { foreignFieldName: "posts" }
-      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "foreign", tags))
-        .toBe("posts")
-    })
-
-    it("derives name from constraint when no tags (identity - no transforms)", () => {
-      // "posts_author_id_fkey" -> remove _fkey -> "posts_author_id" 
-      // -> remove _id -> "posts_author" -> remove table prefix -> "author"
-      // No additional transforms applied by defaultInflection
-      expect(defaultInflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", emptyTags))
-        .toBe("author")
-    })
-
-    it("handles various constraint naming patterns (identity - no transforms)", () => {
-      expect(defaultInflection.relationName(mockPgConstraint("comments_user_id_fkey"), "local", emptyTags))
-        .toBe("user")
-      
-      // Multi-word table prefix: only first segment is stripped
-      // "order_items_product_id_fkey" -> "items_product" (after removing order_ prefix and _id_fkey suffix)
-      // No transforms applied, so underscore preserved
-      expect(defaultInflection.relationName(mockPgConstraint("order_items_product_id_fkey"), "local", emptyTags))
-        .toBe("items_product")
-    })
-
-    it("handles constraint without _id suffix", () => {
-      expect(defaultInflection.relationName(mockPgConstraint("posts_category_fkey"), "local", emptyTags))
-        .toBe("category")
+    it("returns name unchanged (identity - no transforms)", () => {
+      // relationName is now a simple string transform, no constraint parsing
+      expect(defaultInflection.relationName("author")).toBe("author")
+      expect(defaultInflection.relationName("user_info")).toBe("user_info")
     })
   })
 })
@@ -413,9 +381,9 @@ describe("createInflection", () => {
         relationName: inflect.camelCase,
       })
 
-      // After cleaning: "posts_author_id_fkey" → "author" → "author" (already camel)
-      expect(inflection.relationName(mockPgConstraint("posts_author_id_fkey"), "local", emptyTags))
-        .toBe("author")
+      // relationName is now a simple string transform
+      expect(inflection.relationName("user_info")).toBe("userInfo")
+      expect(inflection.relationName("author")).toBe("author")
     })
   })
 
@@ -447,6 +415,225 @@ describe("createInflection", () => {
       expect(inflection.pluralize("user")).toBe("users")
       expect(inflection.singularize("users")).toBe("user")
       expect(inflection.safeIdentifier("class")).toBe("class_")
+    })
+  })
+})
+
+describe("composeInflection", () => {
+  describe("with undefined plugin defaults", () => {
+    it("returns base inflection unchanged", () => {
+      const composed = composeInflection(defaultInflection, undefined)
+      expect(composed).toBe(defaultInflection)
+    })
+  })
+
+  describe("with empty plugin defaults", () => {
+    it("returns base inflection unchanged when all transforms are undefined", () => {
+      const composed = composeInflection(defaultInflection, {})
+      expect(composed).toBe(defaultInflection)
+    })
+  })
+
+  describe("entityName composition", () => {
+    it("applies plugin transform first, then base transform", () => {
+      // Plugin: uppercase  Base: (identity)
+      // "users" → "USERS" → "USERS"
+      const composed = composeInflection(defaultInflection, {
+        entityName: inflect.uppercase,
+      })
+
+      expect(composed.entityName(mockPgClass("users"), emptyTags)).toBe("USERS")
+    })
+
+    it("composes with base that also transforms", () => {
+      // Plugin: singularize  Base: pascalCase
+      // "users" → "user" → "User"
+      const base = createInflection({ entityName: inflect.pascalCase })
+      const composed = composeInflection(base, {
+        entityName: inflect.singularize,
+      })
+
+      expect(composed.entityName(mockPgClass("users"), emptyTags)).toBe("User")
+    })
+
+    it("smart tags take precedence over composed transforms", () => {
+      const composed = composeInflection(defaultInflection, {
+        entityName: inflect.uppercase,
+      })
+
+      const tags: SmartTags = { name: "CustomName" }
+      expect(composed.entityName(mockPgClass("users"), tags)).toBe("CustomName")
+    })
+  })
+
+  describe("fieldName composition", () => {
+    it("applies plugin transform first, then base transform", () => {
+      // Plugin: uppercase  Base: (identity)
+      const composed = composeInflection(defaultInflection, {
+        fieldName: inflect.uppercase,
+      })
+
+      expect(composed.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("USER_ID")
+    })
+
+    it("composes with base that has camelCase", () => {
+      // Plugin: lowercase  Base: camelCase
+      // "USER_NAME" → "user_name" → "userName"
+      const base = createInflection({ fieldName: inflect.camelCase })
+      const composed = composeInflection(base, {
+        fieldName: inflect.lowercase,
+      })
+
+      expect(composed.fieldName(mockPgAttribute("USER_NAME"), emptyTags)).toBe("userName")
+    })
+
+    it("smart tags take precedence over composed transforms", () => {
+      const composed = composeInflection(defaultInflection, {
+        fieldName: inflect.uppercase,
+      })
+
+      const tags: SmartTags = { name: "customField" }
+      expect(composed.fieldName(mockPgAttribute("user_id"), tags)).toBe("customField")
+    })
+  })
+
+  describe("enumName composition", () => {
+    it("applies plugin transform first, then base transform", () => {
+      const composed = composeInflection(defaultInflection, {
+        enumName: inflect.uppercase,
+      })
+
+      expect(composed.enumName(mockPgType("user_status"), emptyTags)).toBe("USER_STATUS")
+    })
+
+    it("composes with base that has pascalCase", () => {
+      // Plugin: lowercase  Base: pascalCase
+      const base = createInflection({ enumName: inflect.pascalCase })
+      const composed = composeInflection(base, {
+        enumName: inflect.lowercase,
+      })
+
+      expect(composed.enumName(mockPgType("USER_STATUS"), emptyTags)).toBe("UserStatus")
+    })
+
+    it("smart tags take precedence over composed transforms", () => {
+      const composed = composeInflection(defaultInflection, {
+        enumName: inflect.uppercase,
+      })
+
+      const tags: SmartTags = { name: "CustomEnum" }
+      expect(composed.enumName(mockPgType("user_status"), tags)).toBe("CustomEnum")
+    })
+  })
+
+  describe("enumValue composition", () => {
+    it("applies plugin transform first, then base transform", () => {
+      const composed = composeInflection(defaultInflection, {
+        enumValue: inflect.uppercase,
+      })
+
+      expect(composed.enumValueName("active")).toBe("ACTIVE")
+    })
+
+    it("composes with base that also transforms", () => {
+      // Plugin: uppercase  Base: lowercase
+      // "Active" → "ACTIVE" → "active"
+      const base = createInflection({ enumValue: inflect.lowercase })
+      const composed = composeInflection(base, {
+        enumValue: inflect.uppercase,
+      })
+
+      expect(composed.enumValueName("Active")).toBe("active")
+    })
+  })
+
+  describe("shapeSuffix composition", () => {
+    it("applies plugin transform to shape suffix", () => {
+      const composed = composeInflection(defaultInflection, {
+        shapeSuffix: inflect.uppercase,
+      })
+
+      expect(composed.shapeName("User", "row")).toBe("UserROW")
+      expect(composed.shapeName("User", "insert")).toBe("UserINSERT")
+    })
+
+    it("composes with base shapeName behavior", () => {
+      // Plugin: capitalize  Base: (identity)
+      const composed = composeInflection(defaultInflection, {
+        shapeSuffix: inflect.capitalize,
+      })
+
+      expect(composed.shapeName("User", "row")).toBe("UserRow")
+      expect(composed.shapeName("User", "insert")).toBe("UserInsert")
+    })
+  })
+
+  describe("relationName composition", () => {
+    it("applies plugin transform first, then base transform", () => {
+      const composed = composeInflection(defaultInflection, {
+        relationName: inflect.uppercase,
+      })
+
+      // relationName is now a simple string transform
+      expect(composed.relationName("author")).toBe("AUTHOR")
+      expect(composed.relationName("user_info")).toBe("USER_INFO")
+    })
+
+    it("composes with base that has camelCase", () => {
+      const base = createInflection({ relationName: inflect.camelCase })
+      const composed = composeInflection(base, {
+        relationName: inflect.lowercase,
+      })
+
+      // plugin (lowercase) runs first, then base (camelCase)
+      // "USER_INFO" → lowercase → "user_info" → camelCase → "userInfo"
+      expect(composed.relationName("USER_INFO")).toBe("userInfo")
+      expect(composed.relationName("user_info")).toBe("userInfo")
+    })
+  })
+
+  describe("primitive transforms are unchanged", () => {
+    it("camelCase, pascalCase, etc. come from base inflection", () => {
+      const composed = composeInflection(defaultInflection, {
+        entityName: inflect.uppercase,
+      })
+
+      // These should still work normally (not affected by composition)
+      expect(composed.camelCase("user_name")).toBe("userName")
+      expect(composed.pascalCase("user_name")).toBe("UserName")
+      expect(composed.pluralize("user")).toBe("users")
+      expect(composed.singularize("users")).toBe("user")
+      expect(composed.safeIdentifier("class")).toBe("class_")
+    })
+  })
+
+  describe("multiple transforms composed together", () => {
+    it("applies all plugin defaults correctly", () => {
+      const base = createInflection({
+        entityName: inflect.pascalCase,
+        fieldName: inflect.camelCase,
+        enumName: inflect.pascalCase,
+        shapeSuffix: inflect.capitalize,
+      })
+
+      const composed = composeInflection(base, {
+        entityName: inflect.singularize,
+        fieldName: inflect.lowercase, // will be lowercased then camelCased
+        enumName: inflect.lowercase,
+        shapeSuffix: inflect.uppercase,
+      })
+
+      // entities: "users" → singularize → "user" → pascalCase → "User"
+      expect(composed.entityName(mockPgClass("users"), emptyTags)).toBe("User")
+
+      // fields: "USER_NAME" → lowercase → "user_name" → camelCase → "userName"
+      expect(composed.fieldName(mockPgAttribute("USER_NAME"), emptyTags)).toBe("userName")
+
+      // enums: "USER_STATUS" → lowercase → "user_status" → pascalCase → "UserStatus"
+      expect(composed.enumName(mockPgType("USER_STATUS"), emptyTags)).toBe("UserStatus")
+
+      // shapes: "row" → uppercase → "ROW" (then concatenated)
+      expect(composed.shapeName("User", "row")).toBe("UserROW")
     })
   })
 })
