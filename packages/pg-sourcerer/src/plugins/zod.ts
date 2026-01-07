@@ -15,10 +15,10 @@ import {
   PgTypeOid,
 } from "../services/pg-types.js"
 import type { Field, Shape, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
-import { conjure, cast } from "../lib/conjure.js"
+import { conjure } from "../lib/conjure.js"
+import type { SymbolStatement } from "../lib/conjure.js"
 
-const { ts, program, b, obj } = conjure
-const { asPropValue, asExpr } = cast
+const { ts, exp, obj } = conjure
 
 /**
  * Plugin configuration schema
@@ -276,96 +276,49 @@ function tsTypeToZodMethod(tsType: string): string {
 }
 
 /**
- * Generate a Zod schema for a shape
- *
- * @example
- * // Generates:
- * export const UserRow = z.object({
- *   id: z.string().uuid(),
- *   username: z.string(),
- * })
+ * Build a z.object({...}) expression for a shape
  */
-function generateShapeSchema(
+function buildShapeZodObject(
   shape: Shape,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: ReadonlyArray<ExtensionInfo>
-): n.ExportNamedDeclaration {
-  // Build object properties using conjure.obj()
+): n.Expression {
   let objBuilder = obj()
   for (const field of shape.fields) {
     const zodSchema = resolveFieldZodSchema(field, enums, extensions)
     objBuilder = objBuilder.prop(field.name, zodSchema)
   }
-
-  const schemaExpr = conjure.id("z").method("object", [objBuilder.build()]).build()
-
-  const variableDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(b.identifier(shape.name), asExpr(schemaExpr)),
-  ])
-
-  return b.exportNamedDeclaration(variableDecl)
+  return conjure.id("z").method("object", [objBuilder.build()]).build()
 }
 
 /**
- * Generate inferred type export for a shape
- *
- * @example
- * // Generates:
- * export type UserRow = z.infer<typeof UserRow>
+ * Generate schema and type statements for a shape using exp.const() and exp.type()
  */
-function generateShapeTypeExport(shapeName: string): n.ExportNamedDeclaration {
-  // Build: z.infer<typeof ShapeName>
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shapeName)])
-
-  const typeAlias = b.tsTypeAliasDeclaration(b.identifier(shapeName), inferType)
-
-  return b.exportNamedDeclaration(typeAlias)
-}
-
-/**
- * Generate AST for an entity's Zod schemas
- */
-function generateEntityAst(
-  entity: Entity,
+function generateShapeStatements(
+  shape: Shape,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: ReadonlyArray<ExtensionInfo>,
+  entityName: string,
+  shapeKind: "row" | "insert" | "update" | "patch",
   exportTypes: boolean
-): n.Program {
-  const declarations: n.Statement[] = []
+): SymbolStatement[] {
+  const statements: SymbolStatement[] = []
 
-  const { row, insert, update, patch } = entity.shapes
+  // Generate: export const ShapeName = z.object({...})
+  const schemaExpr = buildShapeZodObject(shape, enums, extensions)
+  statements.push(
+    exp.const(shape.name, { capability: "schemas:zod", entity: entityName, shape: shapeKind }, schemaExpr)
+  )
 
-  // Generate Row schema and type
-  declarations.push(generateShapeSchema(row, enums, extensions))
+  // Generate: export type ShapeName = z.infer<typeof ShapeName>
   if (exportTypes) {
-    declarations.push(generateShapeTypeExport(row.name))
+    const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shape.name)])
+    statements.push(
+      exp.type(shape.name, { capability: "schemas:zod", entity: entityName, shape: shapeKind }, inferType)
+    )
   }
 
-  // Generate Insert schema and type
-  if (insert) {
-    declarations.push(generateShapeSchema(insert, enums, extensions))
-    if (exportTypes) {
-      declarations.push(generateShapeTypeExport(insert.name))
-    }
-  }
-
-  // Generate Update schema and type
-  if (update) {
-    declarations.push(generateShapeSchema(update, enums, extensions))
-    if (exportTypes) {
-      declarations.push(generateShapeTypeExport(update.name))
-    }
-  }
-
-  // Generate Patch schema and type
-  if (patch) {
-    declarations.push(generateShapeSchema(patch, enums, extensions))
-    if (exportTypes) {
-      declarations.push(generateShapeTypeExport(patch.name))
-    }
-  }
-
-  return program(...declarations)
+  return statements
 }
 
 /**
@@ -391,139 +344,43 @@ export const zodPlugin = definePlugin({
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue
 
-      const ast = generateEntityAst(
-        entity,
-        ir.enums,
-        ir.extensions,
-        config.exportTypes
+      const statements: SymbolStatement[] = []
+      const { row, insert, update, patch } = entity.shapes
+
+      // Generate Row schema and type
+      statements.push(
+        ...generateShapeStatements(row, ir.enums, ir.extensions, name, "row", config.exportTypes)
       )
+
+      // Generate Insert schema and type
+      if (insert) {
+        statements.push(
+          ...generateShapeStatements(insert, ir.enums, ir.extensions, name, "insert", config.exportTypes)
+        )
+      }
+
+      // Generate Update schema and type
+      if (update) {
+        statements.push(
+          ...generateShapeStatements(update, ir.enums, ir.extensions, name, "update", config.exportTypes)
+        )
+      }
+
+      // Generate Patch schema and type
+      if (patch) {
+        statements.push(
+          ...generateShapeStatements(patch, ir.enums, ir.extensions, name, "patch", config.exportTypes)
+        )
+      }
 
       const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`
 
-      // Build header with zod import
-      const header = '// This file is auto-generated. Do not edit.\n\nimport { z } from "zod"\n\n'
-      ctx.emitAst(filePath, ast, header)
-
-      // Register symbols for each shape
-      const { row, insert, update, patch } = entity.shapes
-
-      ctx.symbols.register(
-        {
-          name: row.name,
-          file: filePath,
-          capability: "schemas:zod",
-          entity: name,
-          shape: "row",
-          isType: false,
-          isDefault: false,
-        },
-        ctx.pluginName
-      )
-
-      if (config.exportTypes) {
-        ctx.symbols.register(
-          {
-            name: row.name,
-            file: filePath,
-            capability: "schemas:zod",
-            entity: name,
-            shape: "row",
-            isType: true,
-            isDefault: false,
-          },
-          ctx.pluginName
-        )
-      }
-
-      if (insert) {
-        ctx.symbols.register(
-          {
-            name: insert.name,
-            file: filePath,
-            capability: "schemas:zod",
-            entity: name,
-            shape: "insert",
-            isType: false,
-            isDefault: false,
-          },
-          ctx.pluginName
-        )
-
-        if (config.exportTypes) {
-          ctx.symbols.register(
-            {
-              name: insert.name,
-              file: filePath,
-              capability: "schemas:zod",
-              entity: name,
-              shape: "insert",
-              isType: true,
-              isDefault: false,
-            },
-            ctx.pluginName
-          )
-        }
-      }
-
-      if (update) {
-        ctx.symbols.register(
-          {
-            name: update.name,
-            file: filePath,
-            capability: "schemas:zod",
-            entity: name,
-            shape: "update",
-            isType: false,
-            isDefault: false,
-          },
-          ctx.pluginName
-        )
-
-        if (config.exportTypes) {
-          ctx.symbols.register(
-            {
-              name: update.name,
-              file: filePath,
-              capability: "schemas:zod",
-              entity: name,
-              shape: "update",
-              isType: true,
-              isDefault: false,
-            },
-            ctx.pluginName
-          )
-        }
-      }
-
-      if (patch) {
-        ctx.symbols.register(
-          {
-            name: patch.name,
-            file: filePath,
-            capability: "schemas:zod",
-            entity: name,
-            shape: "patch",
-            isType: false,
-            isDefault: false,
-          },
-          ctx.pluginName
-        )
-
-        if (config.exportTypes) {
-          ctx.symbols.register(
-            {
-              name: patch.name,
-              file: filePath,
-              capability: "schemas:zod",
-              entity: name,
-              shape: "patch",
-              isType: true,
-              isDefault: false,
-            },
-            ctx.pluginName
-          )
-        }
-      }
+      ctx
+        .file(filePath)
+        .header("// This file is auto-generated. Do not edit.\n")
+        .import({ kind: "package", names: ["z"], from: "zod" })
+        .ast(conjure.symbolProgram(...statements))
+        .emit()
     }
   },
 })

@@ -12,8 +12,11 @@ import type { CoreInflection } from "./inflection.js"
 import type { EmissionBuffer } from "./emissions.js"
 import type { SymbolRegistry } from "./symbols.js"
 import type { TypeHintRegistry } from "./type-hints.js"
+import type { ImportCollector } from "./imports.js"
 import type { ArtifactStoreImpl } from "./artifact-store.js"
 import type { PluginMetaInfo } from "./plugin-meta.js"
+import type { FileBuilder } from "./file-builder.js"
+import { createFileBuilder } from "./file-builder.js"
 
 // Import service tags for yielding in definePlugin
 import { IR } from "./ir.js"
@@ -173,6 +176,22 @@ export interface SimplePluginContext {
 
   /** Current plugin name */
   readonly pluginName: string
+
+  /**
+   * Create a FileBuilder for structured file emission.
+   * 
+   * Use this for AST-based code generation with automatic symbol registration:
+   * 
+   * @example
+   * ```typescript
+   * ctx.file("types/User.ts")
+   *   .header("// Auto-generated")
+   *   .import({ kind: "package", names: ["z"], from: "zod" })
+   *   .ast(symbolProgram(...))
+   *   .emit()
+   * ```
+   */
+  readonly file: (path: string) => FileBuilder
 }
 
 /**
@@ -277,6 +296,8 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): Plugin<TCo
           setArtifact: (capability, data) => {
             artifactStore.set(capability, meta.name, data)
           },
+
+          file: (path) => createFileBuilder(path, meta.name, emissions, symbols),
 
           log: {
             // Use Effect logging with plugin name annotation

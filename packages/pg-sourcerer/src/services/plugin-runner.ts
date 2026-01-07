@@ -316,8 +316,8 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
           { discard: true },
         );
 
-        // Serialize AST emissions to string content
-        emissions.serializeAst(conjure.print);
+        // Serialize AST emissions to string content (with import resolution)
+        emissions.serializeAst(conjure.print, symbols);
 
         // Validate emissions for conflicts
         yield* emissions.validate();

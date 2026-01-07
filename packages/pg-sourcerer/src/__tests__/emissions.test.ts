@@ -3,7 +3,13 @@
  */
 import { describe, it, expect } from "@effect/vitest"
 import { Effect } from "effect"
+import recast from "recast"
 import { createEmissionBuffer } from "../services/emissions.js"
+import { createSymbolRegistry } from "../services/symbols.js"
+import type { ImportRef } from "../services/file-builder.js"
+
+const b = recast.types.builders
+const serialize = (ast: any) => recast.print(ast).code
 
 describe("Emission Buffer", () => {
   describe("emit", () => {
@@ -220,5 +226,233 @@ describe("Emission Buffer", () => {
         yield* buffer.validate()
       })
     )
+  })
+
+  describe("emitAst", () => {
+    it("stores AST emission with header", () => {
+      const buffer = createEmissionBuffer()
+      const program = b.program([
+        b.variableDeclaration("const", [
+          b.variableDeclarator(b.identifier("x"), b.numericLiteral(1)),
+        ]),
+      ])
+
+      buffer.emitAst("output/test.ts", program, "test-plugin", "// Header\n")
+
+      const astEmissions = buffer.getAstEmissions()
+      expect(astEmissions).toHaveLength(1)
+      expect(astEmissions[0]!.path).toBe("output/test.ts")
+      expect(astEmissions[0]!.header).toBe("// Header\n")
+    })
+
+    it("stores AST emission with imports", () => {
+      const buffer = createEmissionBuffer()
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        { kind: "package", names: ["z"], from: "zod" },
+      ]
+
+      buffer.emitAst("output/test.ts", program, "test-plugin", undefined, imports)
+
+      const astEmissions = buffer.getAstEmissions()
+      expect(astEmissions).toHaveLength(1)
+      expect(astEmissions[0]!.imports).toEqual(imports)
+    })
+  })
+
+  describe("serializeAst", () => {
+    it("serializes AST with header", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([
+        b.variableDeclaration("const", [
+          b.variableDeclarator(b.identifier("x"), b.numericLiteral(1)),
+        ]),
+      ])
+
+      buffer.emitAst("output/test.ts", program, "test-plugin", "// Header\n")
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      expect(all[0]!.content).toContain("// Header")
+      expect(all[0]!.content).toContain("const x = 1")
+    })
+
+    it("resolves package imports", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([
+        b.variableDeclaration("const", [
+          b.variableDeclarator(b.identifier("schema"), b.identifier("z.object({})")),
+        ]),
+      ])
+      const imports: ImportRef[] = [
+        { kind: "package", names: ["z"], from: "zod" },
+      ]
+
+      buffer.emitAst("output/schema.ts", program, "zod-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      expect(all[0]!.content).toContain('import { z } from "zod"')
+    })
+
+    it("resolves relative imports", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        { kind: "relative", types: ["UserRow"], from: "./types.js" },
+      ]
+
+      buffer.emitAst("output/schema.ts", program, "zod-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      // types are imported with type keyword
+      expect(all[0]!.content).toContain("type UserRow")
+      expect(all[0]!.content).toContain("./types.js")
+    })
+
+    it("resolves symbol imports via SymbolRegistry", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+
+      // Register a symbol first
+      symbols.register(
+        {
+          name: "UserRow",
+          file: "generated/types/User.ts",
+          capability: "types",
+          entity: "User",
+          shape: "row",
+          isType: true,
+          isDefault: false,
+        },
+        "types-plugin"
+      )
+
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        {
+          kind: "symbol",
+          ref: { capability: "types", entity: "User", shape: "row" },
+        },
+      ]
+
+      // Emit from a different file
+      buffer.emitAst(
+        "generated/schemas/User.ts",
+        program,
+        "zod-plugin",
+        undefined,
+        imports
+      )
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      // Should have relative import from schemas/User.ts to types/User.ts
+      expect(all[0]!.content).toContain("import")
+      expect(all[0]!.content).toContain("UserRow")
+      expect(all[0]!.content).toContain("../types/User.js")
+    })
+
+    it("merges imports from same source", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        { kind: "package", names: ["Effect"], from: "effect" },
+        { kind: "package", names: ["Context"], from: "effect" },
+        { kind: "package", types: ["Layer"], from: "effect" },
+      ]
+
+      buffer.emitAst("output/test.ts", program, "test-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      // Should have one import statement with merged specifiers
+      const importMatches = all[0]!.content.match(/import.*from "effect"/g)
+      expect(importMatches).toHaveLength(1)
+      expect(all[0]!.content).toContain("Effect")
+      expect(all[0]!.content).toContain("Context")
+      expect(all[0]!.content).toContain("Layer")
+    })
+
+    it("handles default imports", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        { kind: "package", default: "React", from: "react" },
+      ]
+
+      buffer.emitAst("output/test.tsx", program, "test-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      expect(all[0]!.content).toContain('import React from "react"')
+    })
+
+    it("handles combined default and named imports", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([])
+      const imports: ImportRef[] = [
+        { kind: "package", default: "React", names: ["useState", "useEffect"], from: "react" },
+      ]
+
+      buffer.emitAst("output/test.tsx", program, "test-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      expect(all[0]!.content).toContain("import React")
+      expect(all[0]!.content).toContain("useState")
+      expect(all[0]!.content).toContain("useEffect")
+    })
+
+    it("skips unresolved symbol imports", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([
+        b.variableDeclaration("const", [
+          b.variableDeclarator(b.identifier("x"), b.numericLiteral(1)),
+        ]),
+      ])
+      const imports: ImportRef[] = [
+        {
+          kind: "symbol",
+          ref: { capability: "nonexistent", entity: "Missing" },
+        },
+      ]
+
+      buffer.emitAst("output/test.ts", program, "test-plugin", undefined, imports)
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      // Should not fail, just skip the unresolved import
+      expect(all[0]!.content).toContain("const x = 1")
+      expect(all[0]!.content).not.toContain("import")
+    })
+
+    it("clears AST emissions after serialization", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      const program = b.program([])
+
+      buffer.emitAst("output/test.ts", program, "test-plugin")
+      expect(buffer.getAstEmissions()).toHaveLength(1)
+
+      buffer.serializeAst(serialize, symbols)
+      expect(buffer.getAstEmissions()).toHaveLength(0)
+    })
   })
 })

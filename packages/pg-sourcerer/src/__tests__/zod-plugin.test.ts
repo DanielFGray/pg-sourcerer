@@ -57,8 +57,9 @@ function createTestLayer(ir: SemanticIR) {
 function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
   return Effect.gen(function* () {
     const emissions = yield* Emissions.pipe(Effect.provide(testLayer))
+    const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
     // Serialize any AST emissions to string content
-    emissions.serializeAst(conjure.print)
+    emissions.serializeAst(conjure.print, symbols)
     return emissions.getAll()
   })
 }

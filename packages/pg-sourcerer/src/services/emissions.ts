@@ -7,6 +7,8 @@
 import { Context, Effect, Layer } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { EmitConflict } from "../errors.js"
+import type { ImportRef } from "./file-builder.js"
+import type { SymbolRegistry } from "./symbols.js"
 
 /**
  * Emission entry - a single file to be written
@@ -24,8 +26,10 @@ export interface AstEmissionEntry {
   readonly path: string
   readonly ast: n.Program
   readonly plugin: string
-  /** Optional header to prepend (e.g., imports that can't be in AST) */
+  /** Optional header to prepend (e.g., comments) */
   readonly header?: string
+  /** Import requests to resolve during serialization */
+  readonly imports?: readonly ImportRef[]
 }
 
 /**
@@ -40,7 +44,13 @@ export interface EmissionBuffer {
   /**
    * Emit an AST program to a file (buffered, serialized later by runner)
    */
-  readonly emitAst: (path: string, ast: n.Program, plugin: string, header?: string) => void
+  readonly emitAst: (
+    path: string,
+    ast: n.Program,
+    plugin: string,
+    header?: string,
+    imports?: readonly ImportRef[]
+  ) => void
 
   /**
    * Append to an already-emitted file (same plugin only, string emissions only)
@@ -60,8 +70,12 @@ export interface EmissionBuffer {
   /**
    * Serialize all AST emissions to string emissions.
    * Called by the plugin runner after all plugins have run.
+   * Resolves imports via the provided SymbolRegistry.
    */
-  readonly serializeAst: (serialize: (ast: n.Program) => string) => void
+  readonly serializeAst: (
+    serialize: (ast: n.Program) => string,
+    symbols: SymbolRegistry
+  ) => void
 
   /**
    * Check for conflicts (same path from different plugins)
@@ -81,6 +95,101 @@ export class Emissions extends Context.Tag("Emissions")<
   Emissions,
   EmissionBuffer
 >() {}
+
+// =============================================================================
+// Import Resolution Helpers
+// =============================================================================
+
+import recast from "recast"
+const b = recast.types.builders
+
+/**
+ * Resolve imports and prepend import statements to AST
+ */
+function prependImports(
+  ast: n.Program,
+  imports: readonly ImportRef[],
+  forFile: string,
+  symbols: SymbolRegistry
+): n.Program {
+  const statements: n.Statement[] = []
+
+  // Group imports by source path for merging
+  const bySource = new Map<
+    string,
+    { named: Set<string>; types: Set<string>; default?: string }
+  >()
+
+  for (const ref of imports) {
+    let source: string
+    let named: string[] = []
+    let types: string[] = []
+    let defaultImport: string | undefined
+
+    switch (ref.kind) {
+      case "symbol": {
+        const symbol = symbols.resolve(ref.ref)
+        if (!symbol) continue // Skip unresolved symbols
+        const importStmt = symbols.importFor(symbol, forFile)
+        source = importStmt.from
+        named = [...importStmt.named]
+        types = [...importStmt.types]
+        defaultImport = importStmt.default
+        break
+      }
+
+      case "package":
+      case "relative": {
+        source = ref.from
+        named = ref.names ? [...ref.names] : []
+        types = ref.types ? [...ref.types] : []
+        defaultImport = ref.default
+        break
+      }
+    }
+
+    // Merge with existing imports from same source
+    const existing = bySource.get(source) ?? {
+      named: new Set<string>(),
+      types: new Set<string>(),
+    }
+    named.forEach((n) => existing.named.add(n))
+    types.forEach((t) => existing.types.add(t))
+    if (defaultImport) existing.default = defaultImport
+    bySource.set(source, existing)
+  }
+
+  // Generate import statements
+  for (const [source, { named, types, default: defaultImport }] of bySource) {
+    const specifiers: any[] = []
+
+    // Default import
+    if (defaultImport) {
+      specifiers.push(b.importDefaultSpecifier(b.identifier(defaultImport)))
+    }
+
+    // Named imports
+    for (const name of named) {
+      specifiers.push(
+        b.importSpecifier(b.identifier(name), b.identifier(name))
+      )
+    }
+
+    // Type imports (using type-only import specifiers)
+    for (const name of types) {
+      const spec: any = b.importSpecifier(b.identifier(name), b.identifier(name))
+      spec.importKind = "type"
+      specifiers.push(spec)
+    }
+
+    if (specifiers.length > 0) {
+      statements.push(b.importDeclaration(specifiers, b.stringLiteral(source)))
+    }
+  }
+
+  // Prepend imports to program body
+  return b.program([...statements, ...(ast.body as any[])])
+}
 
 /**
  * Create a new emission buffer
@@ -104,15 +213,18 @@ export function createEmissionBuffer(): EmissionBuffer {
       emissions.set(path, { path, content, plugin })
     },
 
-    emitAst: (path, ast, plugin, header) => {
+    emitAst: (path, ast, plugin, header, imports) => {
       trackPlugin(path, plugin)
       // Store the AST emission (last write wins)
-      const entry: AstEmissionEntry = { path, ast, plugin }
+      // Build entry conditionally to handle exactOptionalPropertyTypes
+      let entry: AstEmissionEntry = { path, ast, plugin }
       if (header !== undefined) {
-        astEmissions.set(path, { ...entry, header })
-      } else {
-        astEmissions.set(path, entry)
+        entry = { ...entry, header }
       }
+      if (imports !== undefined && imports.length > 0) {
+        entry = { ...entry, imports }
+      }
+      astEmissions.set(path, entry)
     },
 
     appendEmit: (path, content, plugin) => {
@@ -138,9 +250,15 @@ export function createEmissionBuffer(): EmissionBuffer {
 
     getAstEmissions: () => [...astEmissions.values()],
 
-    serializeAst: (serialize) => {
+    serializeAst: (serialize, symbols) => {
       for (const [path, entry] of astEmissions) {
-        const code = serialize(entry.ast)
+        // Resolve imports if any
+        let finalAst = entry.ast
+        if (entry.imports && entry.imports.length > 0) {
+          finalAst = prependImports(entry.ast, entry.imports, path, symbols)
+        }
+        
+        const code = serialize(finalAst)
         const content = entry.header ? entry.header + code : code
         emissions.set(path, { path, content, plugin: entry.plugin })
       }

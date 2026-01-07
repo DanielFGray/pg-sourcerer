@@ -39,6 +39,51 @@ import type { namedTypes as n } from "ast-types"
 const b = recast.types.builders
 
 // =============================================================================
+// Symbol Metadata Types
+// =============================================================================
+
+/**
+ * Context for symbol registration - identifies what entity/shape this symbol represents.
+ */
+export interface SymbolContext {
+  readonly capability: string
+  readonly entity: string
+  readonly shape?: string
+}
+
+/**
+ * Metadata attached to an exported symbol.
+ */
+export interface SymbolMeta {
+  readonly name: string
+  readonly capability: string
+  readonly entity: string
+  readonly shape?: string
+  readonly isType: boolean
+  readonly isDefault?: boolean
+}
+
+/**
+ * A statement with attached symbol metadata.
+ * Used by exp.* helpers to track exports.
+ */
+export interface SymbolStatement {
+  readonly _tag: "SymbolStatement"
+  readonly node: n.Statement
+  readonly symbol: SymbolMeta
+}
+
+/**
+ * A program with extracted symbol metadata.
+ * Returned by program() when SymbolStatements are included.
+ */
+export interface SymbolProgram {
+  readonly _tag: "SymbolProgram"
+  readonly node: n.Program
+  readonly symbols: readonly SymbolMeta[]
+}
+
+// =============================================================================
 // Type Casts
 // =============================================================================
 
@@ -706,6 +751,174 @@ const ts = {
 } as const
 
 // =============================================================================
+// Export Helpers (exp.*)
+// =============================================================================
+
+/**
+ * Helper to create a SymbolStatement wrapper
+ */
+function symbolStatement(node: n.Statement, symbol: SymbolMeta): SymbolStatement {
+  return { _tag: "SymbolStatement", node, symbol }
+}
+
+/**
+ * Helper to create SymbolMeta with proper handling of optional shape
+ */
+function createSymbolMeta(
+  name: string,
+  ctx: SymbolContext,
+  isType: boolean
+): SymbolMeta {
+  const base = {
+    name,
+    capability: ctx.capability,
+    entity: ctx.entity,
+    isType,
+  }
+  return ctx.shape !== undefined ? { ...base, shape: ctx.shape } : base
+}
+
+/**
+ * TypeScript interface property signature
+ */
+interface TSPropertySignature {
+  name: string
+  type: n.TSType
+  optional?: boolean
+  readonly?: boolean
+}
+
+/**
+ * Build interface properties from property signature objects
+ */
+function buildInterfaceProperties(props: TSPropertySignature[]): any[] {
+  return props.map((p) => {
+    const sig = b.tsPropertySignature(
+      b.identifier(p.name),
+      b.tsTypeAnnotation(asTSType(p.type))
+    )
+    if (p.optional) sig.optional = true
+    if (p.readonly) sig.readonly = true
+    return sig
+  })
+}
+
+/**
+ * Export helpers that produce statements with symbol metadata.
+ * These are used for tracking exports across files for import resolution.
+ */
+export const exp = {
+  /**
+   * Export interface declaration: `export interface Name { ... }`
+   */
+  interface: (
+    name: string,
+    ctx: SymbolContext,
+    properties: TSPropertySignature[]
+  ): SymbolStatement => {
+    const decl = b.tsInterfaceDeclaration(
+      b.identifier(name),
+      b.tsInterfaceBody(buildInterfaceProperties(properties))
+    )
+    const exportDecl = b.exportNamedDeclaration(decl, [])
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+  },
+
+  /**
+   * Export type alias: `export type Name = Type`
+   */
+  typeAlias: (
+    name: string,
+    ctx: SymbolContext,
+    type: n.TSType
+  ): SymbolStatement => {
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), asTSType(type))
+    const exportDecl = b.exportNamedDeclaration(decl, [])
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+  },
+
+  /**
+   * Export const declaration: `export const name = init`
+   */
+  const: (
+    name: string,
+    ctx: SymbolContext,
+    init: n.Expression,
+    typeAnnotation?: n.TSType
+  ): SymbolStatement => {
+    const id = b.identifier(name)
+    if (typeAnnotation) {
+      id.typeAnnotation = b.tsTypeAnnotation(asTSType(typeAnnotation))
+    }
+    const decl = b.variableDeclaration("const", [
+      b.variableDeclarator(id, asExpr(init)),
+    ])
+    const exportDecl = b.exportNamedDeclaration(decl, [])
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, false))
+  },
+
+  /**
+   * Export type alias for inferred types: `export type Name = typeof schema`
+   * Useful for exporting the inferred type alongside a schema constant.
+   */
+  type: (
+    name: string,
+    ctx: SymbolContext,
+    type: n.TSType
+  ): SymbolStatement => {
+    // This is the same as typeAlias but semantically distinct -
+    // used for inferred types like `z.infer<typeof Schema>`
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), asTSType(type))
+    const exportDecl = b.exportNamedDeclaration(decl, [])
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+  },
+} as const
+
+// =============================================================================
+// Program Builder
+// =============================================================================
+
+/**
+ * Type guard for SymbolStatement
+ */
+function isSymbolStatement(
+  stmt: n.Statement | SymbolStatement
+): stmt is SymbolStatement {
+  return (
+    typeof stmt === "object" &&
+    stmt !== null &&
+    "_tag" in stmt &&
+    stmt._tag === "SymbolStatement"
+  )
+}
+
+/**
+ * Create a SymbolProgram from statements, extracting symbol metadata.
+ * Accepts both regular statements and SymbolStatements.
+ */
+function createSymbolProgram(
+  ...statements: (n.Statement | SymbolStatement)[]
+): SymbolProgram {
+  const nodes: n.Statement[] = []
+  const symbols: SymbolMeta[] = []
+
+  for (const stmt of statements) {
+    if (isSymbolStatement(stmt)) {
+      nodes.push(stmt.node)
+      symbols.push(stmt.symbol)
+    } else {
+      nodes.push(stmt)
+    }
+  }
+
+  return {
+    _tag: "SymbolProgram",
+    node: b.program(nodes.map(asStatement)),
+    symbols,
+  }
+}
+
+// =============================================================================
 // Main API
 // =============================================================================
 
@@ -776,6 +989,9 @@ export const conjure = {
   // === TypeScript types ===
   ts,
 
+  // === Export helpers ===
+  exp,
+
   // === Helpers ===
 
   /** Await expression */
@@ -787,9 +1003,16 @@ export const conjure = {
   /** Print AST node to code string */
   print: (node: n.Node) => recast.print(node).code,
 
-  /** Create a program from statements */
+  /** Create a program from statements (backwards compatible) */
   program: (...statements: n.Statement[]) =>
     b.program(statements.map(asStatement)),
+
+  /**
+   * Create a SymbolProgram from statements, extracting symbol metadata.
+   * Accepts both regular statements and SymbolStatements.
+   * Returns a SymbolProgram with the AST node and extracted symbols.
+   */
+  symbolProgram: createSymbolProgram,
 
   // === Raw builders (escape hatch) ===
 
