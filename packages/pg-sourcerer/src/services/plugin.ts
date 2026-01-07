@@ -6,7 +6,7 @@
  */
 import { Effect, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
-import type { Artifact, CapabilityKey, SemanticIR } from "../ir/semantic-ir.js"
+import type { Artifact, CapabilityKey, SemanticIR, Entity } from "../ir/semantic-ir.js"
 import { PluginExecutionFailed } from "../errors.js"
 import type { CoreInflection, InflectionConfig } from "./inflection.js"
 import type { SymbolRegistry } from "./symbols.js"
@@ -24,10 +24,53 @@ import { Symbols } from "./symbols.js"
 import { TypeHints } from "./type-hints.js"
 
 /**
+ * Context provided to fileName function for output file path generation.
+ * 
+ * This gives plugins full programmatic control over file naming,
+ * with access to entity info and inflection utilities.
+ */
+export interface FileNameContext {
+  /** Already-inflected entity name */
+  readonly entityName: string
+  /** Raw PostgreSQL table/view name */
+  readonly tableName: string
+  /** Schema name */
+  readonly schema: string
+  /** Inflection utilities (singularize, pluralize, etc.) */
+  readonly inflection: CoreInflection
+  /** Full entity from IR for advanced use cases */
+  readonly entity: Entity
+}
+
+/**
  * Plugin-specific inflection for output file and symbol naming
  */
 export interface PluginInflection {
-  readonly outputFile: (entityName: string, artifactKind: string) => string
+  /**
+   * Generate output file path for an entity.
+   * 
+   * @param ctx - Context with entity info and inflection utilities
+   * @returns File path relative to outputDir (include extension)
+   * 
+   * @example
+   * ```typescript
+   * // Default: entity name as file
+   * fileName: (ctx) => `${ctx.entityName}.ts`
+   * 
+   * // Lowercase files
+   * fileName: (ctx) => `${ctx.entityName.toLowerCase()}.ts`
+   * 
+   * // Singular lowercase
+   * fileName: (ctx) => `${ctx.inflection.singularize(ctx.entityName).toLowerCase()}.ts`
+   * 
+   * // Schema-scoped
+   * fileName: (ctx) => `${ctx.schema}/${ctx.entityName}.ts`
+   * 
+   * // Single file for all entities
+   * fileName: () => `all-models.ts`
+   * ```
+   */
+  readonly outputFile: (ctx: FileNameContext) => string
   readonly symbolName: (entityName: string, artifactKind: string) => string
 }
 
@@ -88,14 +131,16 @@ export interface Plugin<TConfig = unknown> {
    * Plugin's default inflection transforms.
    * 
    * These are applied BEFORE user-configured inflection, allowing composition:
-   * - Plugin sets baseline (e.g., entityName: ["pascalCase"] → "users" → "Users")
-   * - User config refines (e.g., entityName: ["singularize"] → "Users" → "User")
+   * - Plugin sets baseline (e.g., entityName: inflect.pascalCase → "users" → "Users")
+   * - User config refines (e.g., entityName: inflect.singularize → "Users" → "User")
    * 
    * @example
    * ```typescript
+   * import { inflect } from "pg-sourcerer"
+   * 
    * inflectionDefaults: {
-   *   entityName: ["pascalCase"],  // Plugin wants PascalCase class names
-   *   fieldName: [],               // Plugin preserves field names as-is
+   *   entityName: inflect.pascalCase,  // Plugin wants PascalCase class names
+   *   // fieldName not set = plugin preserves field names as-is
    * }
    * ```
    */
@@ -202,6 +247,9 @@ export interface SimplePluginContext {
   /** Current plugin name */
   readonly pluginName: string
 
+  /** Plugin's inflection for file and symbol naming */
+  readonly pluginInflection: PluginInflection
+
   /**
    * Create a FileBuilder for structured file emission.
    * 
@@ -242,8 +290,8 @@ export interface SimplePluginDef<TConfig = unknown> {
    * Plugin's default inflection transforms.
    * 
    * These are applied BEFORE user-configured inflection, allowing composition:
-   * - Plugin sets baseline (e.g., entityName: ["pascalCase"] → "users" → "Users")
-   * - User config refines (e.g., entityName: ["singularize"] → "Users" → "User")
+   * - Plugin sets baseline (e.g., entityName: inflect.pascalCase → "users" → "Users")
+   * - User config refines (e.g., entityName: inflect.singularize → "Users" → "User")
    */
   readonly inflectionDefaults?: InflectionConfig
 
@@ -306,6 +354,7 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFact
           symbols,
           typeHints,
           pluginName: meta.name,
+          pluginInflection: def.inflection,
 
           emit: (path, content) => {
             emissions.emit(path, content, meta.name)

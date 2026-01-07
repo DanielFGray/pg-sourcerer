@@ -70,3 +70,33 @@ ast-grep run -p '$PLUGIN.run($$$ARGS)' --lang typescript
 # Match property access
 ast-grep run -p '$PLUGIN.provides' --lang typescript
 ```
+
+## Array to Function Transformation
+
+Converting string arrays to function calls (e.g., inflection config migration):
+
+```bash
+# Single-element array → direct function reference
+# ["camelCase"] → inflect.camelCase
+ast-grep run -p '["$A"]' --rewrite 'inflect.$A' --lang TypeScript -U <files>
+
+# Two-element array → composed function
+# ["singularize", "pascalCase"] → (name) => inflect.pascalCase(inflect.singularize(name))
+ast-grep run -p '["$A", "$B"]' --rewrite '(name) => inflect.$B(inflect.$A(name))' --lang TypeScript -U <files>
+
+# Three-element array (rare but possible)
+# ["singularize", "pascalCase", "uppercase"] → (name) => inflect.uppercase(inflect.pascalCase(inflect.singularize(name)))
+ast-grep run -p '["$A", "$B", "$C"]' --rewrite '(name) => inflect.$C(inflect.$B(inflect.$A(name)))' --lang TypeScript -U <files>
+```
+
+**Order matters!** Run two-element patterns before single-element to avoid partial matches.
+
+**Watch out for false positives:** Array patterns like `["$A"]` will match ANY single-element string array, including things like `schemas: ["public"]`. Review the dry-run output before applying with `-U`.
+
+## CLI Behavior Notes
+
+- **Default is dry-run**: Shows diff but doesn't modify files
+- **`-U` or `--update-all`**: Actually applies changes (no confirmation)
+- **`-i`**: Interactive mode - confirm each change
+- **`--json`**: Machine-readable output with replacement details
+- **`--lang TypeScript`**: Required for `.ts` files (case-sensitive)

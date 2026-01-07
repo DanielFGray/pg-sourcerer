@@ -7,17 +7,18 @@
 import { Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
-import {
-  defaultPgToTs,
-  findEnumByPgName,
-  getExtensionTypeMapping,
-  TsType,
-} from "../services/pg-types.js"
+import type { FileNameContext } from "../services/plugin.js"
+import { findEnumByPgName, TsType } from "../services/pg-types.js"
 import type { Field, Shape, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
 import type { ImportRef } from "../services/file-builder.js"
 import type { TypeHintRegistry, TypeHintFieldMatch } from "../services/type-hints.js"
+import {
+  isEnumType,
+  getPgTypeName,
+  resolveFieldType as resolveFieldBaseType,
+} from "../lib/field-utils.js"
 
 const { ts, exp } = conjure
 
@@ -35,34 +36,6 @@ const TypesPluginConfig = S.Struct({
 
 /** Default configuration values */
 const _defaultConfig = { outputDir: "types" } as const
-
-/**
- * Get the TypeScript type OID from a field's pg attribute
- */
-function getTypeOid(field: Field): number | undefined {
-  const pgType = field.pgAttribute.getType()
-  if (!pgType?._id) return undefined
-  return Number(pgType._id)
-}
-
-/**
- * Check if a field's type is an enum
- */
-function isEnumType(field: Field): boolean {
-  const pgType = field.pgAttribute.getType()
-  return pgType?.typtype === "e"
-}
-
-/**
- * Get the PostgreSQL type name from a field
- */
-function getPgTypeName(field: Field): string | undefined {
-  // For arrays, get the element type name
-  if (field.isArray && field.elementTypeName) {
-    return field.elementTypeName
-  }
-  return field.pgAttribute.getType()?.typname
-}
 
 /**
  * Convert a TsType string to an AST node
@@ -120,11 +93,7 @@ interface ResolvedFieldType {
  * 
  * Resolution order:
  * 1. TypeHints override (highest priority)
- * 2. Enum type
- * 3. OID-based mapping
- * 4. Domain base type mapping
- * 5. Extension type mapping
- * 6. Fallback to unknown
+ * 2. Shared field type resolution (enum, OID, domain, extension)
  */
 function resolveFieldType(
   field: Field,
@@ -149,90 +118,18 @@ function resolveFieldType(
     return result
   }
 
-  // 2. Check for enum
-  if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field)
-    if (pgTypeName) {
-      const enumDef = findEnumByPgName(enums, pgTypeName)
-      if (enumDef) {
-        const baseType = ts.ref(enumDef.name)
-        return { type: field.isArray ? ts.array(baseType) : baseType }
-      }
-    }
+  // 2. Use shared field type resolution
+  const resolved = resolveFieldBaseType(field, enums, extensions)
+  
+  // If resolved to an enum, use the enum name
+  if (resolved.enumDef) {
+    const baseType = ts.ref(resolved.enumDef.name)
+    return { type: field.isArray ? ts.array(baseType) : baseType }
   }
-
-  // 3. Try OID-based mapping (precise, for built-in types)
-  const oid = getTypeOid(field)
-  if (oid !== undefined) {
-    const tsTypeName = defaultPgToTs(oid)
-    if (tsTypeName) {
-      const baseType = tsTypeToAst(tsTypeName)
-      return { type: field.isArray ? ts.array(baseType) : baseType }
-    }
-  }
-
-  // 4. Try OID-based mapping for domain base types
-  if (field.domainBaseType) {
-    const tsTypeName = defaultPgToTs(field.domainBaseType.typeOid)
-    if (tsTypeName) {
-      const baseType = tsTypeToAst(tsTypeName)
-      return { type: field.isArray ? ts.array(baseType) : baseType }
-    }
-  }
-
-  // 5. Try extension-based mapping for the direct type
-  const pgType = field.pgAttribute.getType()
-  if (pgType) {
-    const tsTypeName = getExtensionTypeMapping(
-      pgType.typname,
-      String(pgType.typnamespace),
-      extensions
-    )
-    if (tsTypeName) {
-      const baseType = tsTypeToAst(tsTypeName)
-      return { type: field.isArray ? ts.array(baseType) : baseType }
-    }
-  }
-
-  // Try extension-based mapping for domain base types
-  if (field.domainBaseType) {
-    const tsTypeName = getExtensionTypeMapping(
-      field.domainBaseType.typeName,
-      field.domainBaseType.namespaceOid,
-      extensions
-    )
-    if (tsTypeName) {
-      const baseType = tsTypeToAst(tsTypeName)
-      return { type: field.isArray ? ts.array(baseType) : baseType }
-    }
-  }
-
-  // For arrays, try to resolve element type
-  if (field.isArray && field.elementTypeName) {
-    // Check if element is an enum
-    const enumDef = findEnumByPgName(enums, field.elementTypeName)
-    if (enumDef) {
-      return { type: ts.array(ts.ref(enumDef.name)) }
-    }
-    
-    // Try extension-based mapping for array element type
-    // The array type itself (e.g., _citext) won't match, but the element type (citext) might
-    const pgType = field.pgAttribute.getType()
-    if (pgType?.typnamespace) {
-      const tsTypeName = getExtensionTypeMapping(
-        field.elementTypeName,
-        String(pgType.typnamespace),
-        extensions
-      )
-      if (tsTypeName) {
-        const baseType = tsTypeToAst(tsTypeName)
-        return { type: ts.array(baseType) }
-      }
-    }
-  }
-
-  // 6. Fallback to unknown
-  return { type: field.isArray ? ts.array(ts.unknown()) : ts.unknown() }
+  
+  // Convert TsType to AST node
+  const baseType = tsTypeToAst(resolved.tsType)
+  return { type: field.isArray ? ts.array(baseType) : baseType }
 }
 
 /**
@@ -364,7 +261,7 @@ export const typesPlugin = definePlugin({
   provides: ["types"],
   configSchema: TypesPluginConfig,
   inflection: {
-    outputFile: (entityName, _artifactKind) => `${entityName}.ts`,
+    outputFile: (ctx) => `${ctx.entityName}.ts`,
     symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
   },
 
@@ -431,7 +328,17 @@ export const typesPlugin = definePlugin({
             }))
           : []
 
-      const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`
+      // Build file name context for outputFile
+      const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
+      const fileNameCtx: FileNameContext = {
+        entityName,
+        tableName: entity.tableName,
+        schema: entity.schemaName,
+        inflection: ctx.inflection,
+        entity,
+      }
+      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
+      const filePath = `${config.outputDir}/${fileName}`
       const fileBuilder = ctx
         .file(filePath)
         .header("// This file is auto-generated. Do not edit.\n")

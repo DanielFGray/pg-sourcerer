@@ -2,8 +2,7 @@
  * Core Inflection Service - naming transformations
  *
  * Provides configurable naming conventions for entities, fields, enums, etc.
- * Users configure transform chains (e.g., ["singularize", "pascalCase"]) which
- * are applied in order. Empty chains preserve names as-is (identity).
+ * Users configure with simple string→string functions that compose naturally.
  */
 import { Context, Layer, String as Str } from "effect"
 import type { PgAttribute, PgClass, PgConstraint, PgType } from "pg-introspection"
@@ -27,9 +26,12 @@ const RESERVED_WORDS = new Set([
 ])
 
 // ============================================================================
-// Simple Pluralization (naive, covers common cases)
+// Inflection Helper Functions
 // ============================================================================
 
+/**
+ * Simple pluralization (naive, covers common cases)
+ */
 const pluralize = (word: string): string => {
   if (
     word.endsWith("s") ||
@@ -46,6 +48,9 @@ const pluralize = (word: string): string => {
   return word + "s"
 }
 
+/**
+ * Simple singularization (naive, covers common cases)
+ */
 const singularize = (word: string): string => {
   if (word.endsWith("ies") && word.length > 3) {
     return word.slice(0, -3) + "y"
@@ -66,53 +71,42 @@ const singularize = (word: string): string => {
   return word
 }
 
-// ============================================================================
-// Transform Registry
-// ============================================================================
-
 /**
- * Available transform names that can be used in transform chains.
+ * Inflection helper functions for use in configuration.
+ * 
+ * Users can compose these in their config:
+ * @example
+ * ```typescript
+ * import { inflect } from "pg-sourcerer"
+ * 
+ * const config = {
+ *   inflection: {
+ *     entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+ *     fieldName: inflect.camelCase,
+ *   }
+ * }
+ * ```
  */
-export type TransformName =
-  | "camelCase"
-  | "pascalCase"
-  | "snakeCase"
-  | "singularize"
-  | "pluralize"
-  | "capitalize"
-  | "uncapitalize"
-  | "lowercase"
-  | "uppercase"
-
-/**
- * Registry of named transforms.
- * Each transform is a pure function: string → string
- */
-const transformRegistry: Record<TransformName, (s: string) => string> = {
+export const inflect = {
+  /** Convert snake_case to camelCase */
   camelCase: Str.snakeToCamel,
+  /** Convert snake_case to PascalCase */
   pascalCase: Str.snakeToPascal,
+  /** Convert camelCase to snake_case */
   snakeCase: Str.camelToSnake,
+  /** Singularize a word (users → user) */
   singularize,
+  /** Pluralize a word (user → users) */
   pluralize,
+  /** Capitalize first letter */
   capitalize: Str.capitalize,
+  /** Uncapitalize first letter */
   uncapitalize: Str.uncapitalize,
-  lowercase: (s) => s.toLowerCase(),
-  uppercase: (s) => s.toUpperCase(),
-}
-
-/**
- * A chain of transforms to apply in order.
- * Empty array = identity (preserve as-is).
- */
-export type TransformChain = readonly TransformName[]
-
-/**
- * Apply a chain of transforms to a string.
- * Returns the input unchanged if chain is empty.
- */
-export function applyTransformChain(input: string, chain: TransformChain): string {
-  return chain.reduce((s, name) => transformRegistry[name](s), input)
-}
+  /** Convert to lowercase */
+  lowercase: (s: string) => s.toLowerCase(),
+  /** Convert to uppercase */
+  uppercase: (s: string) => s.toUpperCase(),
+} as const
 
 // ============================================================================
 // Core Inflection Interface
@@ -147,73 +141,72 @@ export class Inflection extends Context.Tag("Inflection")<Inflection, CoreInflec
 // ============================================================================
 
 /**
+ * A simple string→string transform function.
+ */
+export type TransformFn = (input: string) => string
+
+/**
  * Configuration for customizing inflection behavior.
  *
- * Each property is a chain of transform names to apply in order.
- * Empty arrays (or undefined) preserve names as-is (identity).
+ * Each property is an optional function that transforms a name.
+ * If undefined, the identity function is used (name preserved as-is).
  * Smart tags (@name) always take precedence over configured transforms.
  *
  * @example
  * ```typescript
+ * import { inflect } from "pg-sourcerer"
+ * 
  * const config: InflectionConfig = {
  *   // users → User
- *   entityName: ["singularize", "pascalCase"],
+ *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
  *   
  *   // created_at → createdAt
- *   fieldName: ["camelCase"],
+ *   fieldName: inflect.camelCase,
  *   
  *   // user_status → UserStatus  
- *   enumName: ["pascalCase"],
- *   
- *   // Keep enum values as-is
- *   enumValue: [],
+ *   enumName: inflect.pascalCase,
  *   
  *   // row → Row
- *   shapeSuffix: ["capitalize"],
+ *   shapeSuffix: inflect.capitalize,
  * }
  * ```
  */
 export interface InflectionConfig {
   /**
-   * Transform chain for table/view name → entity name.
-   * Default: [] (identity - preserve table name)
-   * Common: ["singularize", "pascalCase"] for "users" → "User"
+   * Transform table/view name → entity name.
+   * Default: identity (preserve table name)
    */
-  readonly entityName?: TransformChain
+  readonly entityName?: TransformFn
 
   /**
-   * Transform chain for column name → field name.
-   * Default: [] (identity - preserve column name)
-   * Common: ["camelCase"] for "created_at" → "createdAt"
+   * Transform column name → field name.
+   * Default: identity (preserve column name)
    */
-  readonly fieldName?: TransformChain
+  readonly fieldName?: TransformFn
 
   /**
-   * Transform chain for PostgreSQL enum type name → TypeScript enum name.
-   * Default: [] (identity - preserve type name)
-   * Common: ["pascalCase"] for "user_status" → "UserStatus"
+   * Transform PostgreSQL enum type name → TypeScript enum name.
+   * Default: identity (preserve type name)
    */
-  readonly enumName?: TransformChain
+  readonly enumName?: TransformFn
 
   /**
-   * Transform chain for enum values.
-   * Default: [] (identity - preserve value)
+   * Transform enum values.
+   * Default: identity (preserve value)
    */
-  readonly enumValue?: TransformChain
+  readonly enumValue?: TransformFn
 
   /**
-   * Transform chain for shape kind suffix.
-   * Default: [] (identity - "row", "insert", etc.)
-   * Common: ["capitalize"] for "row" → "Row"
+   * Transform shape kind suffix.
+   * Default: identity ("row", "insert", etc.)
    */
-  readonly shapeSuffix?: TransformChain
+  readonly shapeSuffix?: TransformFn
 
   /**
-   * Transform chain for relation names derived from constraints.
-   * Default: [] (identity after cleaning constraint name)
-   * Common: ["camelCase"] for "author_id" → "authorId"
+   * Transform relation names derived from constraints.
+   * Default: identity (after cleaning constraint name)
    */
-  readonly relationName?: TransformChain
+  readonly relationName?: TransformFn
 }
 
 // ============================================================================
@@ -226,10 +219,10 @@ export interface InflectionConfig {
  */
 export const defaultInflection: CoreInflection = {
   // Primitive transforms (always available)
-  camelCase: Str.snakeToCamel,
-  pascalCase: Str.snakeToPascal,
-  pluralize,
-  singularize,
+  camelCase: inflect.camelCase,
+  pascalCase: inflect.pascalCase,
+  pluralize: inflect.pluralize,
+  singularize: inflect.singularize,
   safeIdentifier: (text) => (RESERVED_WORDS.has(text) ? text + "_" : text),
 
   // Configurable transforms (default to identity)
@@ -256,48 +249,39 @@ export const defaultInflection: CoreInflection = {
 // Factory Functions
 // ============================================================================
 
+/** Identity function - returns input unchanged */
+const identity: TransformFn = (s) => s
+
 /**
  * Create a CoreInflection instance with optional configuration.
  *
- * Transform chains are applied in order. Empty chains = identity.
  * Smart tags (@name) always take precedence over configured transforms.
  *
  * @example
  * ```typescript
+ * import { inflect } from "pg-sourcerer"
+ * 
  * // Use defaults (identity - preserve names)
  * const inflection = createInflection()
  *
  * // Common JS/TS conventions
  * const inflection = createInflection({
- *   entityName: ["singularize", "pascalCase"],
- *   fieldName: ["camelCase"],
- *   enumName: ["pascalCase"],
- *   shapeSuffix: ["capitalize"],
+ *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+ *   fieldName: inflect.camelCase,
+ *   enumName: inflect.pascalCase,
+ *   shapeSuffix: inflect.capitalize,
  * })
  * ```
  */
 export function createInflection(config?: InflectionConfig): CoreInflection {
   if (!config) return defaultInflection
 
-  // Get configured chains or empty (identity)
-  const entityChain = config.entityName ?? []
-  const fieldChain = config.fieldName ?? []
-  const enumNameChain = config.enumName ?? []
-  const enumValueChain = config.enumValue ?? []
-  const shapeSuffixChain = config.shapeSuffix ?? []
-  const relationChain = config.relationName ?? []
-
-  // If all chains are empty, return default
-  if (
-    entityChain.length === 0 &&
-    fieldChain.length === 0 &&
-    enumNameChain.length === 0 &&
-    enumValueChain.length === 0 &&
-    shapeSuffixChain.length === 0 &&
-    relationChain.length === 0
-  ) {
-    return defaultInflection
-  }
+  const entityFn = config.entityName ?? identity
+  const fieldFn = config.fieldName ?? identity
+  const enumNameFn = config.enumName ?? identity
+  const enumValueFn = config.enumValue ?? identity
+  const shapeSuffixFn = config.shapeSuffix ?? identity
+  const relationFn = config.relationName ?? identity
 
   return {
     // Primitive transforms unchanged
@@ -309,18 +293,18 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
 
     // Configurable transforms (smart tags take precedence)
     entityName: (pgClass, tags) =>
-      tags.name ?? applyTransformChain(pgClass.relname, entityChain),
+      tags.name ?? entityFn(pgClass.relname),
 
     shapeName: (entityName, kind) =>
-      entityName + applyTransformChain(kind, shapeSuffixChain),
+      entityName + shapeSuffixFn(kind),
 
     fieldName: (pgAttribute, tags) =>
-      tags.name ?? applyTransformChain(pgAttribute.attname, fieldChain),
+      tags.name ?? fieldFn(pgAttribute.attname),
 
     enumName: (pgType, tags) =>
-      tags.name ?? applyTransformChain(pgType.typname, enumNameChain),
+      tags.name ?? enumNameFn(pgType.typname),
 
-    enumValueName: (value) => applyTransformChain(value, enumValueChain),
+    enumValueName: (value) => enumValueFn(value),
 
     relationName: (constraint, side, tags) => {
       if (side === "local" && tags.fieldName) return tags.fieldName
@@ -332,7 +316,7 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
         .replace(/_id$/, "")
         .replace(/^[^_]+_/, "")
 
-      return applyTransformChain(cleaned, relationChain)
+      return relationFn(cleaned)
     },
   }
 }
@@ -342,20 +326,16 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
  *
  * @example
  * ```typescript
+ * import { inflect } from "pg-sourcerer"
+ * 
  * // Default layer (identity transforms)
  * const layer = makeInflectionLayer()
  *
  * // Configured layer
  * const layer = makeInflectionLayer({
- *   entityName: ["singularize", "pascalCase"],
- *   fieldName: ["camelCase"],
+ *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+ *   fieldName: inflect.camelCase,
  * })
- *
- * // Use in Effect pipeline
- * Effect.gen(function* () {
- *   const inflection = yield* Inflection
- *   // ...
- * }).pipe(Effect.provide(layer))
  * ```
  */
 export function makeInflectionLayer(config?: InflectionConfig): Layer.Layer<Inflection> {
@@ -378,11 +358,11 @@ export const InflectionLive = makeInflectionLayer()
  * - Relation names: camelCase
  */
 export const classicInflectionConfig: InflectionConfig = {
-  entityName: ["singularize", "pascalCase"],
-  fieldName: ["camelCase"],
-  enumName: ["pascalCase"],
-  shapeSuffix: ["capitalize"],
-  relationName: ["camelCase"],
+  entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+  fieldName: inflect.camelCase,
+  enumName: inflect.pascalCase,
+  shapeSuffix: inflect.capitalize,
+  relationName: inflect.camelCase,
 }
 
 /** Classic inflection layer - applies traditional ORM naming conventions */
@@ -393,21 +373,16 @@ export const ClassicInflectionLive = makeInflectionLayer(classicInflectionConfig
 // ============================================================================
 
 /**
- * Compose two transform chains: first chain runs, then second chain on result.
- * 
- * @example
- * ```typescript
- * composeChains(["pascalCase"], ["singularize"])
- * // "users" → pascalCase → "Users" → singularize → "User"
- * ```
+ * Compose two transform functions: plugin runs first, then user refines.
  */
-const composeChains = (
-  first: TransformChain | undefined,
-  second: TransformChain | undefined
-): TransformChain => {
-  const a = first ?? []
-  const b = second ?? []
-  return [...a, ...b]
+const composeFns = (
+  pluginFn: TransformFn | undefined,
+  userFn: TransformFn | undefined
+): TransformFn | undefined => {
+  if (!pluginFn && !userFn) return undefined
+  if (!pluginFn) return userFn
+  if (!userFn) return pluginFn
+  return (name) => userFn(pluginFn(name))
 }
 
 /**
@@ -419,19 +394,18 @@ const composeChains = (
  * @example
  * ```typescript
  * // Plugin wants PascalCase
- * const pluginDefaults = { entityName: ["pascalCase"] }
+ * const pluginDefaults = { entityName: inflect.pascalCase }
  * 
  * // User wants singular names
- * const userConfig = { entityName: ["singularize"] }
+ * const userConfig = { entityName: inflect.singularize }
  * 
  * // Composed: "users" → "Users" → "User"
  * const composed = composeInflectionConfigs(pluginDefaults, userConfig)
- * // composed.entityName = ["pascalCase", "singularize"]
  * ```
  * 
  * @param pluginDefaults - Plugin's baseline inflection (applied first)
  * @param userConfig - User's refinement config (applied second)
- * @returns Merged InflectionConfig with composed chains
+ * @returns Merged InflectionConfig with composed functions
  */
 export function composeInflectionConfigs(
   pluginDefaults: InflectionConfig | undefined,
@@ -441,96 +415,104 @@ export function composeInflectionConfigs(
   if (!pluginDefaults) return userConfig!
   if (!userConfig) return pluginDefaults
 
-  return {
-    entityName: composeChains(pluginDefaults.entityName, userConfig.entityName),
-    fieldName: composeChains(pluginDefaults.fieldName, userConfig.fieldName),
-    enumName: composeChains(pluginDefaults.enumName, userConfig.enumName),
-    enumValue: composeChains(pluginDefaults.enumValue, userConfig.enumValue),
-    shapeSuffix: composeChains(pluginDefaults.shapeSuffix, userConfig.shapeSuffix),
-    relationName: composeChains(pluginDefaults.relationName, userConfig.relationName),
-  }
+  return Object.fromEntries(
+    Object.entries({
+      entityName: composeFns(pluginDefaults.entityName, userConfig.entityName),
+      fieldName: composeFns(pluginDefaults.fieldName, userConfig.fieldName),
+      enumName: composeFns(pluginDefaults.enumName, userConfig.enumName),
+      enumValue: composeFns(pluginDefaults.enumValue, userConfig.enumValue),
+      shapeSuffix: composeFns(pluginDefaults.shapeSuffix, userConfig.shapeSuffix),
+      relationName: composeFns(pluginDefaults.relationName, userConfig.relationName),
+    }).filter(([, v]) => v !== undefined)
+  ) as InflectionConfig
 }
 
 /**
- * Create a CoreInflection by composing plugin defaults with a base inflection.
+ * Compose a CoreInflection with plugin defaults.
  * 
- * @param base - Base inflection (usually from user config)
- * @param pluginDefaults - Plugin's default transforms to prepend
+ * This is used by PluginRunner to merge plugin's inflectionDefaults
+ * with the user's configured inflection.
+ * 
+ * @param baseInflection - The user's CoreInflection instance
+ * @param pluginDefaults - Plugin's default transforms to apply first
  * @returns New CoreInflection with composed behavior
  */
 export function composeInflection(
-  base: CoreInflection,
+  baseInflection: CoreInflection,
   pluginDefaults: InflectionConfig | undefined
 ): CoreInflection {
-  if (!pluginDefaults) return base
-  
-  // If plugin has no transforms defined, return base unchanged
-  const hasTransforms = 
-    (pluginDefaults.entityName?.length ?? 0) > 0 ||
-    (pluginDefaults.fieldName?.length ?? 0) > 0 ||
-    (pluginDefaults.enumName?.length ?? 0) > 0 ||
-    (pluginDefaults.enumValue?.length ?? 0) > 0 ||
-    (pluginDefaults.shapeSuffix?.length ?? 0) > 0 ||
-    (pluginDefaults.relationName?.length ?? 0) > 0
-  
-  if (!hasTransforms) return base
+  if (!pluginDefaults) return baseInflection
 
-  const entityChain = pluginDefaults.entityName ?? []
-  const fieldChain = pluginDefaults.fieldName ?? []
-  const enumNameChain = pluginDefaults.enumName ?? []
-  const enumValueChain = pluginDefaults.enumValue ?? []
-  const shapeSuffixChain = pluginDefaults.shapeSuffix ?? []
-  const relationChain = pluginDefaults.relationName ?? []
+  const entityFn = pluginDefaults.entityName
+  const fieldFn = pluginDefaults.fieldName
+  const enumNameFn = pluginDefaults.enumName
+  const enumValueFn = pluginDefaults.enumValue
+  const shapeSuffixFn = pluginDefaults.shapeSuffix
+  const relationFn = pluginDefaults.relationName
+
+  // If no transforms defined, return base unchanged
+  if (!entityFn && !fieldFn && !enumNameFn && !enumValueFn && !shapeSuffixFn && !relationFn) {
+    return baseInflection
+  }
 
   return {
     // Primitive transforms unchanged
-    camelCase: base.camelCase,
-    pascalCase: base.pascalCase,
-    pluralize: base.pluralize,
-    singularize: base.singularize,
-    safeIdentifier: base.safeIdentifier,
+    camelCase: baseInflection.camelCase,
+    pascalCase: baseInflection.pascalCase,
+    pluralize: baseInflection.pluralize,
+    singularize: baseInflection.singularize,
+    safeIdentifier: baseInflection.safeIdentifier,
 
     // Compose: plugin transforms first, then base transforms
-    // Plugin runs on raw name, base runs on plugin's output
     entityName: (pgClass, tags) => {
       if (tags.name) return tags.name
-      const afterPlugin = applyTransformChain(pgClass.relname, entityChain)
-      // Simulate what base would do by calling it with a fake pgClass
-      // Actually, we need to apply base's transform to afterPlugin
-      // But base.entityName expects a PgClass... 
-      // The cleanest approach: base is identity, we just apply plugin chain
-      // For full composition, we'd need to extract base's chain
-      // For now: plugin chain only (base is identity by default)
-      return afterPlugin
+      const afterPlugin = entityFn ? entityFn(pgClass.relname) : pgClass.relname
+      // Now apply base inflection's transform to the result
+      // We simulate this by calling base with a fake pgClass that has the transformed name
+      return baseInflection.entityName({ ...pgClass, relname: afterPlugin }, {})
     },
 
     shapeName: (entityName, kind) => {
-      const suffix = applyTransformChain(kind, shapeSuffixChain)
-      return entityName + suffix
+      const afterPlugin = shapeSuffixFn ? shapeSuffixFn(kind) : kind
+      // Base's shapeName concatenates, so we need to handle carefully
+      // Actually base just does: entityName + kind, so we transform kind first
+      return entityName + afterPlugin
     },
 
     fieldName: (pgAttribute, tags) => {
       if (tags.name) return tags.name
-      return applyTransformChain(pgAttribute.attname, fieldChain)
+      const afterPlugin = fieldFn ? fieldFn(pgAttribute.attname) : pgAttribute.attname
+      return baseInflection.fieldName({ ...pgAttribute, attname: afterPlugin }, {})
     },
 
     enumName: (pgType, tags) => {
       if (tags.name) return tags.name
-      return applyTransformChain(pgType.typname, enumNameChain)
+      const afterPlugin = enumNameFn ? enumNameFn(pgType.typname) : pgType.typname
+      return baseInflection.enumName({ ...pgType, typname: afterPlugin }, {})
     },
 
-    enumValueName: (value) => applyTransformChain(value, enumValueChain),
+    enumValueName: (value) => {
+      const afterPlugin = enumValueFn ? enumValueFn(value) : value
+      return baseInflection.enumValueName(afterPlugin)
+    },
 
     relationName: (constraint, side, tags) => {
       if (side === "local" && tags.fieldName) return tags.fieldName
       if (side === "foreign" && tags.foreignFieldName) return tags.foreignFieldName
 
+      // Clean constraint name first (same as default)
       const cleaned = constraint.conname
         .replace(/_fkey$/, "")
         .replace(/_id$/, "")
         .replace(/^[^_]+_/, "")
 
-      return applyTransformChain(cleaned, relationChain)
+      const afterPlugin = relationFn ? relationFn(cleaned) : cleaned
+      // Base would also clean, but we already cleaned, so just apply relation transform
+      return baseInflection.relationName(
+        { ...constraint, conname: afterPlugin },
+        side,
+        {}
+      )
     },
   }
 }

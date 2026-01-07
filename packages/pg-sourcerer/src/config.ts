@@ -27,8 +27,10 @@ export type TypeHint = S.Schema.Type<typeof TypeHint>
 /**
  * Main configuration schema
  *
- * Note: `inflection` is typed as `InflectionConfig | undefined` but stored
- * as S.Any in the schema since functions can't be validated at runtime.
+ * Note: `inflection` and `plugins` are typed as S.Any in the schema since
+ * they contain complex types that can't be fully validated at runtime.
+ * Use `ConfigInput` for typed user-facing config and `ResolvedConfig` for
+ * the fully resolved configuration.
  */
 export const Config = S.Struct({
   /** Database connection string */
@@ -43,20 +45,7 @@ export const Config = S.Struct({
   /** Type hints for custom type mapping */
   typeHints: S.optionalWith(S.Array(TypeHint), { default: () => [] }),
 
-  /**
-   * Inflection configuration for customizing naming conventions.
-   * Each property is a function that transforms names.
-   *
-   * @example
-   * ```typescript
-   * inflection: {
-   *   // Skip singularization for entity names
-   *   entityName: (tableName) => Str.snakeToPascal(tableName),
-   *   // Keep column names as snake_case
-   *   fieldName: (columnName) => columnName,
-   * }
-   * ```
-   */
+  /** Inflection configuration (validated as Any, properly typed in ConfigInput) */
   inflection: S.optional(S.Any),
 
   /** Plugins to run (validated individually per plugin) */
@@ -64,6 +53,47 @@ export const Config = S.Struct({
 })
 
 export type Config = S.Schema.Type<typeof Config>
+
+/**
+ * User-facing configuration input type.
+ * 
+ * This provides proper TypeScript types for `inflection` and `plugins`
+ * which are stored as `S.Any` in the schema for runtime flexibility.
+ * Use this type for `defineConfig()` to give users proper autocomplete.
+ */
+export interface ConfigInput {
+  /** Database connection string */
+  readonly connectionString: string
+
+  /** PostgreSQL schemas to introspect (default: ["public"]) */
+  readonly schemas?: readonly string[]
+
+  /** Output directory root (default: "src/generated") */
+  readonly outputDir?: string
+
+  /** Type hints for custom type mapping */
+  readonly typeHints?: readonly TypeHint[]
+
+  /**
+   * Inflection configuration for customizing naming conventions.
+   * Each property is a function that transforms a name.
+   *
+   * @example
+   * ```typescript
+   * import { inflect } from "pg-sourcerer"
+   * 
+   * inflection: {
+   *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)), // users → User
+   *   fieldName: inflect.camelCase,                   // created_at → createdAt
+   *   enumName: inflect.pascalCase,                   // user_status → UserStatus
+   * }
+   * ```
+   */
+  readonly inflection?: InflectionConfig
+
+  /** Plugins to run */
+  readonly plugins: readonly unknown[]
+}
 
 /**
  * Resolved configuration with all defaults applied

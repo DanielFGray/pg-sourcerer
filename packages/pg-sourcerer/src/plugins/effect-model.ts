@@ -10,17 +10,19 @@ import { Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js"
 import { definePlugin } from "../services/plugin.js"
-import {
-  defaultPgToTs,
-  findEnumByPgName,
-  getExtensionTypeMapping,
-  TsType,
-  PgTypeOid,
-} from "../services/pg-types.js"
+import type { FileNameContext } from "../services/plugin.js"
+import { inflect } from "../services/inflection.js"
+import { TsType } from "../services/pg-types.js"
 import type { EnumLookupResult } from "../services/pg-types.js"
 import type { Field, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
+import {
+  isUuidType,
+  isDateType,
+  isBigIntType,
+  resolveFieldType,
+} from "../lib/field-utils.js"
 
 const { exp, obj } = conjure
 
@@ -84,155 +86,6 @@ function toExprKind(expr: n.Expression): ExpressionKind {
 }
 
 /**
- * Get the TypeScript type OID from a field's pg attribute
- */
-function getTypeOid(field: Field): number | undefined {
-  const pgType = field.pgAttribute.getType()
-  if (!pgType?._id) return undefined
-  return Number(pgType._id)
-}
-
-/**
- * Check if a field's type is an enum
- */
-function isEnumType(field: Field): boolean {
-  const pgType = field.pgAttribute.getType()
-  return pgType?.typtype === "e"
-}
-
-/**
- * Get the PostgreSQL type name from a field
- */
-function getPgTypeName(field: Field): string | undefined {
-  // For arrays, get the element type name
-  if (field.isArray && field.elementTypeName) {
-    return field.elementTypeName
-  }
-  return field.pgAttribute.getType()?.typname
-}
-
-/**
- * Check if this field is a UUID type
- */
-function isUuidType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Uuid
-}
-
-/**
- * Check if this field is a date/timestamp type
- */
-function isDateType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Date || oid === PgTypeOid.Timestamp || oid === PgTypeOid.TimestampTz
-}
-
-/**
- * Build an Effect Schema expression for a base type.
- * Returns S.<Type> expression.
- */
-function buildEffectSchemaType(
-  field: Field,
-  enums: ReadonlyMap<string, EnumDef>,
-  extensions: readonly ExtensionInfo[],
-): n.Expression {
-  // Check for enum first
-  if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field)
-    if (pgTypeName) {
-      const enumResult = findEnumByPgName(enums, pgTypeName)
-      if (enumResult) {
-        return buildEnumSchema(enumResult)
-      }
-    }
-  }
-
-  // UUID -> S.UUID
-  if (isUuidType(field)) {
-    return conjure.id("S").prop("UUID").build()
-  }
-
-  // Date/timestamp -> S.Date
-  if (isDateType(field)) {
-    return conjure.id("S").prop("Date").build()
-  }
-
-  // BigInt (int8) -> S.BigInt (Effect handles big integers properly)
-  if (isBigIntType(field)) {
-    return conjure.id("S").prop("BigInt").build()
-  }
-
-  // Try OID-based mapping
-  const oid = getTypeOid(field)
-  if (oid !== undefined) {
-    const tsType = defaultPgToTs(oid)
-    if (tsType) {
-      return tsTypeToEffectSchema(tsType)
-    }
-  }
-
-  // Try domain base type mapping
-  if (field.domainBaseType) {
-    const tsType = defaultPgToTs(field.domainBaseType.typeOid)
-    if (tsType) {
-      return tsTypeToEffectSchema(tsType)
-    }
-  }
-
-  // Try extension-based mapping
-  const pgType = field.pgAttribute.getType()
-  if (pgType) {
-    const tsType = getExtensionTypeMapping(
-      pgType.typname,
-      String(pgType.typnamespace),
-      extensions,
-    )
-    if (tsType) {
-      return tsTypeToEffectSchema(tsType)
-    }
-  }
-
-  // Try extension mapping for domain base types
-  if (field.domainBaseType) {
-    const tsType = getExtensionTypeMapping(
-      field.domainBaseType.typeName,
-      field.domainBaseType.namespaceOid,
-      extensions,
-    )
-    if (tsType) {
-      return tsTypeToEffectSchema(tsType)
-    }
-  }
-
-  // Try extension mapping for array element types
-  // The array type itself (e.g., _citext) won't match, but the element type (citext) might
-  if (field.isArray && field.elementTypeName) {
-    const pgType = field.pgAttribute.getType()
-    if (pgType?.typnamespace) {
-      const tsType = getExtensionTypeMapping(
-        field.elementTypeName,
-        String(pgType.typnamespace),
-        extensions,
-      )
-      if (tsType) {
-        return tsTypeToEffectSchema(tsType)
-      }
-    }
-  }
-
-  // Fallback to S.Unknown
-  return conjure.id("S").prop("Unknown").build()
-}
-
-/**
- * Check if this field is a bigint type (int8)
- */
-function isBigIntType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Int8
-}
-
-/**
  * Map TypeScript type to Effect Schema expression
  */
 function tsTypeToEffectSchema(tsType: string): n.Expression {
@@ -262,6 +115,43 @@ function buildEnumSchema(enumResult: EnumLookupResult): n.Expression {
     conjure.id("S").method("Literal", [conjure.str(v)]).build()
   )
   return conjure.id("S").method("Union", literals).build()
+}
+
+/**
+ * Build an Effect Schema expression for a base type.
+ * Returns S.<Type> expression.
+ */
+function buildEffectSchemaType(
+  field: Field,
+  enums: ReadonlyMap<string, EnumDef>,
+  extensions: readonly ExtensionInfo[],
+): n.Expression {
+  // Use shared field type resolution
+  const resolved = resolveFieldType(field, enums, extensions)
+
+  // If resolved to an enum, build enum schema
+  if (resolved.enumDef) {
+    return buildEnumSchema(resolved.enumDef)
+  }
+
+  // Special cases that need specific Effect Schema types
+  // UUID -> S.UUID (more specific than just S.String)
+  if (isUuidType(field)) {
+    return conjure.id("S").prop("UUID").build()
+  }
+
+  // Date/timestamp -> S.Date
+  if (isDateType(field)) {
+    return conjure.id("S").prop("Date").build()
+  }
+
+  // BigInt (int8) -> S.BigInt
+  if (isBigIntType(field)) {
+    return conjure.id("S").prop("BigInt").build()
+  }
+
+  // Use the resolved TsType
+  return tsTypeToEffectSchema(resolved.tsType)
 }
 
 /**
@@ -537,14 +427,14 @@ export const effectModelPlugin = definePlugin({
   provides: ["models:effect", "models"],
   configSchema: EffectModelPluginConfig,
   inflection: {
-    outputFile: (entityName, _artifactKind) => `${entityName}.ts`,
+    outputFile: (ctx) => `${ctx.entityName}.ts`,
     symbolName: (entityName, _artifactKind) => entityName,
   },
   // Plugin defaults: PascalCase for entity/class names
   // Users can compose with additional transforms (e.g., singularize)
   inflectionDefaults: {
-    entityName: ["pascalCase"],
-    enumName: ["pascalCase"],
+    entityName: inflect.pascalCase,
+    enumName: inflect.pascalCase,
   },
 
   run: (ctx, config) => {
@@ -580,7 +470,16 @@ export const effectModelPlugin = definePlugin({
       // Generate the Model class
       statements.push(generateModelStatement(entity, className, ir.enums, ir.extensions))
 
-      const filePath = `${config.outputDir}/${className}.ts`
+      // Build file name context for outputFile
+      const fileNameCtx: FileNameContext = {
+        entityName: className,
+        tableName: entity.tableName,
+        schema: entity.schemaName,
+        inflection: ctx.inflection,
+        entity,
+      }
+      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
+      const filePath = `${config.outputDir}/${fileName}`
 
       ctx
         .file(filePath)

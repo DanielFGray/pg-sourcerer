@@ -8,7 +8,6 @@ import { describe, expect, layer } from "@effect/vitest"
 import { Effect, Layer, Schema as S } from "effect"
 import {
   PluginRunner,
-  type ConfiguredPlugin,
   type Plugin,
 } from "../services/plugin-runner.js"
 import {
@@ -21,11 +20,12 @@ import {
 import { createIRBuilder, freezeIR } from "../ir/index.js"
 import { definePlugin, type SimplePluginContext, type PluginFactory } from "../services/plugin.js"
 import { TypeHintsLive } from "../services/type-hints.js"
+import { InflectionLive } from "../services/inflection.js"
 import { conjure } from "../lib/conjure.js"
 
-// Test layer: PluginRunner + empty TypeHints
-const TestLayer = Layer.merge(
-  PluginRunner.Default,
+// Test layer: PluginRunner + empty TypeHints + Inflection
+const TestLayer = Layer.mergeAll(
+  Layer.provide(PluginRunner.Default, InflectionLive),
   TypeHintsLive([])
 )
 
@@ -41,7 +41,7 @@ function testPlugin(
     provides,
     configSchema: S.Unknown,
     inflection: {
-      outputFile: (entity: string) => `${entity}.ts`,
+      outputFile: (ctx: { entityName: string }) => `${ctx.entityName}.ts`,
       symbolName: (entity: string, kind: string) => `${entity}${kind}`,
     },
     run,
@@ -519,7 +519,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             provides: ["output"],
             configSchema: ConfigSchema,
             inflection: {
-              outputFile: (entity: string) => `${entity}.ts`,
+              outputFile: (ctx: { entityName: string }) => `${ctx.entityName}.ts`,
               symbolName: (entity: string, kind: string) => `${entity}${kind}`,
             },
             run: () => Effect.void,
@@ -548,7 +548,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             provides: ["output"],
             configSchema: ConfigSchema,
             inflection: {
-              outputFile: (entity: string) => `${entity}.ts`,
+              outputFile: (ctx: { entityName: string }) => `${ctx.entityName}.ts`,
               symbolName: (entity: string, kind: string) => `${entity}${kind}`,
             },
             run: () => Effect.void,
@@ -583,7 +583,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             provides: ["server"],
             configSchema: ConfigSchema,
             inflection: {
-              outputFile: (entity: string) => `${entity}.ts`,
+              outputFile: (ctx: { entityName: string }) => `${ctx.entityName}.ts`,
               symbolName: (entity: string, kind: string) => `${entity}${kind}`,
             },
             run: () => Effect.void,
@@ -641,7 +641,7 @@ layer(TestLayer)("PluginRunner", (it) => {
             provides: ["db"],
             configSchema: ConfigSchema,
             inflection: {
-              outputFile: (entity: string) => `${entity}.ts`,
+              outputFile: (ctx: { entityName: string }) => `${ctx.entityName}.ts`,
               symbolName: (entity: string, kind: string) => `${entity}${kind}`,
             },
             run: () => Effect.void,
