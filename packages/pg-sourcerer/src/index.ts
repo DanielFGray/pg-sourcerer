@@ -36,7 +36,7 @@ export {
   freezeIR,
 } from "./ir/index.js"
 
-export { SmartTags, ShapeKind, emptySmartTags } from "./ir/index.js"
+export { SmartTags, ShapeKind } from "./ir/index.js"
 
 // Services - IR
 export { IR } from "./services/ir.js"

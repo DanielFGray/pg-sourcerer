@@ -29,7 +29,6 @@ import type {
   Shape,
 } from "../ir/semantic-ir.js"
 import type { ShapeKind, SmartTags } from "../ir/smart-tags.js"
-import { emptySmartTags } from "../ir/smart-tags.js"
 import { createIRBuilder, freezeIR } from "../ir/semantic-ir.js"
 import { Inflection } from "./inflection.js"
 import { parseSmartTags, type TagContext } from "./smart-tags-parser.js"
@@ -277,13 +276,13 @@ function buildShape(
     const filteredAttrs = pipe(
       attributes,
       Array.filter((attr) => {
-        const tags = attributeTags.get(attr.attname) ?? emptySmartTags
+        const tags = attributeTags.get(attr.attname) ?? {}
         return !isOmittedForShape(tags, kind)
       })
     )
 
     const fields = yield* Effect.forEach(filteredAttrs, (attr) => {
-      const tags = attributeTags.get(attr.attname) ?? emptySmartTags
+      const tags = attributeTags.get(attr.attname) ?? {}
       return buildField(attr, tags, kind, introspection, role)
     })
 
