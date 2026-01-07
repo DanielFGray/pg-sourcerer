@@ -27,8 +27,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "bun --env-file=../example/.env vitest run",
+    "test:watch": "bun --env-file=../example/.env vitest",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
@@ -62,6 +62,7 @@
     "@effect/vitest": "catalog:",
     "@types/bun": "catalog:",
     "@types/pg": "catalog:",
+    "@vitest/coverage-v8": "3.2.4",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

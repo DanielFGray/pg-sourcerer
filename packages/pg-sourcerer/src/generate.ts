@@ -181,6 +181,7 @@ export const generate = (
     const typeHintsLayer = TypeHintsLive(config.typeHints)
 
     // Run plugins with user's inflection (not default identity inflection)
+    // Use DefaultWithoutDependencies so our inflectionLayer takes precedence
     const pluginResult = yield* Effect.gen(function* () {
       const runner = yield* PluginRunner
       const prepared = yield* runner.prepare(plugins)
@@ -191,8 +192,9 @@ export const generate = (
       return yield* runner.run(prepared, ir)
     }).pipe(
       Effect.provide(typeHintsLayer),
-      Effect.provide(PluginRunner.Default),
-      Effect.provide(inflectionLayer)
+      Effect.provide(
+        Layer.provide(PluginRunner.DefaultWithoutDependencies, inflectionLayer)
+      )
     )
 
     const emissions = pluginResult.emissions.getAll()
