@@ -4,8 +4,8 @@
  * Provides pre-captured introspection data from the example database
  * so tests can run without a live database connection.
  */
-import { parseIntrospectionResults, type Introspection } from "pg-introspection"
-import introspectionData from "./introspection.json"
+import { parseIntrospectionResults, type Introspection } from "pg-introspection";
+import introspectionData from "./introspection.json" with { type: "json" };
 
 /**
  * Load the introspection fixture.
@@ -15,5 +15,5 @@ import introspectionData from "./introspection.json"
  */
 export function loadIntrospectionFixture(): Introspection {
   // parseIntrospectionResults expects a JSON string
-  return parseIntrospectionResults(JSON.stringify(introspectionData), true)
+  return parseIntrospectionResults(JSON.stringify(introspectionData), true);
 }

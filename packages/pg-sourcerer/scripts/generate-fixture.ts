@@ -10,12 +10,14 @@ import { writeFileSync } from "fs"
 import { join } from "path"
 import { introspectDatabase } from "../src/services/introspection.js"
 
-const DATABASE_URL =
-  // eslint-disable-next-line @typescript-eslint/dot-notation
-  process.env["DATABASE_URL"] ??
-  "postgresql://pgsourcerer_demo:YwxPS2MX9o1LKBweB6Dgha3v@localhost:5432/pgsourcerer_demo"
+const { DATABASE_URL } = process.env
 
 async function main() {
+  if (!DATABASE_URL) {
+    console.error("Please set the DATABASE_URL environment variable.")
+    process.exit(1)
+  }
+
   const introspection = await Effect.runPromise(
     introspectDatabase({
       connectionString: DATABASE_URL,
