@@ -26,7 +26,7 @@ import {
 import { type EmissionBuffer, Emissions, createEmissionBuffer } from "./emissions.js";
 import { type SymbolRegistry, Symbols, createSymbolRegistry } from "./symbols.js";
 import { TypeHints } from "./type-hints.js";
-import { Inflection, InflectionLive } from "./inflection.js";
+import { Inflection, InflectionLive, composeInflection } from "./inflection.js";
 import { IR } from "./ir.js";
 import { ArtifactStore, createArtifactStore } from "./artifact-store.js";
 import { PluginMeta } from "./plugin-meta.js";
@@ -289,9 +289,9 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
         const artifactStore = createArtifactStore();
 
         // Build shared layers for this run - all using the same instances
+        // Note: Inflection is NOT in shared layers - it's per-plugin (composed)
         const sharedLayers = Layer.mergeAll(
           Layer.succeed(IR, ir),
-          Layer.succeed(Inflection, inflection),
           Layer.succeed(Emissions, emissions),
           Layer.succeed(Symbols, symbols),
           Layer.succeed(TypeHints, typeHints),
@@ -299,13 +299,20 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
         );
 
         // Execute plugins sequentially, stopping on first failure
-        // Each plugin gets a fresh PluginMeta layer with its name
-        // and logging annotations for structured logging
+        // Each plugin gets:
+        // - Fresh PluginMeta layer with its name
+        // - Composed inflection (plugin defaults + base inflection)
+        // - Logging annotations for structured logging
         yield* Effect.forEach(
           plugins,
           ({ plugin, config }) => {
             const pluginMetaLayer = Layer.succeed(PluginMeta, { name: plugin.name });
-            const allLayers = Layer.merge(sharedLayers, pluginMetaLayer);
+            
+            // Compose inflection: plugin defaults applied first, then base inflection
+            const composedInflection = composeInflection(inflection, plugin.inflectionDefaults);
+            const inflectionLayer = Layer.succeed(Inflection, composedInflection);
+            
+            const allLayers = Layer.mergeAll(sharedLayers, pluginMetaLayer, inflectionLayer);
 
             return plugin.run(config).pipe(
               Effect.provide(allLayers),

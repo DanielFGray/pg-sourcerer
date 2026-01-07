@@ -204,6 +204,22 @@ function buildEffectSchemaType(
     }
   }
 
+  // Try extension mapping for array element types
+  // The array type itself (e.g., _citext) won't match, but the element type (citext) might
+  if (field.isArray && field.elementTypeName) {
+    const pgType = field.pgAttribute.getType()
+    if (pgType?.typnamespace) {
+      const tsType = getExtensionTypeMapping(
+        field.elementTypeName,
+        String(pgType.typnamespace),
+        extensions,
+      )
+      if (tsType) {
+        return tsTypeToEffectSchema(tsType)
+      }
+    }
+  }
+
   // Fallback to S.Unknown
   return conjure.id("S").prop("Unknown").build()
 }
@@ -403,9 +419,15 @@ function buildFieldSchema(
 
 /**
  * Build Model.Class definition for an entity
+ *
+ * @param entity - The entity to generate
+ * @param className - The inflected class name (e.g., "Users" for table "users")
+ * @param enums - Enum definitions for type lookup
+ * @param extensions - Extension info for type mapping
  */
 function buildModelClass(
   entity: Entity,
+  className: string,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
@@ -417,8 +439,8 @@ function buildModelClass(
     fieldsObj = fieldsObj.prop(field.name, schema)
   }
 
-  // Build: Model.Class<EntityName>("EntityName")({ ... })
-  // This requires type parameters on the method call
+  // Build: Model.Class<ClassName>("table_name")({ ... })
+  // Note: className is inflected (e.g., "Users"), entity.name is the raw table name ("users")
   
   // First build Model.Class with type parameter
   const modelClassRef = conjure.b.memberExpression(
@@ -426,19 +448,20 @@ function buildModelClass(
     conjure.b.identifier("Class")
   )
   
-  // Create the call with type argument: Model.Class<EntityName>
+  // Create the call with type argument: Model.Class<ClassName>
+  // The string argument is the raw table name for SQL queries
   const modelClassWithType = conjure.b.callExpression(modelClassRef, [
     conjure.str(entity.name)
   ])
   
-  // Add type arguments to the call: Model.Class<EntityName>
+  // Add type arguments to the call: Model.Class<ClassName>
   // Use typeParameters for TypeScript (not typeArguments which is for Flow)
   ;(modelClassWithType as { typeParameters?: unknown }).typeParameters = 
     conjure.b.tsTypeParameterInstantiation([
-      conjure.b.tsTypeReference(conjure.b.identifier(entity.name))
+      conjure.b.tsTypeReference(conjure.b.identifier(className))
     ])
   
-  // Now call that with the fields object: Model.Class<EntityName>("EntityName")({ ... })
+  // Now call that with the fields object: Model.Class<ClassName>("table_name")({ ... })
   const modelCall = conjure.b.callExpression(modelClassWithType, [
     fieldsObj.build()
   ])
@@ -448,20 +471,26 @@ function buildModelClass(
 
 /**
  * Generate a Model class statement for an entity
+ *
+ * @param entity - The entity to generate
+ * @param className - The inflected class name (e.g., "Users" for table "users")
+ * @param enums - Enum definitions for type lookup
+ * @param extensions - Extension info for type mapping
  */
 function generateModelStatement(
   entity: Entity,
+  className: string,
   enums: ReadonlyMap<string, EnumDef>,
   extensions: readonly ExtensionInfo[],
 ): SymbolStatement {
-  const modelExpr = buildModelClass(entity, enums, extensions)
+  const modelExpr = buildModelClass(entity, className, enums, extensions)
 
   // We need to generate:
-  // export class EntityName extends Model.Class<EntityName>("EntityName")({ ... }) {}
+  // export class ClassName extends Model.Class<ClassName>("table_name")({ ... }) {}
   //
   // This is a class declaration with extends - no type params on the class itself
   const classDecl = conjure.b.classDeclaration(
-    conjure.b.identifier(entity.name),
+    conjure.b.identifier(className),
     conjure.b.classBody([]),
     toExprKind(modelExpr)  // superClass
   )
@@ -472,9 +501,9 @@ function generateModelStatement(
     _tag: "SymbolStatement",
     node: exportDecl,
     symbol: {
-      name: entity.name,
+      name: className,
       capability: "models:effect",
-      entity: entity.name,
+      entity: entity.name,  // Keep original entity name for lookups
       isType: false,
     },
   }
@@ -511,6 +540,12 @@ export const effectModelPlugin = definePlugin({
     outputFile: (entityName, _artifactKind) => `${entityName}.ts`,
     symbolName: (entityName, _artifactKind) => entityName,
   },
+  // Plugin defaults: PascalCase for entity/class names
+  // Users can compose with additional transforms (e.g., singularize)
+  inflectionDefaults: {
+    entityName: ["pascalCase"],
+    enumName: ["pascalCase"],
+  },
 
   run: (ctx, config) => {
     const { ir } = ctx
@@ -537,12 +572,15 @@ export const effectModelPlugin = definePlugin({
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue
 
+      // Get the inflected class name (e.g., "Users" for table "users")
+      const className = ctx.inflection.entityName(entity.pgClass, entity.tags)
+
       const statements: SymbolStatement[] = []
 
       // Generate the Model class
-      statements.push(generateModelStatement(entity, ir.enums, ir.extensions))
+      statements.push(generateModelStatement(entity, className, ir.enums, ir.extensions))
 
-      const filePath = `${config.outputDir}/${ctx.inflection.entityName(entity.pgClass, entity.tags)}.ts`
+      const filePath = `${config.outputDir}/${className}.ts`
 
       ctx
         .file(filePath)
