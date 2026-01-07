@@ -3,6 +3,11 @@
  * pg-sourcerer CLI
  *
  * Command-line interface for code generation from PostgreSQL schema.
+ * 
+ * Log verbosity is controlled via the built-in --log-level flag:
+ *   --log-level debug   Show detailed output (table names, file paths)
+ *   --log-level info    Default - show progress messages
+ *   --log-level none    Suppress all output except errors
  */
 import { Command, Options } from "@effect/cli"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
@@ -31,19 +36,13 @@ const dryRun = Options.boolean("dry-run").pipe(
   Options.withDefault(false)
 )
 
-const verbose = Options.boolean("verbose").pipe(
-  Options.withAlias("v"),
-  Options.withDescription("Enable verbose output"),
-  Options.withDefault(false)
-)
-
 // ============================================================================
 // Generate Command
 // ============================================================================
 
 const generateCommand = Command.make(
   "generate",
-  { configPath, outputDir, dryRun, verbose },
+  { configPath, outputDir, dryRun },
   (args) =>
     Effect.gen(function* () {
       // Build options object, only including defined values
@@ -51,10 +50,8 @@ const generateCommand = Command.make(
         configPath?: string
         outputDir?: string
         dryRun?: boolean
-        verbose?: boolean
       } = {
         dryRun: args.dryRun,
-        verbose: args.verbose,
       }
       if (args.configPath._tag === "Some") {
         opts.configPath = args.configPath.value
@@ -68,15 +65,9 @@ const generateCommand = Command.make(
       // Summary
       const written = result.writeResults.filter((r) => r.written).length
       const total = result.writeResults.length
+      const suffix = args.dryRun ? " (dry run)" : ""
 
-      if (args.dryRun) {
-        yield* Console.log(`\n✓ Would generate ${total} files (dry run)`)
-        for (const r of result.writeResults) {
-          yield* Console.log(`  ${r.path}`)
-        }
-      } else {
-        yield* Console.log(`\n✓ Generated ${written} files`)
-      }
+      yield* Console.log(`\n✓ Generated ${args.dryRun ? total : written} files${suffix}`)
     }).pipe(
       Effect.catchAll((error: GenerateError) =>
         Effect.gen(function* () {

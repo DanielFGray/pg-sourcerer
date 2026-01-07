@@ -8,10 +8,10 @@
 
 ### Running Tests
 ```bash
-cd packages/sourcerer-rewrite
+cd packages/pg-sourcerer
 bun run test     # never `bun test`
-bun test:watch  # Watch mode
-bun typecheck   # Type check without emit
+bun run test:watch  # Watch mode
+bun run typecheck   # Type check without emit
 ```
 
 ## Key Libraries
@@ -124,22 +124,40 @@ const ctx = createStubPluginContext(ir, "test-plugin")
 ## File Organization
 
 ```
-src/
-├── index.ts           # Public API exports
-├── errors.ts          # All TaggedError types
-├── config.ts          # Config schema
+packages/pg-sourcerer/src/
+├── index.ts              # Public API exports
+├── cli.ts                # CLI entry point (@effect/cli)
+├── generate.ts           # Main orchestration function
+├── errors.ts             # All TaggedError types
+├── config.ts             # Config schema
+├── testing.ts            # Test utilities
 ├── ir/
-│   ├── index.ts       # Re-exports
-│   ├── smart-tags.ts  # SmartTags Effect Schema
-│   └── semantic-ir.ts # IR types and builder
+│   ├── index.ts          # Re-exports
+│   ├── smart-tags.ts     # SmartTags Effect Schema
+│   └── semantic-ir.ts    # IR types and builder
+├── lib/
+│   └── conjure.ts        # AST builders for code generation
+├── plugins/
+│   ├── types.ts          # TypeScript types plugin
+│   └── zod.ts            # Zod schema plugin
 └── services/
-    ├── index.ts       # Re-exports
-    ├── inflection.ts  # Naming service
-    ├── type-hints.ts  # Type override registry
-    ├── symbols.ts     # Symbol registry for imports
-    ├── emissions.ts   # Output buffer
-    ├── plugin-context.ts  # What plugins receive
-    └── plugin-runner.ts   # Plugin orchestration
+    ├── artifact-store.ts # Plugin artifact storage
+    ├── config-loader.ts  # Config file discovery/loading
+    ├── emissions.ts      # Output buffer for generated files
+    ├── file-builder.ts   # AST file construction helpers
+    ├── file-writer.ts    # Writes emissions to disk
+    ├── imports.ts        # Import statement helpers
+    ├── inflection.ts     # Naming conventions service
+    ├── introspection.ts  # Database introspection
+    ├── ir-builder.ts     # Builds SemanticIR from introspection
+    ├── ir.ts             # IR access service
+    ├── pg-types.ts       # PostgreSQL type mapping
+    ├── plugin-meta.ts    # Plugin metadata helpers
+    ├── plugin-runner.ts  # Plugin orchestration
+    ├── plugin.ts         # Plugin definition helpers
+    ├── smart-tags-parser.ts # Parse @tags from comments
+    ├── symbols.ts        # Symbol registry for imports
+    └── type-hints.ts     # User type overrides
 ```
 
 ## ⚠️ Effect Code: Read the Style Guide First
