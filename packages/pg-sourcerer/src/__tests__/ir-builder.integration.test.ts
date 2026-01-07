@@ -10,6 +10,7 @@ import type { Introspection } from "pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
+import { isTableEntity, getEnumEntities, type TableEntity } from "../ir/semantic-ir.js"
 import { beforeAll } from "vitest"
 
 // Connection string for example database
@@ -44,6 +45,17 @@ const buildIR = (schemas: readonly string[]) =>
     return yield* builder.build(introspection, { schemas })
   }).pipe(Effect.provide(ClassicInflectionLive))
 
+/**
+ * Helper to get a table entity with type narrowing
+ */
+function getTable(ir: { entities: ReadonlyMap<string, unknown> }, name: string): TableEntity {
+  const entity = ir.entities.get(name)
+  if (!entity || !isTableEntity(entity as import("../ir/semantic-ir.js").Entity)) {
+    throw new Error(`Entity ${name} not found or is not a table`)
+  }
+  return entity as TableEntity
+}
+
 describe("IR Builder Integration", () => {
   describe("with real database", () => {
     it.effect("builds IR from app_public schema", () =>
@@ -55,11 +67,11 @@ describe("IR Builder Integration", () => {
         expect(result.schemas).toContain("app_public")
 
         // Should have users table
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         expect(users).toBeDefined()
-        expect(users?.tableName).toBe("users")
-        expect(users?.schemaName).toBe("app_public")
-        expect(users?.kind).toBe("table")
+        expect(users.pgName).toBe("users")
+        expect(users.schemaName).toBe("app_public")
+        expect(users.kind).toBe("table")
       })
     )
 
@@ -67,7 +79,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         expect(users).toBeDefined()
 
         // Tables should have all 4 shapes
@@ -96,7 +108,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
         const insertFields = users?.shapes.insert?.fields ?? []
 
@@ -126,7 +138,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         expect(users?.primaryKey).toBeDefined()
         expect(users?.primaryKey?.columns).toContain("id")
         expect(users?.primaryKey?.isVirtual).toBe(false)
@@ -137,7 +149,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const posts = result.entities.get("Post")
+        const posts = getTable(result, "Post")
         expect(posts).toBeDefined()
 
         const rowFields = posts?.shapes.row.fields ?? []
@@ -161,7 +173,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const posts = result.entities.get("Post")
+        const posts = getTable(result, "Post")
         expect(posts?.relations.length).toBeGreaterThan(0)
 
         // Posts should have a belongsTo User relation
@@ -181,7 +193,7 @@ describe("IR Builder Integration", () => {
         const result = yield* buildIR(["app_public"])
 
         // recent_posts is a view
-        const recentPosts = result.entities.get("RecentPost")
+        const recentPosts = getTable(result, "RecentPost")
         if (recentPosts) {
           expect(recentPosts.kind).toBe("view")
           expect(recentPosts.shapes.row).toBeDefined()
@@ -228,7 +240,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const updateFields = users?.shapes.update?.fields ?? []
 
         // All fields in update shape should be optional
@@ -242,7 +254,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const patchFields = users?.shapes.patch?.fields ?? []
 
         // All fields in patch shape should be optional
@@ -256,7 +268,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
 
         const avatarUrl = rowFields.find((f) => f.name === "avatarUrl")
@@ -271,7 +283,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
 
         for (const field of rowFields) {
@@ -281,13 +293,15 @@ describe("IR Builder Integration", () => {
       })
     )
 
-    it.effect("keeps pgClass reference on each entity", () =>
+    it.effect("keeps pgClass reference on each table/view entity", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
         for (const entity of result.entities.values()) {
-          expect(entity.pgClass).toBeDefined()
-          expect(entity.pgClass.relname).toBe(entity.tableName)
+          if (isTableEntity(entity)) {
+            expect(entity.pgClass).toBeDefined()
+            expect(entity.pgClass.relname).toBe(entity.pgName)
+          }
         }
       })
     )
@@ -297,7 +311,7 @@ describe("IR Builder Integration", () => {
         const result = yield* buildIR(["nonexistent_schema"])
 
         expect(result.entities.size).toBe(0)
-        expect(result.enums.size).toBe(0)
+        expect(getEnumEntities(result).length).toBe(0)
       })
     )
 
@@ -305,7 +319,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
 
         // id has default (gen_random_uuid())
@@ -326,7 +340,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         expect(users?.permissions).toBeDefined()
         expect(typeof users?.permissions.canSelect).toBe("boolean")
         expect(typeof users?.permissions.canInsert).toBe("boolean")
@@ -339,7 +353,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
 
         // Check that all fields have permissions
@@ -356,7 +370,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const recentPosts = result.entities.get("RecentPost")
+        const recentPosts = getTable(result, "RecentPost")
         if (recentPosts) {
           expect(recentPosts.permissions).toBeDefined()
           expect(typeof recentPosts.permissions.canSelect).toBe("boolean")
@@ -372,7 +386,7 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = result.entities.get("User")
+        const users = getTable(result, "User")
         expect(users).toBeDefined()
 
         const rowFields = users?.shapes.row.fields ?? []

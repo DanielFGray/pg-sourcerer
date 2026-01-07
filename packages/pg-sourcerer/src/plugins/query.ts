@@ -5,7 +5,8 @@
  */
 import { Schema as S } from "effect"
 import { definePlugin } from "../services/plugin.js"
-import type { Entity, IndexDef } from "../ir/semantic-ir.js"
+import type { Entity, IndexDef, TableEntity } from "../ir/semantic-ir.js"
+import { isTableEntity } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 
 const { ts, b, exp } = conjure
@@ -20,7 +21,7 @@ const QueryPluginConfig = S.Struct({
 /**
  * Generate a function name from an index
  */
-function generateFunctionName(entity: Entity, index: IndexDef): string {
+function generateFunctionName(entity: TableEntity, index: IndexDef): string {
   const entitySingular = entity.name.replace(/s$/, "")
   const byPart = index.columns
     .map((col) => `By${col.charAt(0).toUpperCase() + col.slice(1)}`)
@@ -38,7 +39,7 @@ function isUniqueIndex(index: IndexDef): boolean {
 /**
  * Analyze an entity's indexes and generate query functions
  */
-function analyzeEntityForQueries(entity: Entity) {
+function analyzeEntityForQueries(entity: TableEntity) {
   const queries: Array<{
     name: string
     entityName: string
@@ -123,6 +124,8 @@ export const queryPlugin = definePlugin({
     const { ir } = ctx
 
     for (const [name, entity] of ir.entities) {
+      // Only process table/view entities (enums don't have indexes)
+      if (!isTableEntity(entity)) continue
       if (entity.tags.omit === true) continue
 
       const queries = analyzeEntityForQueries(entity)

@@ -14,7 +14,13 @@ import type { FileNameContext } from "../services/plugin.js"
 import { inflect } from "../services/inflection.js"
 import { TsType } from "../services/pg-types.js"
 import type { EnumLookupResult } from "../services/pg-types.js"
-import type { Field, Entity, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
+import type {
+  Field,
+  TableEntity,
+  EnumEntity,
+  ExtensionInfo,
+} from "../ir/semantic-ir.js"
+import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
 import {
@@ -123,7 +129,7 @@ function buildEnumSchema(enumResult: EnumLookupResult): n.Expression {
  */
 function buildEffectSchemaType(
   field: Field,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
   // Use shared field type resolution
@@ -206,7 +212,7 @@ function wrapFieldOption(schema: n.Expression): n.Expression {
  * Note: We intentionally ignore ACL permissions here - they're runtime concerns,
  * not type generation concerns. The model represents the table structure.
  */
-function isDbGenerated(field: Field, entity: Entity): boolean {
+function isDbGenerated(field: Field, entity: TableEntity): boolean {
   // Explicit generated/identity columns
   if (field.isGenerated || field.isIdentity) {
     return true
@@ -259,8 +265,8 @@ function isAutoTimestamp(field: Field): { kind: "insert" | "update" } | undefine
  */
 function buildFieldSchema(
   field: Field,
-  entity: Entity,
-  enums: ReadonlyMap<string, EnumDef>,
+  entity: TableEntity,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
   // Start with the base type
@@ -312,13 +318,13 @@ function buildFieldSchema(
  *
  * @param entity - The entity to generate
  * @param className - The inflected class name (e.g., "Users" for table "users")
- * @param enums - Enum definitions for type lookup
+ * @param enums - Enum entities for type lookup
  * @param extensions - Extension info for type mapping
  */
 function buildModelClass(
-  entity: Entity,
+  entity: TableEntity,
   className: string,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
 ): n.Expression {
   // Build the fields object
@@ -364,13 +370,13 @@ function buildModelClass(
  *
  * @param entity - The entity to generate
  * @param className - The inflected class name (e.g., "Users" for table "users")
- * @param enums - Enum definitions for type lookup
+ * @param enums - Enum entities for type lookup
  * @param extensions - Extension info for type mapping
  */
 function generateModelStatement(
-  entity: Entity,
+  entity: TableEntity,
   className: string,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: readonly EnumEntity[],
   extensions: readonly ExtensionInfo[],
 ): SymbolStatement {
   const modelExpr = buildModelClass(entity, className, enums, extensions)
@@ -400,19 +406,19 @@ function generateModelStatement(
 }
 
 /**
- * Generate enum schema statement for separate enum file
+ * Generate enum schema statement
  */
-function generateEnumStatement(enumDef: EnumDef): SymbolStatement {
+function generateEnumStatement(enumEntity: EnumEntity): SymbolStatement {
   const enumResult: EnumLookupResult = {
-    name: enumDef.name,
-    pgName: enumDef.pgName,
-    values: enumDef.values,
+    name: enumEntity.name,
+    pgName: enumEntity.pgName,
+    values: enumEntity.values,
   }
   const schema = buildEnumSchema(enumResult)
 
   return exp.const(
-    enumDef.name,
-    { capability: "models:effect", entity: enumDef.name },
+    enumEntity.name,
+    { capability: "models:effect", entity: enumEntity.name },
     schema,
   )
 }
@@ -441,24 +447,40 @@ export const effectModelPlugin = definePlugin({
     const { ir } = ctx
     const enumStyle = config.enumStyle ?? "inline"
 
-    // Generate enum file if separate style and enums exist
-    if (enumStyle === "separate" && ir.enums.size > 0) {
-      const enumStatements: SymbolStatement[] = []
+    // Get enum and table entities
+    const enumEntities = getEnumEntities(ir)
+    const tableEntities = getTableEntities(ir)
 
-      for (const enumDef of ir.enums.values()) {
-        enumStatements.push(generateEnumStatement(enumDef))
+    // Generate enum files - each enum gets its own file (unless inline)
+    if (enumStyle === "separate") {
+      for (const enumEntity of enumEntities) {
+        // Skip enums marked with @omit
+        if (enumEntity.tags.omit === true) continue
+
+        const statement = generateEnumStatement(enumEntity)
+
+        // Build file name context for outputFile
+        const fileNameCtx: FileNameContext = {
+          entityName: enumEntity.name,
+          pgName: enumEntity.pgName,
+          schema: enumEntity.schemaName,
+          inflection: ctx.inflection,
+          entity: enumEntity,
+        }
+        const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
+        const filePath = `${config.outputDir}/${fileName}`
+
+        ctx
+          .file(filePath)
+          .header("// This file is auto-generated. Do not edit.\n")
+          .import({ kind: "package", names: ["Schema as S"], from: "effect" })
+          .ast(conjure.symbolProgram(statement))
+          .emit()
       }
-
-      ctx
-        .file(`${config.outputDir}/enums.ts`)
-        .header("// This file is auto-generated. Do not edit.\n")
-        .import({ kind: "package", names: ["Schema as S"], from: "effect" })
-        .ast(conjure.symbolProgram(...enumStatements))
-        .emit()
     }
 
-    // Generate entity model files
-    for (const [_name, entity] of ir.entities) {
+    // Generate table/view entity model files
+    for (const entity of tableEntities) {
       // Skip entities marked with @omit
       if (entity.tags.omit === true) continue
 
@@ -468,12 +490,12 @@ export const effectModelPlugin = definePlugin({
       const statements: SymbolStatement[] = []
 
       // Generate the Model class
-      statements.push(generateModelStatement(entity, className, ir.enums, ir.extensions))
+      statements.push(generateModelStatement(entity, className, enumEntities, ir.extensions))
 
       // Build file name context for outputFile
       const fileNameCtx: FileNameContext = {
         entityName: className,
-        tableName: entity.tableName,
+        pgName: entity.pgName,
         schema: entity.schemaName,
         inflection: ctx.inflection,
         entity,

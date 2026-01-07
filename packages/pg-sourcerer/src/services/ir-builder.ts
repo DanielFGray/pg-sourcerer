@@ -17,8 +17,8 @@ import type {
 import { entityPermissions } from "pg-introspection"
 import type {
   DomainBaseTypeInfo,
-  Entity,
-  EnumDef,
+  TableEntity,
+  EnumEntity,
   ExtensionInfo,
   Field,
   EntityPermissions,
@@ -302,15 +302,13 @@ function buildShape(
 /**
  * Determine entity kind from pg_class relkind
  */
-function entityKind(relkind: string): "table" | "view" | "composite" {
+function entityKind(relkind: string): "table" | "view" {
   switch (relkind) {
     case "r":
       return "table"
     case "v":
     case "m": // materialized view
       return "view"
-    case "c":
-      return "composite"
     default:
       return "table"
   }
@@ -379,14 +377,14 @@ function parseAttributeTags(
 }
 
 /**
-  * Build an Entity from a PgClass
+  * Build a TableEntity from a PgClass
   */
 function buildEntity(
   pgClass: PgClass,
   entityNameLookup: ReadonlyMap<string, string>,
   introspection: Introspection,
   role: PgRoles
-): Effect.Effect<Entity, TagParseError, Inflection> {
+): Effect.Effect<TableEntity, TagParseError, Inflection> {
   const context: TagContext = {
     objectType: "table",
     objectName: pgClass.relname,
@@ -425,7 +423,7 @@ function buildEntity(
     const permissions = computeEntityPermissions(introspection, pgClass, role)
 
     // Build shapes object conditionally to satisfy exactOptionalPropertyTypes
-    const shapes: Entity["shapes"] =
+    const shapes: TableEntity["shapes"] =
       kind === "table"
         ? {
             row: rowShape,
@@ -438,7 +436,7 @@ function buildEntity(
     // Build entity conditionally to satisfy exactOptionalPropertyTypes
     const baseEntity = {
       name,
-      tableName: pgClass.relname,
+      pgName: pgClass.relname,
       schemaName,
       kind,
       pgClass,
@@ -450,7 +448,7 @@ function buildEntity(
     }
 
     // Only include primaryKey if defined
-    const entity: Entity = primaryKey !== undefined
+    const entity: TableEntity = primaryKey !== undefined
       ? { ...baseEntity, primaryKey }
       : baseEntity
 
@@ -597,11 +595,11 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
 // ============================================================================
 
 /**
- * Build an EnumDef from a PgType
+ * Build an EnumEntity from a PgType
  */
 function buildEnum(
   pgType: PgType
-): Effect.Effect<EnumDef, TagParseError, Inflection> {
+): Effect.Effect<EnumEntity, TagParseError, Inflection> {
   const context: TagContext = {
     objectType: "type",
     objectName: pgType.typname,
@@ -615,6 +613,7 @@ function buildEnum(
     const values = pgType.getEnumValues()?.map((v) => v.enumlabel) ?? []
 
     return {
+      kind: "enum" as const,
       name: inflection.enumName(pgType, tags),
       pgName: pgType.typname,
       schemaName,
@@ -753,8 +752,8 @@ function createIRBuilderImpl(): IRBuilder {
         for (const entity of entities) {
           builder.entities.set(entity.name, entity)
         }
-        for (const enumDef of enums) {
-          builder.enums.set(enumDef.name, enumDef)
+        for (const enumEntity of enums) {
+          builder.entities.set(enumEntity.name, enumEntity)
         }
         builder.extensions.push(...extensions)
 

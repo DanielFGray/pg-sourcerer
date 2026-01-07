@@ -103,7 +103,7 @@ export interface ResolvedType {
  */
 export function resolveFieldType(
   field: Field,
-  enums: ReadonlyMap<string, EnumDef>,
+  enums: Iterable<EnumDef>,
   extensions: readonly ExtensionInfo[]
 ): ResolvedType {
   // 1. Check for enum

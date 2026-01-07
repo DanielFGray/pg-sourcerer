@@ -23,6 +23,7 @@ import { ClassicInflectionLive } from "../services/inflection.js"
 import { createFileWriter } from "../services/file-writer.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { isTableEntity, getTableEntities } from "../ir/semantic-ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 
 // Load the test fixture
@@ -57,6 +58,9 @@ const typesPlugin = definePlugin({
   },
   run: (ctx, config) => {
     for (const [name, entity] of ctx.ir.entities) {
+      // Skip enums - only process table/view entities
+      if (!isTableEntity(entity)) continue
+      
       const rowShape = entity.shapes.row
       if (!rowShape) continue
 
@@ -100,6 +104,9 @@ const validatorsPlugin = definePlugin({
   },
   run: (ctx, config) => {
     for (const [name, entity] of ctx.ir.entities) {
+      // Skip enums - only process table/view entities
+      if (!isTableEntity(entity)) continue
+      
       const rowShape = entity.shapes.row
       if (!rowShape) continue
 
@@ -224,13 +231,16 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
         const emissions = result.emissions.getAll()
         expect(emissions.length).toBeGreaterThan(0)
 
-        // Should have type files for each entity
-        const typeFiles = emissions.filter((e) => e.path.startsWith("types/"))
-        expect(typeFiles.length).toBe(ir.entities.size)
+        // Count table/view entities (plugins skip enums)
+        const tableEntityCount = getTableEntities(ir).length
 
-        // Should have validator files for each entity
+        // Should have type files for each table/view entity
+        const typeFiles = emissions.filter((e) => e.path.startsWith("types/"))
+        expect(typeFiles.length).toBe(tableEntityCount)
+
+        // Should have validator files for each table/view entity
         const validatorFiles = emissions.filter((e) => e.path.startsWith("validators/"))
-        expect(validatorFiles.length).toBe(ir.entities.size)
+        expect(validatorFiles.length).toBe(tableEntityCount)
 
         // 7. Validate symbols
         const symbols = result.symbols.getAll()
@@ -239,8 +249,8 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
         // Should have both type and validator symbols
         const typeSymbols = symbols.filter((s) => s.capability === "types")
         const validatorSymbols = symbols.filter((s) => s.capability === "validators")
-        expect(typeSymbols.length).toBe(ir.entities.size)
-        expect(validatorSymbols.length).toBe(ir.entities.size)
+        expect(typeSymbols.length).toBe(tableEntityCount)
+        expect(validatorSymbols.length).toBe(tableEntityCount)
       })
     )
 

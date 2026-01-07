@@ -18,7 +18,8 @@ import { ArtifactStoreLive } from "../services/artifact-store.js"
 import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
-import type { SemanticIR } from "../ir/semantic-ir.js"
+import type { SemanticIR, TableEntity, Field } from "../ir/semantic-ir.js"
+import { getEnumEntities, isTableEntity } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 
 // Load introspection data from fixture
@@ -284,7 +285,7 @@ describe("Effect Model Plugin", () => {
         
         // Find a view entity - views typically have !canInsert && !canUpdate
         const viewEntity = Array.from(ir.entities.values()).find(
-          (e) => e.kind === "view"
+          (e): e is TableEntity => isTableEntity(e) && e.kind === "view"
         )
         
         // Verify the heuristic preconditions exist in views
@@ -313,7 +314,7 @@ describe("Effect Model Plugin", () => {
         // The id field in recent_posts view has a default (from underlying posts table)
         // and can't be inserted/updated, so it should be wrapped with Model.Generated
         if (viewEntity) {
-          const hasFieldWithDefault = viewEntity.shapes.row.fields.some(f => f.hasDefault)
+          const hasFieldWithDefault = viewEntity.shapes.row.fields.some((f: Field) => f.hasDefault)
           if (hasFieldWithDefault) {
             expect(viewFile?.content).toContain("Model.Generated")
           }
@@ -380,12 +381,15 @@ describe("Effect Model Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        // Should have an enums.ts file
-        const enumsFile = all.find((e) => e.path.includes("enums.ts"))
-        if (ir.enums.size > 0) {
-          expect(enumsFile).toBeDefined()
-          expect(enumsFile?.content).toContain("S.Union")
-          expect(enumsFile?.content).toContain("S.Literal")
+        // Each enum should have its own file when enumStyle: "separate"
+        const enumEntities = getEnumEntities(ir)
+        if (enumEntities.length > 0) {
+          for (const enumEntity of enumEntities) {
+            const enumFile = all.find((e) => e.path.includes(`${enumEntity.name}.ts`))
+            expect(enumFile).toBeDefined()
+            expect(enumFile?.content).toContain("S.Union")
+            expect(enumFile?.content).toContain("S.Literal")
+          }
         }
       })
     )
@@ -530,8 +534,9 @@ describe("Effect Model Plugin", () => {
     ): SemanticIR {
       const entity = ir.entities.get(entityName)
       if (!entity) throw new Error(`Entity ${entityName} not found`)
+      if (!isTableEntity(entity)) throw new Error(`Entity ${entityName} is not a table/view`)
       
-      const field = entity.shapes.row.fields.find(f => f.name === fieldName)
+      const field = entity.shapes.row.fields.find((f: Field) => f.name === fieldName)
       if (!field) throw new Error(`Field ${fieldName} not found in ${entityName}`)
       
       // Mutate the field's tags (IR is mutable for testing)
@@ -618,9 +623,11 @@ describe("Effect Model Plugin", () => {
           // By default it would be Model.Generated, but insert:required should prevent that
           const userEntity = ir.entities.get("User")
           expect(userEntity).toBeDefined()
+          expect(isTableEntity(userEntity!)).toBe(true)
           
           // Verify the id field has a default (precondition)
-          const idField = userEntity?.shapes.row.fields.find(f => f.name === "id")
+          const tableEntity = userEntity as TableEntity
+          const idField = tableEntity.shapes.row.fields.find((f: Field) => f.name === "id")
           expect(idField?.hasDefault).toBe(true)
           
           // First, run WITHOUT insert:required to verify it normally uses Model.Generated

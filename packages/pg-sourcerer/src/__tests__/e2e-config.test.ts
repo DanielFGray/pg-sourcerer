@@ -19,6 +19,7 @@ import { createIRBuilderService } from "../services/ir-builder.js"
 import { makeInflectionLayer, inflect, type InflectionConfig } from "../services/inflection.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
+import { getEnumEntities } from "../ir/semantic-ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 
 // Real plugins
@@ -156,7 +157,8 @@ layer(BaseTestLayer)("E2E Config Integration", (it) => {
         })
 
         // Fixture has vote_type enum - check it's PascalCase
-        const enumNames = [...result.ir.enums.keys()]
+        const enumEntities = getEnumEntities(result.ir)
+        const enumNames = enumEntities.map(e => e.name)
         // Should have VoteType (from vote_type) with pascalCase inflection
         const hasVoteType = enumNames.some(
           (n) => n === "VoteType" || n === "vote_type"
@@ -164,8 +166,9 @@ layer(BaseTestLayer)("E2E Config Integration", (it) => {
         expect(hasVoteType).toBe(true)
 
         // If inflection worked, should have VoteType not vote_type
-        if (result.ir.enums.has("VoteType")) {
-          expect(result.ir.enums.has("vote_type")).toBe(false)
+        const hasInflectedVoteType = enumNames.includes("VoteType")
+        if (hasInflectedVoteType) {
+          expect(enumNames.includes("vote_type")).toBe(false)
         }
       })
     )
