@@ -7,8 +7,14 @@
  * 3. Build IR
  * 4. Prepare and run plugins
  * 5. Write files
+ *
+ * Logging:
+ * - Effect.log (INFO) - Progress messages shown by default
+ * - Effect.logDebug (DEBUG) - Detailed info (entity names, file lists)
+ * 
+ * Configure via Logger.withMinimumLogLevel at the call site.
  */
-import { Effect, Layer, Console } from "effect"
+import { Effect, Layer } from "effect"
 import { FileSystem, Path } from "@effect/platform"
 import type { ResolvedConfig } from "./config.js"
 import type { ConfiguredPlugin, RunResult } from "./services/plugin-runner.js"
@@ -55,8 +61,6 @@ export interface GenerateOptions {
   readonly outputDir?: string
   /** Dry run - don't write files, just return what would be written */
   readonly dryRun?: boolean
-  /** Verbose logging */
-  readonly verbose?: boolean
 }
 
 /**
@@ -107,10 +111,8 @@ export const generate = (
   | Path.Path
 > =>
   Effect.gen(function* () {
-    const verbose = options.verbose ?? false
-
     // 1. Load configuration
-    if (verbose) yield* Console.log("Loading configuration...")
+    yield* Effect.logDebug("Loading configuration...")
     const configLoader = yield* ConfigLoaderService
     const config = yield* configLoader.load(
       // Only include defined properties to satisfy exactOptionalPropertyTypes
@@ -121,39 +123,54 @@ export const generate = (
         }).filter(([, v]) => v !== undefined)
       ) as { configPath?: string; searchFrom?: string }
     )
-    if (verbose) yield* Console.log(`  Schemas: ${config.schemas.join(", ")}`)
-    if (verbose) yield* Console.log(`  Plugins: ${config.plugins.length}`)
+    yield* Effect.logDebug(`Config schemas: ${config.schemas.join(", ")}`)
+    yield* Effect.logDebug(`Config plugins: ${config.plugins.length}`)
 
     // 2. Introspect database
-    if (verbose) yield* Console.log("Introspecting database...")
+    yield* Effect.log("Introspecting database...")
     const dbService = yield* DatabaseIntrospectionService
     const introspection = yield* dbService.introspect({
       connectionString: config.connectionString,
     })
-    if (verbose) {
-      const tableCount = introspection.classes.filter(
-        (c) => c.relkind === "r"
-      ).length
-      yield* Console.log(`  Found ${tableCount} tables`)
+
+    const tables = introspection.classes.filter((c) => c.relkind === "r")
+    const views = introspection.classes.filter((c) => c.relkind === "v")
+
+    yield* Effect.log(`Found ${tables.length} tables, ${views.length} views`)
+
+    if (tables.length > 0) {
+      const tableNames = tables.map((t) => t.relname).sort()
+      yield* Effect.logDebug(`Tables: ${tableNames.join(", ")}`)
+    }
+    if (views.length > 0) {
+      const viewNames = views.map((v) => v.relname).sort()
+      yield* Effect.logDebug(`Views: ${viewNames.join(", ")}`)
     }
 
     // 3. Build IR
-    if (verbose) yield* Console.log("Building semantic IR...")
+    yield* Effect.log("Building semantic IR...")
     const irBuilder = createIRBuilderService()
-    
+
     // Create inflection layer from config (or use defaults)
     const inflectionLayer = makeInflectionLayer(config.inflection)
-    
+
     const ir = yield* irBuilder
       .build(introspection, { schemas: config.schemas as string[] })
       .pipe(Effect.provide(inflectionLayer))
-    if (verbose) {
-      yield* Console.log(`  Entities: ${ir.entities.size}`)
-      yield* Console.log(`  Enums: ${ir.enums.size}`)
+
+    yield* Effect.log(`Built ${ir.entities.size} entities, ${ir.enums.size} enums`)
+
+    if (ir.entities.size > 0) {
+      const entityNames = [...ir.entities.keys()].sort()
+      yield* Effect.logDebug(`Entities: ${entityNames.join(", ")}`)
+    }
+    if (ir.enums.size > 0) {
+      const enumNames = [...ir.enums.keys()].sort()
+      yield* Effect.logDebug(`Enums: ${enumNames.join(", ")}`)
     }
 
     // 4. Prepare and run plugins
-    if (verbose) yield* Console.log("Running plugins...")
+    yield* Effect.log("Running plugins...")
     const runner = yield* PluginRunner
 
     // Cast plugins from config to ConfiguredPlugin[]
@@ -161,11 +178,9 @@ export const generate = (
     const plugins = config.plugins as readonly ConfiguredPlugin[]
 
     const prepared = yield* runner.prepare(plugins)
-    if (verbose) {
-      yield* Console.log(
-        `  Execution order: ${prepared.map((p) => p.plugin.name).join(" → ")}`
-      )
-    }
+
+    const pluginNames = prepared.map((p) => p.plugin.name)
+    yield* Effect.log(`Plugin order: ${pluginNames.join(" → ")}`)
 
     // Create TypeHints layer from config
     const typeHintsLayer = TypeHintsLive(config.typeHints)
@@ -174,30 +189,32 @@ export const generate = (
       .run(prepared, ir)
       .pipe(Effect.provide(typeHintsLayer))
 
-    if (verbose) {
-      const emissions = pluginResult.emissions.getAll()
-      yield* Console.log(`  Generated ${emissions.length} files`)
-    }
+    const emissions = pluginResult.emissions.getAll()
+    yield* Effect.log(`Generated ${emissions.length} files`)
 
     // 5. Write files
     const outputDir = options.outputDir ?? config.outputDir
-    if (verbose) yield* Console.log(`Writing files to ${outputDir}...`)
+    yield* Effect.log(`Writing to ${outputDir}...`)
 
     const writer = createFileWriter()
-    const writeResults = yield* writer.writeAll(
-      pluginResult.emissions.getAll(),
-      {
-        outputDir,
-        dryRun: options.dryRun ?? false,
-      }
-    )
+    const writeResults = yield* writer.writeAll(emissions, {
+      outputDir,
+      dryRun: options.dryRun ?? false,
+    })
 
-    if (verbose) {
-      const written = writeResults.filter((r) => r.written).length
-      yield* Console.log(
-        `  Wrote ${written} files${options.dryRun ? " (dry run)" : ""}`
-      )
+    // Log each file at debug level
+    for (const result of writeResults) {
+      const status = options.dryRun
+        ? "(dry run)"
+        : result.written
+          ? "✓"
+          : "–"
+      yield* Effect.logDebug(`${status} ${result.path}`)
     }
+
+    const written = writeResults.filter((r) => r.written).length
+    const dryRunSuffix = options.dryRun ? " (dry run)" : ""
+    yield* Effect.log(`Wrote ${written} files${dryRunSuffix}`)
 
     return {
       config,
