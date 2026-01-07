@@ -4,7 +4,7 @@
  * This is the core data structure that plugins consume.
  * It represents semantic intent, not code.
  */
-import type { PgAttribute, PgClass, PgType } from "pg-introspection"
+import type { PgAttribute, PgClass, PgType, PgProc } from "pg-introspection"
 import type { SmartTags, ShapeKind } from "./smart-tags.js"
 
 /**
@@ -116,6 +116,11 @@ export interface PrimaryKey {
 export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist"
 
 /**
+ * Function volatility classification - affects query optimization and caching
+ */
+export type Volatility = "immutable" | "stable" | "volatile"
+
+/**
  * Information about a database index
  */
 export interface IndexDef {
@@ -172,7 +177,7 @@ export interface EntityPermissions {
 /**
  * All possible entity kinds
  */
-export type EntityKind = "table" | "view" | "enum"
+export type EntityKind = "table" | "view" | "enum" | "domain" | "composite" | "function"
 
 // ============================================================================
 // Entity Base (shared fields)
@@ -247,22 +252,138 @@ export interface EnumEntity extends EntityBase {
 }
 
 // ============================================================================
+// Domain Entity
+// ============================================================================
+
+/**
+ * A CHECK constraint on a domain type
+ */
+export interface DomainConstraint {
+  /** Constraint name */
+  readonly name: string
+  /** Raw constraint expression (from pg_constraint.conbin decompiled) */
+  readonly expression?: string
+}
+
+/**
+ * A domain entity - represents a PostgreSQL domain type (constrained wrapper over a base type)
+ */
+export interface DomainEntity extends EntityBase {
+  /** Entity kind discriminator */
+  readonly kind: "domain"
+  /** Raw type from pg-introspection */
+  readonly pgType: PgType
+  /** Name of the underlying base type (e.g., "citext", "text") */
+  readonly baseTypeName: string
+  /** OID of the base type (for type mapping) */
+  readonly baseTypeOid: number
+  /** Whether the domain has a NOT NULL constraint */
+  readonly notNull: boolean
+  /** Domain CHECK constraints */
+  readonly constraints: readonly DomainConstraint[]
+}
+
+// ============================================================================
+// Composite Entity
+// ============================================================================
+
+/**
+ * A composite entity - represents a user-defined PostgreSQL composite type
+ * 
+ * Note: Table row types (auto-generated composites with typrelid != 0) are NOT included.
+ * Only explicitly created composite types are represented here.
+ */
+export interface CompositeEntity extends EntityBase {
+  /** Entity kind discriminator */
+  readonly kind: "composite"
+  /** Raw type from pg-introspection */
+  readonly pgType: PgType
+  /** Fields in the composite type (similar to a row shape) */
+  readonly fields: readonly CompositeField[]
+}
+
+/**
+ * A field within a composite type
+ */
+export interface CompositeField {
+  /** Inflected field name (camelCase) */
+  readonly name: string
+  /** Original PostgreSQL attribute name */
+  readonly attributeName: string
+  /** Raw attribute from pg-introspection */
+  readonly pgAttribute: PgAttribute
+  /** Whether the field can be NULL */
+  readonly nullable: boolean
+  /** Smart tags from comment */
+  readonly tags: SmartTags
+  /** PostgreSQL array type */
+  readonly isArray: boolean
+  /** For arrays, the element type name */
+  readonly elementTypeName?: string
+  /** If the field type is a domain, info about the underlying base type */
+  readonly domainBaseType?: DomainBaseTypeInfo
+}
+
+// ============================================================================
+// Function Entity
+// ============================================================================
+
+export interface FunctionArg {
+  readonly name: string
+  readonly typeName: string
+  readonly hasDefault: boolean
+}
+
+/**
+ * A function entity - represents a PostgreSQL stored function
+ *
+ * Note: Only supports normal functions with IN parameters.
+ * Functions with OUT/INOUT parameters or RETURNS TABLE are not supported.
+ */
+export interface FunctionEntity extends EntityBase {
+  /** Entity kind discriminator */
+  readonly kind: "function"
+  /** Raw proc from pg-introspection */
+  readonly pgProc: PgProc
+  /** Return type name (e.g., "text", "pg_catalog.int4") */
+  readonly returnTypeName: string
+  /** True if function returns SETOF */
+  readonly returnsSet: boolean
+  /** Number of arguments (for overload disambiguation) */
+  readonly argCount: number
+  /** Function arguments */
+  readonly args: readonly FunctionArg[]
+  /** Volatility classification */
+  readonly volatility: Volatility
+  /** True if function is STRICT (NULL input = NULL output) */
+  readonly isStrict: boolean
+  /** Whether the current role can execute this function */
+  readonly canExecute: boolean
+  /** True if function belongs to an installed extension */
+  readonly isFromExtension: boolean
+}
+
+// ============================================================================
 // Unified Entity Type
 // ============================================================================
 
 /**
- * An entity represents a table, view, or enum type in the database.
+ * An entity represents a table, view, enum, domain, or composite type in the database.
  * 
  * Use the `kind` discriminator to narrow the type:
  * ```typescript
  * if (entity.kind === "enum") {
  *   // entity is EnumEntity, has .values
+ * } else if (entity.kind === "domain") {
+ *   // entity is DomainEntity, has .baseTypeName, .constraints
+ * } else if (entity.kind === "composite") {
+ *   // entity is CompositeEntity, has .fields
  * } else {
  *   // entity is TableEntity, has .shapes, .relations, etc.
  * }
  * ```
  */
-export type Entity = TableEntity | EnumEntity
+export type Entity = TableEntity | EnumEntity | DomainEntity | CompositeEntity | FunctionEntity
 
 // ============================================================================
 // Type Guards
@@ -280,6 +401,27 @@ export function isTableEntity(entity: Entity): entity is TableEntity {
  */
 export function isEnumEntity(entity: Entity): entity is EnumEntity {
   return entity.kind === "enum"
+}
+
+/**
+ * Check if an entity is a domain (has baseTypeName, constraints)
+ */
+export function isDomainEntity(entity: Entity): entity is DomainEntity {
+  return entity.kind === "domain"
+}
+
+/**
+ * Check if an entity is a composite type (has fields)
+ */
+export function isCompositeEntity(entity: Entity): entity is CompositeEntity {
+  return entity.kind === "composite"
+}
+
+/**
+ * Check if an entity is a function (has args, volatility, etc.)
+ */
+export function isFunctionEntity(entity: Entity): entity is FunctionEntity {
+  return entity.kind === "function"
 }
 
 // ============================================================================
@@ -398,4 +540,25 @@ export function getTableEntities(ir: SemanticIR): TableEntity[] {
  */
 export function getEnumEntities(ir: SemanticIR): EnumEntity[] {
   return [...ir.entities.values()].filter(isEnumEntity)
+}
+
+/**
+ * Get all domain entities from the IR
+ */
+export function getDomainEntities(ir: SemanticIR): DomainEntity[] {
+  return [...ir.entities.values()].filter(isDomainEntity)
+}
+
+/**
+ * Get all composite entities from the IR
+ */
+export function getCompositeEntities(ir: SemanticIR): CompositeEntity[] {
+  return [...ir.entities.values()].filter(isCompositeEntity)
+}
+
+/**
+ * Get all function entities from the IR
+ */
+export function getFunctionEntities(ir: SemanticIR): FunctionEntity[] {
+  return [...ir.entities.values()].filter(isFunctionEntity)
 }
