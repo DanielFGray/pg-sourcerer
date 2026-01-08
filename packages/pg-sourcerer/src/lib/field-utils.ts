@@ -5,6 +5,7 @@
  * by code generation plugins. Each plugin transforms the resolved types
  * into their specific output format (TypeScript types, Zod schemas, etc.)
  */
+import { Option, pipe } from "effect"
 import type { Field, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
 import {
   defaultPgToTs,
@@ -108,76 +109,80 @@ export function resolveFieldType(
 ): ResolvedType {
   // 1. Check for enum
   if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field)
-    if (pgTypeName) {
-      const enumDef = findEnumByPgName(enums, pgTypeName)
-      if (enumDef) {
+    const enumResult = pipe(
+      Option.fromNullable(getPgTypeName(field)),
+      Option.flatMap((pgTypeName) => findEnumByPgName(enums, pgTypeName)),
+      Option.map((enumDef): ResolvedType => ({
         // Enum types don't have a TsType - they're custom types
         // Return Unknown as placeholder, caller uses enumDef
-        return { tsType: TsType.Unknown, enumDef }
-      }
+        tsType: TsType.Unknown,
+        enumDef,
+      }))
+    )
+    if (Option.isSome(enumResult)) {
+      return enumResult.value
     }
   }
 
   // 2. Try OID-based mapping (built-in PostgreSQL types)
   const oid = getTypeOid(field)
   if (oid !== undefined) {
-    const tsType = defaultPgToTs(oid)
-    if (tsType) {
-      return { tsType }
+    const tsTypeOpt = defaultPgToTs(oid)
+    if (Option.isSome(tsTypeOpt)) {
+      return { tsType: tsTypeOpt.value }
     }
   }
 
   // 3. Try domain base type mapping
   if (field.domainBaseType) {
-    const tsType = defaultPgToTs(field.domainBaseType.typeOid)
-    if (tsType) {
-      return { tsType }
+    const tsTypeOpt = defaultPgToTs(field.domainBaseType.typeOid)
+    if (Option.isSome(tsTypeOpt)) {
+      return { tsType: tsTypeOpt.value }
     }
   }
 
   // 4. Try extension-based mapping for the direct type
   const pgType = field.pgAttribute.getType()
   if (pgType) {
-    const tsType = getExtensionTypeMapping(
+    const tsTypeOpt = getExtensionTypeMapping(
       pgType.typname,
       String(pgType.typnamespace),
       extensions
     )
-    if (tsType) {
-      return { tsType }
+    if (Option.isSome(tsTypeOpt)) {
+      return { tsType: tsTypeOpt.value }
     }
   }
 
   // Try extension-based mapping for domain base types
   if (field.domainBaseType) {
-    const tsType = getExtensionTypeMapping(
+    const tsTypeOpt = getExtensionTypeMapping(
       field.domainBaseType.typeName,
       field.domainBaseType.namespaceOid,
       extensions
     )
-    if (tsType) {
-      return { tsType }
+    if (Option.isSome(tsTypeOpt)) {
+      return { tsType: tsTypeOpt.value }
     }
   }
 
   // 5. For arrays, try to resolve element type
   if (field.isArray && field.elementTypeName) {
     // Check if element is an enum
-    const enumDef = findEnumByPgName(enums, field.elementTypeName)
-    if (enumDef) {
-      return { tsType: TsType.Unknown, enumDef }
+    const enumDefOpt = findEnumByPgName(enums, field.elementTypeName)
+    if (Option.isSome(enumDefOpt)) {
+      return { tsType: TsType.Unknown, enumDef: enumDefOpt.value }
     }
 
     // Try extension-based mapping for array element type
     if (pgType?.typnamespace) {
-      const tsType = getExtensionTypeMapping(
+      const tsTypeOpt = getExtensionTypeMapping(
         field.elementTypeName,
         String(pgType.typnamespace),
         extensions
       )
-      if (tsType) {
-        return { tsType }
+      if (Option.isSome(tsTypeOpt)) {
+        return { tsType: tsTypeOpt.value }
       }
     }
   }

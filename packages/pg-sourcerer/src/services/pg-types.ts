@@ -4,6 +4,7 @@
  * Provides well-known PostgreSQL type OIDs and a default mapping to TypeScript types.
  * Plugins can use these as a starting point and override as needed.
  */
+import { Array as Arr, Option, pipe } from "effect"
 
 /**
  * Well-known PostgreSQL built-in type OIDs.
@@ -118,29 +119,29 @@ export interface TypeMappingResult {
  * Plugins can use this as a base and override specific mappings.
  * Returns undefined for unmapped types (enums, domains, custom types).
  */
-export function defaultPgToTs(oid: number): TsType | undefined {
+export function defaultPgToTs(oid: number): Option.Option<TsType> {
   switch (oid) {
     // Boolean
     case PgTypeOid.Bool:
-      return TsType.Boolean
+      return Option.some(TsType.Boolean)
 
     // Integer types → number
     case PgTypeOid.Int2:
     case PgTypeOid.Int4:
     case PgTypeOid.Oid:
-      return TsType.Number
+      return Option.some(TsType.Number)
 
     // Floating point → number
     case PgTypeOid.Float4:
     case PgTypeOid.Float8:
-      return TsType.Number
+      return Option.some(TsType.Number)
 
     // Big integers → string (to avoid precision loss)
     // Plugins like Kysely may override to bigint
     case PgTypeOid.Int8:
     case PgTypeOid.Numeric:
     case PgTypeOid.Money:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // Text types → string
     case PgTypeOid.Char:
@@ -151,40 +152,40 @@ export function defaultPgToTs(oid: number): TsType | undefined {
     case PgTypeOid.Xml:
     case PgTypeOid.Bit:
     case PgTypeOid.VarBit:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // UUID → string
     case PgTypeOid.Uuid:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // Network types → string
     case PgTypeOid.Inet:
     case PgTypeOid.Cidr:
     case PgTypeOid.MacAddr:
     case PgTypeOid.MacAddr8:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // Date/Time with date component → Date
     case PgTypeOid.Date:
     case PgTypeOid.Timestamp:
     case PgTypeOid.TimestampTz:
-      return TsType.Date
+      return Option.some(TsType.Date)
 
     // Time without date → string
     case PgTypeOid.Time:
     case PgTypeOid.TimeTz:
     case PgTypeOid.Interval:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // JSON → unknown
     case PgTypeOid.Json:
     case PgTypeOid.JsonB:
     case PgTypeOid.JsonPath:
-      return TsType.Unknown
+      return Option.some(TsType.Unknown)
 
     // Binary → Buffer
     case PgTypeOid.Bytea:
-      return TsType.Buffer
+      return Option.some(TsType.Buffer)
 
     // Geometric types → string (typically serialized)
     case PgTypeOid.Point:
@@ -194,7 +195,7 @@ export function defaultPgToTs(oid: number): TsType | undefined {
     case PgTypeOid.Path:
     case PgTypeOid.Polygon:
     case PgTypeOid.Circle:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // Range types → string
     case PgTypeOid.Int4Range:
@@ -203,48 +204,45 @@ export function defaultPgToTs(oid: number): TsType | undefined {
     case PgTypeOid.TsRange:
     case PgTypeOid.TsTzRange:
     case PgTypeOid.DateRange:
-      return TsType.String
+      return Option.some(TsType.String)
 
     // Full-text search → string
     case PgTypeOid.TsVector:
     case PgTypeOid.TsQuery:
-      return TsType.String
+      return Option.some(TsType.String)
 
     default:
-      return undefined
+      return Option.none()
   }
 }
 
 /**
  * Type mapper function signature.
- * Takes an OID and returns a TypeScript type string, or undefined to fall through.
+ * Takes an OID and returns an Option of TypeScript type string.
  */
-export type TypeMapper = (oid: number) => string | undefined
+export type TypeMapper = (oid: number) => Option.Option<string>
 
 /**
  * Compose multiple type mappers into one.
- * Earlier mappers take precedence (first non-undefined wins).
+ * Earlier mappers take precedence (first Some wins).
  *
  * @example
  * ```typescript
  * const kyselyMapper = composeMappers(
  *   // Override bigint handling
- *   (oid) => oid === PgTypeOid.Int8 ? "bigint" : undefined,
+ *   (oid) => oid === PgTypeOid.Int8 ? Option.some("bigint") : Option.none(),
  *   // Fall back to defaults
  *   defaultPgToTs
  * )
  * ```
  */
 export function composeMappers(...mappers: TypeMapper[]): TypeMapper {
-  return (oid: number) => {
-    for (const mapper of mappers) {
-      const result = mapper(oid)
-      if (result !== undefined) {
-        return result
-      }
-    }
-    return undefined
-  }
+  return (oid: number) =>
+    pipe(
+      mappers,
+      Arr.findFirst((mapper) => Option.isSome(mapper(oid))),
+      Option.flatMap((mapper) => mapper(oid))
+    )
 }
 
 /**
@@ -331,17 +329,17 @@ export function getExtensionTypeMapping(
   typeName: string,
   typeNamespaceOid: string,
   extensions: readonly ExtensionInfo[]
-): TsType | undefined {
-  // Find extension that owns this namespace and has a mapping for this type
-  for (const ext of extensions) {
-    if (ext.namespaceOid === typeNamespaceOid) {
+): Option.Option<TsType> {
+  return pipe(
+    extensions,
+    Arr.filter((ext) => ext.namespaceOid === typeNamespaceOid),
+    Arr.findFirst((ext) => {
       const extTypeMap = ExtensionTypeMap[ext.name]
-      if (extTypeMap && typeName in extTypeMap) {
-        return extTypeMap[typeName]
-      }
-    }
-  }
-  return undefined
+      return extTypeMap !== undefined && extTypeMap[typeName] !== undefined
+    }),
+    Option.flatMap((ext) => Option.fromNullable(ExtensionTypeMap[ext.name])),
+    Option.flatMap((extTypeMap) => Option.fromNullable(extTypeMap[typeName]))
+  )
 }
 
 // ============================================================================
@@ -369,15 +367,14 @@ export function getExtensionTypeMapping(
 export function findEnumByPgName(
   enums: Iterable<{ readonly pgName: string; readonly name: string; readonly values: readonly string[] }>,
   pgTypeName: string
-): EnumLookupResult | undefined {
-  for (const enumDef of enums) {
-    if (enumDef.pgName === pgTypeName) {
-      return {
-        name: enumDef.name,
-        pgName: enumDef.pgName,
-        values: enumDef.values,
-      }
-    }
-  }
-  return undefined
+): Option.Option<EnumLookupResult> {
+  return pipe(
+    Array.from(enums),
+    Arr.findFirst(enumDef => enumDef.pgName === pgTypeName),
+    Option.map(enumDef => ({
+      name: enumDef.name,
+      pgName: enumDef.pgName,
+      values: enumDef.values,
+    }))
+  )
 }

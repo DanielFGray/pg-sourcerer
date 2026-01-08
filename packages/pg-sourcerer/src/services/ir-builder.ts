@@ -5,7 +5,7 @@
  * Builds entities (tables, views, composites), shapes, fields,
  * relations, and enums.
  */
-import { Context, Effect, Layer, pipe, Array } from "effect"
+import { Context, Effect, Layer, pipe, Array, Option } from "effect"
 import type {
   Introspection,
   PgAttribute,
@@ -130,24 +130,31 @@ function computeEntityPermissions(
 
   // For SELECT, INSERT, UPDATE - also check if any column has the permission
   // This handles the case where table-level ACL is null but column ACLs exist
-  let canSelect = perms.select ?? false
-  let canInsert = perms.insert ?? false
-  let canUpdate = perms.update ?? false
-
-  if (!canSelect || !canInsert || !canUpdate) {
-    const attributes = pgClass.getAttributes().filter((a) => a.attnum > 0)
-    for (const attr of attributes) {
-      const attrPerms = entityPermissions(introspection, attr, role)
-      canSelect ||= attrPerms.select ?? false
-      canInsert ||= attrPerms.insert ?? false
-      canUpdate ||= attrPerms.update ?? false
-    }
+  const basePerms = {
+    canSelect: perms.select ?? false,
+    canInsert: perms.insert ?? false,
+    canUpdate: perms.update ?? false,
   }
 
+  const attributes = pgClass.getAttributes().filter((a) => a.attnum > 0)
+  const columnPerms = Array.reduce(
+    attributes,
+    basePerms,
+    (acc, attr) => {
+      if (acc.canSelect && acc.canInsert && acc.canUpdate) {
+        return acc // Already have all permissions
+      }
+      const attrPerms = entityPermissions(introspection, attr, role)
+      return {
+        canSelect: acc.canSelect || (attrPerms.select ?? false),
+        canInsert: acc.canInsert || (attrPerms.insert ?? false),
+        canUpdate: acc.canUpdate || (attrPerms.update ?? false),
+      }
+    }
+  )
+
   return {
-    canSelect,
-    canInsert,
-    canUpdate,
+    ...columnPerms,
     canDelete: perms.delete ?? false,
   }
 }
@@ -161,33 +168,27 @@ function resolveDomainBaseType(
   pgType: PgType | undefined,
   introspection: Introspection
 ): DomainBaseTypeInfo | undefined {
-  if (pgType?.typtype !== "d") {
-    return undefined
-  }
-
-  // Domain types have typbasetype pointing to the underlying type
-  const baseTypeOid = pgType.typbasetype
-  if (!baseTypeOid) {
-    return undefined
-  }
-
-  // Look up the base type using introspection.getType
-  const baseType = introspection.getType({ id: String(baseTypeOid) })
-  if (!baseType) {
-    return undefined
-  }
-
-  // If the base type is also a domain, recursively resolve it
-  if (baseType.typtype === "d") {
-    return resolveDomainBaseType(baseType, introspection)
-  }
-
-  return {
-    typeName: baseType.typname,
-    typeOid: Number(baseType._id),
-    namespaceOid: String(baseType.typnamespace ?? ""),
-    category: baseType.typcategory ?? "",
-  }
+  return pipe(
+    Option.fromNullable(pgType),
+    Option.filter((t) => t.typtype === "d"),
+    Option.flatMap((t) => Option.fromNullable(t.typbasetype)),
+    Option.flatMap((baseTypeOid) =>
+      Option.fromNullable(introspection.getType({ id: String(baseTypeOid) }))
+    ),
+    Option.flatMap((baseType) => {
+      // If the base type is also a domain, recursively resolve it
+      if (baseType.typtype === "d") {
+        return Option.fromNullable(resolveDomainBaseType(baseType, introspection))
+      }
+      return Option.some<DomainBaseTypeInfo>({
+        typeName: baseType.typname,
+        typeOid: Number(baseType._id),
+        namespaceOid: String(baseType.typnamespace ?? ""),
+        category: baseType.typcategory ?? "",
+      })
+    }),
+    Option.getOrUndefined
+  )
 }
 
 /**
@@ -1111,21 +1112,16 @@ function createIRBuilderImpl(): IRBuilder {
 
         // Assemble IR
         const builder = createIRBuilder(options.schemas)
-        for (const entity of entities) {
+        const allEntities = [
+          ...entities,
+          ...enums,
+          ...domains,
+          ...composites,
+          ...functions,
+        ]
+        Array.forEach(allEntities, (entity) => {
           builder.entities.set(entity.name, entity)
-        }
-        for (const enumEntity of enums) {
-          builder.entities.set(enumEntity.name, enumEntity)
-        }
-        for (const domain of domains) {
-          builder.entities.set(domain.name, domain)
-        }
-        for (const composite of composites) {
-          builder.entities.set(composite.name, composite)
-        }
-        for (const fn of functions) {
-          builder.entities.set(fn.name, fn)
-        }
+        })
         builder.extensions.push(...extensions)
 
         return freezeIR(builder)
