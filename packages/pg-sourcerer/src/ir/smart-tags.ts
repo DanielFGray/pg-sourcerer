@@ -6,7 +6,7 @@ import { Schema as S } from "effect"
 /**
  * Shape kinds for omit filtering
  */
-export const ShapeKind = S.Literal("row", "insert", "update", "patch")
+export const ShapeKind = S.Literal("row", "insert", "update")
 export type ShapeKind = S.Schema.Type<typeof ShapeKind>
 
 /**
