@@ -8,23 +8,14 @@ import type { FileNameContext } from "../services/plugin.js";
 import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR } from "../ir/semantic-ir.js";
 import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../lib/conjure.js";
+import { hex, type SqlStyle, type QueryParts } from "../lib/hex.js";
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js";
 
-const { ts, b, stmt } = conjure;
-const { toExpr, toTSType, toStmt } = cast;
+const { ts, b, param } = conjure;
 
 // ============================================================================
 // Configuration
 // ============================================================================
-
-/**
- * SQL query style:
- * - "tag" (default): Tagged template literals (e.g., postgres.js, @effect/sql)
- *   Generates: sql<Type[]>`select * from users where id = ${id}`
- * - "string": Parameterized query strings (e.g., pg, mysql2, better-sqlite3)
- *   Generates: pool.query<Type[]>("select * from users where id = $1", [id])
- */
-type SqlStyle = "tag" | "string";
 
 const SqlQueriesPluginConfig = S.Struct({
   outputDir: S.String,
@@ -58,236 +49,6 @@ const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TS
 };
 
 // ============================================================================
-// AST Building Helpers
-// ============================================================================
-
-/** Build SQL template literal expression (for tag style) */
-const buildSqlTemplate = (
-  parts: readonly string[],
-  exprs: readonly n.Expression[],
-): n.TemplateLiteral =>
-  b.templateLiteral(
-    parts.map((raw, i) => b.templateElement({ raw, cooked: raw }, i === parts.length - 1)),
-    exprs.map(toExpr),
-  );
-
-/** Build await expression for sql tagged template with optional type parameter (tag style) */
-const buildAwaitSqlTag = (
-  sqlTemplate: n.TemplateLiteral,
-  typeParam?: n.TSType,
-): n.AwaitExpression => {
-  const sqlId = b.identifier("sql");
-  // If type parameter provided, wrap in TSInstantiationExpression: sql<Type>
-  const tag = typeParam
-    ? b.tsInstantiationExpression(sqlId, b.tsTypeParameterInstantiation([toTSType(typeParam)]))
-    : sqlId;
-  return b.awaitExpression(b.taggedTemplateExpression(tag, sqlTemplate));
-};
-
-/**
- * Build await expression for pool.query() with parameterized query (string style)
- * 
- * Generates: await pool.query<Type>('SELECT ... WHERE id = $1', [id])
- */
-const buildAwaitSqlString = (
-  sqlText: string,
-  params: readonly n.Expression[],
-  typeParam?: n.TSType,
-): n.AwaitExpression => {
-  const poolQuery = b.memberExpression(b.identifier("pool"), b.identifier("query"));
-  
-  // Add type parameter if provided: pool.query<Type>
-  const callee = typeParam
-    ? b.tsInstantiationExpression(poolQuery, b.tsTypeParameterInstantiation([toTSType(typeParam)]))
-    : poolQuery;
-  
-  // Build arguments: ('sql text', [param1, param2])
-  const args: n.Expression[] = [b.stringLiteral(sqlText)];
-  if (params.length > 0) {
-    args.push(b.arrayExpression(params.map(toExpr)));
-  }
-  
-  return b.awaitExpression(b.callExpression(callee, args.map(toExpr)));
-};
-
-/**
- * Unified query builder that delegates to style-specific implementation.
- * 
- * For tag style: uses template literals with interpolated values
- * For string style: uses parameterized queries with $1, $2, ... placeholders
- */
-interface QueryParts {
-  /** SQL template parts (for tag) or joined with $N placeholders (for string) */
-  readonly templateParts: readonly string[];
-  /** Parameter expressions to interpolate */
-  readonly params: readonly n.Expression[];
-}
-
-const buildQuery = (
-  sqlStyle: SqlStyle,
-  parts: QueryParts,
-  typeParam?: n.TSType,
-): n.AwaitExpression => {
-  if (sqlStyle === "tag") {
-    const template = buildSqlTemplate(parts.templateParts, parts.params);
-    return buildAwaitSqlTag(template, typeParam);
-  } else {
-    // For string style, join template parts with $1, $2, ... placeholders
-    const sqlText = parts.templateParts
-      .map((part, i) => (i === 0 ? part : `$${i}${part}`))
-      .join("");
-    return buildAwaitSqlString(sqlText, parts.params, typeParam);
-  }
-};
-
-/**
- * Build a variable declaration that extracts the first row from query result.
- * 
- * tag style: const [result] = await sql<Type[]>`...`
- * string style: const { rows: [result] } = await pool.query<Type>(...)
- */
-const buildFirstRowDecl = (
-  sqlStyle: SqlStyle,
-  varName: string,
-  queryExpr: n.AwaitExpression,
-): n.VariableDeclaration => {
-  if (sqlStyle === "tag") {
-    // const [result] = await sql`...`
-    return b.variableDeclaration("const", [
-      b.variableDeclarator(b.arrayPattern([b.identifier(varName)]), queryExpr),
-    ]);
-  } else {
-    // const { rows: [result] } = await pool.query(...)
-    const rowsProp = b.objectProperty(
-      b.identifier("rows"),
-      b.arrayPattern([b.identifier(varName)]),
-    );
-    return b.variableDeclaration("const", [
-      b.variableDeclarator(b.objectPattern([rowsProp]), queryExpr),
-    ]);
-  }
-};
-
-/**
- * Build a variable declaration that gets all rows from query result.
- * 
- * tag style: const result = await sql<Type[]>`...`  (returns array directly)
- * string style: const { rows: result } = await pool.query<Type>(...)
- */
-const buildAllRowsDecl = (
-  sqlStyle: SqlStyle,
-  varName: string,
-  queryExpr: n.AwaitExpression,
-): n.VariableDeclaration => {
-  if (sqlStyle === "tag") {
-    // tag style returns array directly
-    return b.variableDeclaration("const", [
-      b.variableDeclarator(b.identifier(varName), queryExpr),
-    ]);
-  } else {
-    // string style: const { rows } = await pool.query(...)
-    const rowsProp = b.objectProperty(b.identifier("rows"), b.identifier(varName));
-    rowsProp.shorthand = varName === "rows";
-    return b.variableDeclaration("const", [
-      b.variableDeclarator(b.objectPattern([rowsProp]), queryExpr),
-    ]);
-  }
-};
-
-/**
- * Build a return statement that returns query results.
- * 
- * tag style: return await sql<Type[]>`...`  (returns array directly)
- * string style: extracts .rows and returns
- */
-const buildReturnQuery = (
-  sqlStyle: SqlStyle,
-  parts: QueryParts,
-  typeParam: n.TSType,
-): n.Statement[] => {
-  const queryExpr = buildQuery(sqlStyle, parts, typeParam);
-  
-  if (sqlStyle === "tag") {
-    // tag style returns array directly
-    return [b.returnStatement(queryExpr)];
-  } else {
-    // string style: const { rows } = await pool.query(...); return rows
-    const decl = buildAllRowsDecl(sqlStyle, "rows", queryExpr);
-    return [decl, b.returnStatement(b.identifier("rows"))];
-  }
-};
-
-/** Create a typed parameter identifier */
-const typedParam = (name: string, type: n.TSType): n.Identifier => {
-  const param = b.identifier(name);
-  param.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
-  return param;
-};
-
-/** Create a destructured parameter with Pick type: { field }: Pick<Entity, 'field'> */
-const pickParam = (
-  fields: readonly string[],
-  entityType: string,
-): n.ObjectPattern => {
-  const pattern = b.objectPattern(fields.map(f => {
-    const prop = b.objectProperty(b.identifier(f), b.identifier(f));
-    prop.shorthand = true;
-    return prop;
-  }));
-  // Pick<Entity, 'field1' | 'field2'>
-  const pickType = ts.ref("Pick", [
-    ts.ref(entityType),
-    fields.length === 1
-      ? ts.literal(fields[0]!)
-      : ts.union(...fields.map(f => ts.literal(f))),
-  ]);
-  pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(pickType));
-  return pattern;
-};
-
-interface DestructuredField {
-  readonly name: string;
-  readonly type: n.TSType;
-  readonly optional?: boolean;
-  readonly defaultValue?: n.Expression;
-}
-
-/** Create a destructured parameter with explicit types and optional defaults */
-const destructuredParam = (fields: readonly DestructuredField[]): n.ObjectPattern => {
-  const pattern = b.objectPattern(fields.map(f => {
-    const id = b.identifier(f.name);
-    // Use AssignmentPattern for default values: { limit = 50 }
-    const value = f.defaultValue
-      ? b.assignmentPattern(id, toExpr(f.defaultValue))
-      : id;
-    const prop = b.objectProperty(b.identifier(f.name), value);
-    prop.shorthand = true;
-    return prop;
-  }));
-  // Build the type annotation: { name: type; name?: type; }
-  const typeAnnotation = ts.objectType(
-    fields.map(f => ({ name: f.name, type: f.type, optional: f.optional })),
-  );
-  pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
-  return pattern;
-};
-
-/** Create an async function declaration (return type inferred) */
-const asyncFn = (
-  name: string,
-  params: (n.Identifier | n.ObjectPattern)[],
-  body: n.Statement[],
-): n.FunctionDeclaration => {
-  const fn = b.functionDeclaration(b.identifier(name), params, b.blockStatement(body.map(toStmt)));
-  fn.async = true;
-  return fn;
-};
-
-/** Export a function declaration */
-const exportFn = (fn: n.FunctionDeclaration): n.Statement =>
-  b.exportNamedDeclaration(fn, []) as n.Statement;
-
-// ============================================================================
 // CRUD Function Generators
 // ============================================================================
 
@@ -309,11 +70,11 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
   };
 
   // Build query and extract first row
-  const queryExpr = buildQuery(sqlStyle, parts, ts.array(ts.ref(rowType)));
-  const varDecl = buildFirstRowDecl(sqlStyle, "result", queryExpr);
+  const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
+  const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-  return exportFn(
-    asyncFn(`find${entity.name}ById`, [pickParam([fieldName], rowType)], [
+  return hex.exportFn(
+    hex.asyncFn(`find${entity.name}ById`, [param.pick([fieldName], rowType)], [
       varDecl,
       b.returnStatement(b.identifier("result")),
     ]),
@@ -332,16 +93,16 @@ const generateFindMany = (ctx: GenerationContext): n.Statement | undefined => {
     params: [b.identifier("limit"), b.identifier("offset")],
   };
 
-  return exportFn(
-    asyncFn(
+  return hex.exportFn(
+    hex.asyncFn(
       `findMany${entity.name}s`,
       [
-        destructuredParam([
+        param.destructured([
           { name: "limit", type: ts.number(), optional: true, defaultValue: b.numericLiteral(50) },
           { name: "offset", type: ts.number(), optional: true, defaultValue: b.numericLiteral(0) },
         ]),
       ],
-      buildReturnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))),
+      hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))),
     ),
   );
 };
@@ -364,9 +125,9 @@ const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
   };
 
   // Delete returns void, no type parameter needed
-  const queryExpr = buildQuery(sqlStyle, parts);
-  return exportFn(
-    asyncFn(`delete${entity.name}`, [pickParam([fieldName], rowType)], [
+  const queryExpr = hex.query(sqlStyle, parts);
+  return hex.exportFn(
+    hex.asyncFn(`delete${entity.name}`, [param.pick([fieldName], rowType)], [
       b.expressionStatement(queryExpr),
     ]),
   );
@@ -403,14 +164,14 @@ const generateInsert = (ctx: GenerationContext): n.Statement | undefined => {
     params: fieldNames.map(f => b.memberExpression(b.identifier("data"), b.identifier(f), false)),
   };
 
-  const queryExpr = buildQuery(sqlStyle, parts, ts.array(ts.ref(rowType)));
-  const varDecl = buildFirstRowDecl(sqlStyle, "result", queryExpr);
+  const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
+  const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
   // Simple typed parameter: data: InsertType
-  const param = typedParam("data", ts.ref(insertType));
+  const dataParam = param.typed("data", ts.ref(insertType));
 
-  return exportFn(
-    asyncFn(`insert${entity.name}`, [param], [varDecl, b.returnStatement(b.identifier("result"))]),
+  return hex.exportFn(
+    hex.asyncFn(`insert${entity.name}`, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]),
   );
 };
 
@@ -462,11 +223,11 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
 
   if (isUnique) {
     // Extract first row for unique lookups
-    const queryExpr = buildQuery(sqlStyle, parts, ts.array(ts.ref(rowType)));
-    const varDecl = buildFirstRowDecl(sqlStyle, "result", queryExpr);
+    const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
+    const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-    return exportFn(
-      asyncFn(fnName, [pickParam([fieldName], rowType)], [
+    return hex.exportFn(
+      hex.asyncFn(fnName, [param.pick([fieldName], rowType)], [
         varDecl,
         b.returnStatement(b.identifier("result")),
       ]),
@@ -474,8 +235,8 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
   }
 
   // Non-unique: return all matching rows
-  return exportFn(
-    asyncFn(fnName, [pickParam([fieldName], rowType)], buildReturnQuery(sqlStyle, parts, ts.array(ts.ref(rowType)))),
+  return hex.exportFn(
+    hex.asyncFn(fnName, [param.pick([fieldName], rowType)], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType)))),
   );
 };
 

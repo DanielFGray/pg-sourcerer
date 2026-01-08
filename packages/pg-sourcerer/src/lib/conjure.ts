@@ -853,6 +853,112 @@ const ts = {
 } as const
 
 // =============================================================================
+// Parameter Helpers
+// =============================================================================
+
+/**
+ * Field descriptor for destructured parameters
+ */
+interface DestructuredField {
+  readonly name: string
+  readonly type: n.TSType
+  readonly optional?: boolean
+  readonly defaultValue?: n.Expression
+}
+
+/**
+ * Parameter builders for function signatures.
+ */
+const param = {
+  /**
+   * Create a typed parameter: `name: Type`
+   */
+  typed: (name: string, type: n.TSType): n.Identifier => {
+    const id = b.identifier(name)
+    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+    return id
+  },
+
+  /**
+   * Create an optional typed parameter: `name?: Type`
+   */
+  optional: (name: string, type: n.TSType): n.Identifier => {
+    const id = b.identifier(name)
+    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+    id.optional = true
+    return id
+  },
+
+  /**
+   * Create a parameter with default value: `name: Type = defaultValue`
+   */
+  withDefault: (name: string, defaultValue: n.Expression, type?: n.TSType): n.AssignmentPattern => {
+    const id = b.identifier(name)
+    if (type) {
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+    }
+    return b.assignmentPattern(id, toExpr(defaultValue))
+  },
+
+  /**
+   * Create a destructured parameter with Pick type: `{ field }: Pick<Entity, 'field'>`
+   * 
+   * @example
+   * param.pick(["id", "name"], "UserRow")
+   * // { id, name }: Pick<UserRow, "id" | "name">
+   */
+  pick: (fields: readonly string[], entityType: string): n.ObjectPattern => {
+    const pattern = b.objectPattern(
+      fields.map((f) => {
+        const prop = b.objectProperty(b.identifier(f), b.identifier(f))
+        prop.shorthand = true
+        return prop
+      })
+    )
+    // Pick<Entity, 'field1' | 'field2'>
+    const pickType = ts.ref("Pick", [
+      ts.ref(entityType),
+      fields.length === 1
+        ? ts.literal(fields[0]!)
+        : ts.union(...fields.map((f) => ts.literal(f))),
+    ])
+    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(pickType))
+    return pattern
+  },
+
+  /**
+   * Create a destructured parameter with explicit types and optional defaults.
+   * 
+   * @example
+   * param.destructured([
+   *   { name: "limit", type: ts.number(), optional: true, defaultValue: conjure.num(50) },
+   *   { name: "offset", type: ts.number(), optional: true, defaultValue: conjure.num(0) },
+   * ])
+   * // { limit = 50, offset = 0 }: { limit?: number; offset?: number }
+   */
+  destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
+    const pattern = b.objectPattern(
+      fields.map((f) => {
+        const id = b.identifier(f.name)
+        // Use AssignmentPattern for default values: { limit = 50 }
+        const value = f.defaultValue
+          ? b.assignmentPattern(id, toExpr(f.defaultValue))
+          : id
+        const prop = b.objectProperty(b.identifier(f.name), value)
+        prop.shorthand = true
+        return prop
+      })
+    )
+    // Build the type annotation: { name: type; name?: type; }
+    const typeAnnotation = ts.objectType(
+      fields.map((f) => ({ name: f.name, type: f.type, optional: f.optional }))
+    )
+    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation))
+    return pattern
+  },
+} as const
+
+// =============================================================================
 // Export Helpers (exp.*)
 // =============================================================================
 
@@ -1091,6 +1197,9 @@ export const conjure = {
 
   // === TypeScript types ===
   ts,
+
+  // === Parameter helpers ===
+  param,
 
   // === Export helpers ===
   exp,
