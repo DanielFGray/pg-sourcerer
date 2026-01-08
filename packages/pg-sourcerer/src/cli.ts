@@ -13,6 +13,7 @@ import { Command, Options } from "@effect/cli"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
 import { Console, Effect } from "effect"
 import { runGenerate, type GenerateError } from "./generate.js"
+import { runInit } from "./init.js"
 
 // ============================================================================
 // Options
@@ -96,12 +97,18 @@ const generateCommand = Command.make(
 )
 
 // ============================================================================
+// Init Command
+// ============================================================================
+
+const initCommand = Command.make("init", {}, () => runInit)
+
+// ============================================================================
 // Root Command
 // ============================================================================
 
 const rootCommand = Command.make("pgsourcerer", {}, () =>
-  Console.log("pg-sourcerer - Generate TypeScript from PostgreSQL\n\nRun 'pgsourcerer generate --help' for usage.")
-).pipe(Command.withSubcommands([generateCommand]))
+  Console.log("pg-sourcerer - Generate TypeScript from PostgreSQL\n\nRun 'pgsourcerer --help' for usage.")
+).pipe(Command.withSubcommands([generateCommand, initCommand]))
 
 // ============================================================================
 // CLI App
