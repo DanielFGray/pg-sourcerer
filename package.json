@@ -5,6 +5,8 @@
     "prestart": "cd packages/pg-sourcerer && bun run build",
     "start": "cd packages/example && bun start",
     "test": " cd packages/pg-sourcerer && bun run test",
+    "dev": "mprocs 'bun run build:watch'",
+    "build:watch": "cd packages/pg-sourcerer && bun run build:watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
@@ -30,6 +32,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "eslint": "^9.39.2",
+    "mprocs": "^0.8.2",
     "typescript-eslint": "^8.52.0"
   },
   "dependencies": {
