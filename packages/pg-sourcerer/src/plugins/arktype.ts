@@ -273,7 +273,6 @@ export const arktypePlugin = definePlugin({
 
         ctx
           .file(filePath)
-          .header("// This file is auto-generated. Do not edit.\n")
           .import({ kind: "package", names: ["type"], from: "arktype" })
           .ast(conjure.symbolProgram(...statements))
           .emit();

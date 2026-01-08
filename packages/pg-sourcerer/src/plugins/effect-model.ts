@@ -349,7 +349,6 @@ export const effectModelPlugin = definePlugin({
 
           ctx
             .file(filePath)
-            .header("// This file is auto-generated. Do not edit.\n")
             .import({ kind: "package", names: ["Schema as S"], from: "effect" })
             .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
             .emit();
@@ -378,7 +377,6 @@ export const effectModelPlugin = definePlugin({
 
         ctx
           .file(filePath)
-          .header("// This file is auto-generated. Do not edit.\n")
           .import({ kind: "package", names: ["Model"], from: "@effect/sql" })
           .import({ kind: "package", names: ["Schema as S"], from: "effect" })
           .ast(conjure.symbolProgram(generateModelStatement(entity, className, fieldCtx)))
