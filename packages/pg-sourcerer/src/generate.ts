@@ -15,7 +15,7 @@
  * Configure via Logger.withMinimumLogLevel at the call site.
  */
 import { Effect, Layer } from "effect"
-import { FileSystem, Path } from "@effect/platform"
+import { FileSystem, Path, Command, CommandExecutor } from "@effect/platform"
 import type { ResolvedConfig } from "./config.js"
 import type { ConfiguredPlugin, RunResult } from "./services/plugin-runner.js"
 import {
@@ -47,7 +47,9 @@ import {
   EmitConflict,
   SymbolConflict,
   WriteError,
+  FormatError,
 } from "./errors.js"
+
 
 /**
  * Options for the generate function
@@ -95,6 +97,49 @@ export type GenerateError =
   | EmitConflict
   | SymbolConflict
   | WriteError
+  | FormatError
+
+/**
+ * Run a formatter command on the output directory.
+ * Spawns a subprocess and fails if it exits non-zero.
+ * Output is piped to the parent process's stdout/stderr.
+ */
+const runFormatter = (
+  command: string,
+  outputDir: string
+): Effect.Effect<void, FormatError, CommandExecutor.CommandExecutor> => {
+  // Parse command string into program and args, append outputDir
+  const parts = command.split(/\s+/).filter(Boolean)
+  const program = parts[0] ?? "echo"
+  const args = parts.slice(1)
+  const cmd = Command.make(program, ...args, outputDir).pipe(
+    Command.stdout("inherit"),
+    Command.stderr("inherit"),
+    Command.runInShell(true)
+  )
+  return Command.exitCode(cmd).pipe(
+    Effect.flatMap((code) =>
+      code === 0
+        ? Effect.void
+        : Effect.fail(
+            new FormatError({
+              message: `Formatter command failed with exit code ${code}: ${command} ${outputDir}`,
+              path: outputDir,
+              cause: new Error(`Exit code: ${code}`),
+            })
+          )
+    ),
+    Effect.mapError((cause) =>
+      cause instanceof FormatError
+        ? cause
+        : new FormatError({
+            message: `Formatter command failed: ${command} ${outputDir}`,
+            path: outputDir,
+            cause,
+          })
+    )
+  )
+}
 
 /**
  * The main generate pipeline
@@ -108,6 +153,7 @@ export const generate = (
   | DatabaseIntrospectionService
   | FileSystem.FileSystem
   | Path.Path
+  | CommandExecutor.CommandExecutor
 > =>
   Effect.gen(function* () {
     // 1. Load configuration
@@ -222,6 +268,13 @@ export const generate = (
       dryRun: options.dryRun ?? false,
     })
 
+    // 6. Format files (if formatter provided and not dry run)
+    if (config.formatter && !options.dryRun) {
+      yield* Effect.log(`Formatting with: ${config.formatter} ${outputDir}`)
+      yield* runFormatter(config.formatter, outputDir)
+      yield* Effect.log("Formatting complete")
+    }
+
     // Log each file at debug level
     for (const result of writeResults) {
       const status = options.dryRun
@@ -260,12 +313,12 @@ export const GenerateLive = Layer.mergeAll(
  * Run generate with all dependencies provided
  *
  * This is the main entry point for programmatic usage.
- * Requires FileSystem and Path from @effect/platform.
+ * Requires FileSystem, Path, and CommandExecutor from @effect/platform.
  */
 export const runGenerate = (
   options: GenerateOptions = {}
 ): Effect.Effect<
   GenerateResult,
   GenerateError,
-  FileSystem.FileSystem | Path.Path
+  FileSystem.FileSystem | Path.Path | CommandExecutor.CommandExecutor
 > => generate(options).pipe(Effect.provide(GenerateLive))

@@ -85,6 +85,10 @@ export class WriteError extends Data.TaggedError("WriteError")<
   ErrorBase & { readonly path: string; readonly cause: unknown }
 > {}
 
+export class FormatError extends Data.TaggedError("FormatError")<
+  ErrorBase & { readonly path: string; readonly cause: unknown }
+> {}
+
 // Union of all errors for convenience
 export type SourcererError =
   | ConfigNotFound
@@ -101,3 +105,4 @@ export type SourcererError =
   | EmitConflict
   | SymbolConflict
   | WriteError
+  | FormatError

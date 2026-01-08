@@ -53,6 +53,9 @@ export const Config = S.Struct({
 
   /** Plugins to run (validated individually per plugin) */
   plugins: S.Array(S.Any),
+
+  /** Formatter callback to transform generated code before writing (validated as Any, properly typed in ConfigInput) */
+  formatter: S.optional(S.String),
 })
 
 export type Config = S.Schema.Type<typeof Config>
@@ -99,6 +102,20 @@ export interface ConfigInput {
 
   /** Plugins to run */
   readonly plugins: readonly unknown[]
+
+  /**
+   * Formatter command to run on generated files after writing.
+   * The command will be run with the output directory as the argument.
+   * Errors will fail generation.
+   *
+   * @example
+   * ```typescript
+   * formatter: "prettier --write"
+   * // or
+   * formatter: "biome format --write"
+   * ```
+   */
+  readonly formatter?: string
 }
 
 /**
@@ -112,4 +129,5 @@ export interface ResolvedConfig {
   readonly typeHints: readonly TypeHint[]
   readonly inflection?: InflectionConfig
   readonly plugins: readonly unknown[]
+  readonly formatter?: string
 }

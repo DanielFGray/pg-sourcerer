@@ -9,7 +9,7 @@
 import { describe, expect, layer } from "@effect/vitest"
 import { Effect, Layer, Logger, LogLevel } from "effect"
 import { FileSystem, Path } from "@effect/platform"
-import { NodeFileSystem, NodePath } from "@effect/platform-node"
+import { NodeFileSystem, NodePath, NodeCommandExecutor } from "@effect/platform-node"
 
 import { generate } from "../generate.js"
 import { ConfigLoaderService } from "../services/config-loader.js"
@@ -22,8 +22,12 @@ import type { ResolvedConfig } from "../config.js"
 // Connection string from environment (set via --env-file in package.json)
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://localhost:5432/test"
 
-// Platform layers
-const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
+// Platform layers - NodeCommandExecutor depends on FileSystem, so provide it
+const PlatformLayer = Layer.mergeAll(
+  NodeFileSystem.layer,
+  NodePath.layer,
+  Layer.provide(NodeCommandExecutor.layer, NodeFileSystem.layer)
+)
 
 // Suppress logs during tests
 const QuietLogger = Logger.minimumLogLevel(LogLevel.None)

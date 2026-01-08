@@ -25,6 +25,8 @@ export default defineConfig({
   // Output directory (relative to config file location)
   outputDir: "./generated",
 
+  formatter: "bunx biome format --write",
+
   // Inflection: PascalCase entities/enums, camelCase fields
   inflection: {
     entityName: name => inflect.pascalCase(inflect.singularize(name)),
