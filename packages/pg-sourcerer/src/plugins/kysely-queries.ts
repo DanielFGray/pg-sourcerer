@@ -1,0 +1,558 @@
+/**
+ * Kysely Queries Plugin - Generate type-safe Kysely query functions
+ *
+ * Generates permission-aware CRUD query functions using Kysely's query builder.
+ * Uses object namespace style with explicit `db: Kysely<DB>` first parameter.
+ */
+import { Schema as S } from "effect"
+import type { namedTypes as n } from "ast-types"
+import { definePlugin } from "../services/plugin.js"
+import type { FileNameContext } from "../services/plugin.js"
+import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR } from "../ir/semantic-ir.js"
+import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js"
+import { conjure, cast } from "../lib/conjure.js"
+import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js"
+import { inflect } from "../services/inflection.js"
+
+const { ts, b } = conjure
+const { toExpr } = cast
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const KyselyQueriesPluginConfig = S.Struct({
+  outputDir: S.String,
+  header: S.optional(S.String),
+  /** 
+   * Path to import DB type from (relative to outputDir). 
+   * Defaults to "../DB.js" which works with kysely-codegen's DB.d.ts output.
+   * For node16/nodenext module resolution, use ".js" extension even for .d.ts files.
+   */
+  dbTypesPath: S.optional(S.String),
+  /**
+   * Whether to call .execute() / .executeTakeFirst() on queries.
+   * When true (default), methods return Promise<Row> or Promise<Row[]>.
+   * When false, methods return the query builder for further customization.
+   */
+  executeQueries: S.optional(S.Boolean),
+})
+
+type KyselyQueriesPluginConfig = S.Schema.Type<typeof KyselyQueriesPluginConfig>
+
+// ============================================================================
+// Context & Type Helpers
+// ============================================================================
+
+interface GenerationContext {
+  readonly entity: TableEntity
+  readonly enums: readonly EnumEntity[]
+  readonly ir: SemanticIR
+  readonly dbTypesPath: string
+  readonly executeQueries: boolean
+}
+
+/**
+ * Get the Kysely table interface name from the entity.
+ * Converts schema.table to PascalCase: app_public.users -> AppPublicUsers
+ * Uses the inflection utility to match kysely-codegen's naming convention.
+ */
+const getTableTypeName = (entity: TableEntity): string =>
+  `${inflect.pascalCase(entity.schemaName)}${inflect.pascalCase(entity.pgName)}`
+
+/** Get the schema-qualified table name for Kysely */
+const getTableRef = (entity: TableEntity): string =>
+  `${entity.schemaName}.${entity.pgName}`
+
+/** Find a field in the row shape by column name */
+const findRowField = (entity: TableEntity, columnName: string): Field | undefined =>
+  entity.shapes.row.fields.find(f => f.columnName === columnName)
+
+/** Get the TypeScript type AST for a field */
+const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TSType => {
+  if (!field) return ts.string()
+  const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions)
+  return resolved.enumDef ? ts.ref(resolved.enumDef.name) : tsTypeToAst(resolved.tsType)
+}
+
+// ============================================================================
+// AST Building Helpers
+// ============================================================================
+
+/** Create identifier */
+const id = (name: string): n.Identifier => b.identifier(name)
+
+/** Create member expression: obj.prop */
+const member = (obj: n.Expression, prop: string): n.MemberExpression =>
+  b.memberExpression(toExpr(obj), id(prop))
+
+/** Create method call: obj.method(args) */
+const call = (obj: n.Expression, method: string, args: n.Expression[] = []): n.CallExpression =>
+  b.callExpression(member(obj, method), args.map(toExpr))
+
+/** Create string literal */
+const str = (value: string): n.StringLiteral => b.stringLiteral(value)
+
+/** Create typed parameter: name: Type */
+const typedParam = (name: string, type: n.TSType): n.Identifier => {
+  const param = id(name)
+  param.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(type))
+  return param
+}
+
+/** Create optional typed parameter: name?: Type */
+const optionalTypedParam = (name: string, type: n.TSType): n.Identifier => {
+  const param = typedParam(name, type)
+  param.optional = true
+  return param
+}
+
+/**
+ * Build Kysely query chain starting with db.selectFrom('table')
+ */
+const selectFrom = (tableRef: string): n.CallExpression =>
+  call(id("db"), "selectFrom", [str(tableRef)])
+
+/**
+ * Build Kysely query chain: db.insertInto('table')
+ */
+const insertInto = (tableRef: string): n.CallExpression =>
+  call(id("db"), "insertInto", [str(tableRef)])
+
+/**
+ * Build Kysely query chain: db.updateTable('table')
+ */
+const updateTable = (tableRef: string): n.CallExpression =>
+  call(id("db"), "updateTable", [str(tableRef)])
+
+/**
+ * Build Kysely query chain: db.deleteFrom('table')
+ */
+const deleteFrom = (tableRef: string): n.CallExpression =>
+  call(id("db"), "deleteFrom", [str(tableRef)])
+
+/**
+ * Chain method call onto existing expression
+ */
+const chain = (expr: n.Expression, method: string, args: n.Expression[] = []): n.CallExpression =>
+  call(expr, method, args)
+
+/**
+ * Build arrow function expression: (params) => body
+ */
+const arrowFn = (
+  params: n.Identifier[],
+  body: n.Expression,
+): n.ArrowFunctionExpression => {
+  const fn = b.arrowFunctionExpression(
+    params.map(p => p as Parameters<typeof b.arrowFunctionExpression>[0][0]),
+    toExpr(body)
+  )
+  return fn
+}
+
+/**
+ * Build object property: key: value
+ */
+const objProp = (key: string, value: n.Expression): n.ObjectProperty => {
+  const prop = b.objectProperty(id(key), toExpr(value))
+  return prop
+}
+
+// ============================================================================
+// CRUD Method Generators
+// ============================================================================
+
+/**
+ * Generate findById method:
+ * findById: (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
+ */
+const generateFindById = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+  const { entity, executeQueries } = ctx
+  if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
+
+  const pkColName = entity.primaryKey.columns[0]!
+  const pkField = findRowField(entity, pkColName)
+  if (!pkField) return undefined
+
+  const tableRef = getTableRef(entity)
+  const fieldName = pkField.name
+  const fieldType = getFieldTypeAst(pkField, ctx)
+
+  // db.selectFrom('table').selectAll().where('col', '=', id)
+  let query: n.Expression = chain(
+    chain(selectFrom(tableRef), "selectAll"),
+    "where",
+    [str(pkColName), str("="), id(fieldName)]
+  )
+
+  if (executeQueries) {
+    query = chain(query, "executeTakeFirst")
+  }
+
+  const fn = arrowFn(
+    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
+    query
+  )
+
+  return objProp("findById", fn)
+}
+
+/**
+ * Generate findMany method with optional pagination:
+ * findMany: (db, opts?) => db.selectFrom('table').selectAll()
+ *   .$if(opts?.limit != null, q => q.limit(opts!.limit!))
+ *   .$if(opts?.offset != null, q => q.offset(opts!.offset!))
+ *   .execute()
+ */
+const generateFindMany = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+  const { entity, executeQueries } = ctx
+  if (!entity.permissions.canSelect) return undefined
+
+  const tableRef = getTableRef(entity)
+
+  // Build the base query
+  let query: n.Expression = chain(selectFrom(tableRef), "selectAll")
+
+  // Add $if for limit
+  // q => q.limit(opts!.limit!)
+  const limitCallback = arrowFn(
+    [id("q")],
+    call(id("q"), "limit", [
+      member(
+        b.tsNonNullExpression(member(id("opts"), "limit")),
+        // This creates opts!.limit, we need to wrap the whole thing
+        // Actually we want: opts!.limit!
+        ""
+      )
+    ])
+  )
+  // Simpler approach - just use opts?.limit directly with non-null assertion where needed
+  const limitCheck = b.binaryExpression(
+    "!=",
+    toExpr(member(b.optionalMemberExpression(id("opts"), id("limit"), false, true), "")),
+    b.nullLiteral()
+  )
+
+  // Actually let's simplify - use a cleaner pattern
+  // $if(opts?.limit != null, q => q.limit(opts!.limit!))
+  query = call(query, "$if", [
+    b.binaryExpression(
+      "!=",
+      toExpr(b.optionalMemberExpression(id("opts"), id("limit"), false, true)),
+      b.nullLiteral()
+    ),
+    arrowFn(
+      [id("q")],
+      call(id("q"), "limit", [
+        b.tsNonNullExpression(
+          toExpr(member(b.tsNonNullExpression(toExpr(id("opts"))), "limit"))
+        )
+      ])
+    )
+  ])
+
+  // Add $if for offset
+  query = call(query, "$if", [
+    b.binaryExpression(
+      "!=",
+      toExpr(b.optionalMemberExpression(id("opts"), id("offset"), false, true)),
+      b.nullLiteral()
+    ),
+    arrowFn(
+      [id("q")],
+      call(id("q"), "offset", [
+        b.tsNonNullExpression(
+          toExpr(member(b.tsNonNullExpression(toExpr(id("opts"))), "offset"))
+        )
+      ])
+    )
+  ])
+
+  // Add .execute() if executeQueries is true
+  if (executeQueries) {
+    query = chain(query, "execute")
+  }
+
+  // Build opts parameter type: { limit?: number; offset?: number }
+  const optsType = ts.objectType([
+    { name: "limit", type: ts.number(), optional: true },
+    { name: "offset", type: ts.number(), optional: true },
+  ])
+
+  const fn = arrowFn(
+    [
+      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
+      optionalTypedParam("opts", optsType),
+    ],
+    query
+  )
+
+  return objProp("findMany", fn)
+}
+
+/**
+ * Generate create method:
+ * create: (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
+ */
+const generateCreate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+  const { entity, executeQueries } = ctx
+  if (!entity.permissions.canInsert) return undefined
+
+  const tableRef = getTableRef(entity)
+  const tableTypeName = getTableTypeName(entity)
+
+  // db.insertInto('table').values(data).returningAll()
+  let query: n.Expression = chain(
+    chain(insertInto(tableRef), "values", [id("data")]),
+    "returningAll"
+  )
+
+  if (executeQueries) {
+    query = chain(query, "executeTakeFirstOrThrow")
+  }
+
+  // Use Insertable<TableTypeName> for the data parameter
+  const fn = arrowFn(
+    [
+      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
+      typedParam("data", ts.ref("Insertable", [ts.ref(tableTypeName)])),
+    ],
+    query
+  )
+
+  return objProp("create", fn)
+}
+
+/**
+ * Generate update method:
+ * update: (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
+ */
+const generateUpdate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+  const { entity, executeQueries } = ctx
+  if (!entity.primaryKey || !entity.permissions.canUpdate) return undefined
+
+  const pkColName = entity.primaryKey.columns[0]!
+  const pkField = findRowField(entity, pkColName)
+  if (!pkField) return undefined
+
+  const tableRef = getTableRef(entity)
+  const fieldName = pkField.name
+  const fieldType = getFieldTypeAst(pkField, ctx)
+  const tableTypeName = getTableTypeName(entity)
+
+  // db.updateTable('table').set(data).where('id', '=', id).returningAll()
+  let query: n.Expression = chain(
+    chain(
+      chain(updateTable(tableRef), "set", [id("data")]),
+      "where",
+      [str(pkColName), str("="), id(fieldName)]
+    ),
+    "returningAll"
+  )
+
+  if (executeQueries) {
+    query = chain(query, "executeTakeFirstOrThrow")
+  }
+
+  // Use Updateable<TableTypeName> for the data parameter
+  const fn = arrowFn(
+    [
+      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
+      typedParam(fieldName, fieldType),
+      typedParam("data", ts.ref("Updateable", [ts.ref(tableTypeName)])),
+    ],
+    query
+  )
+
+  return objProp("update", fn)
+}
+
+/**
+ * Generate delete method:
+ * delete: (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
+ */
+const generateDelete = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+  const { entity, executeQueries } = ctx
+  if (!entity.primaryKey || !entity.permissions.canDelete) return undefined
+
+  const pkColName = entity.primaryKey.columns[0]!
+  const pkField = findRowField(entity, pkColName)
+  if (!pkField) return undefined
+
+  const tableRef = getTableRef(entity)
+  const fieldName = pkField.name
+  const fieldType = getFieldTypeAst(pkField, ctx)
+
+  // db.deleteFrom('table').where('id', '=', id)
+  let query: n.Expression = chain(
+    deleteFrom(tableRef),
+    "where",
+    [str(pkColName), str("="), id(fieldName)]
+  )
+
+  if (executeQueries) {
+    query = chain(query, "execute")
+  }
+
+  const fn = arrowFn(
+    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
+    query
+  )
+
+  // Use 'remove' since 'delete' is a reserved word
+  return objProp("remove", fn)
+}
+
+/** Generate all CRUD methods for an entity */
+const generateCrudMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] =>
+  [
+    generateFindById(ctx),
+    generateFindMany(ctx),
+    generateCreate(ctx),
+    generateUpdate(ctx),
+    generateDelete(ctx),
+  ].filter((p): p is n.ObjectProperty => p != null)
+
+// ============================================================================
+// Index-based Lookup Functions
+// ============================================================================
+
+/** Check if an index should generate a lookup function */
+const shouldGenerateLookup = (index: IndexDef): boolean =>
+  !index.isPartial &&
+  !index.hasExpressions &&
+  index.columns.length === 1 &&
+  index.method !== "gin" &&
+  index.method !== "gist"
+
+/** Generate a method name for an index-based lookup */
+const generateLookupName = (index: IndexDef): string => {
+  const colName = index.columns[0]!
+  const capitalizedCol = colName.charAt(0).toUpperCase() + colName.slice(1)
+  return `findBy${capitalizedCol}`
+}
+
+/** Generate a lookup method for a single-column index */
+const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.ObjectProperty => {
+  const { entity, executeQueries } = ctx
+  const tableRef = getTableRef(entity)
+  const columnName = index.columnNames[0]!
+  const field = findRowField(entity, columnName)
+  const fieldName = field?.name ?? index.columns[0]!
+  const fieldType = getFieldTypeAst(field, ctx)
+  const isUnique = index.isUnique || index.isPrimary
+
+  // db.selectFrom('table').selectAll().where('col', '=', value)
+  let query: n.Expression = chain(
+    chain(selectFrom(tableRef), "selectAll"),
+    "where",
+    [str(columnName), str("="), id(fieldName)]
+  )
+
+  if (executeQueries) {
+    query = chain(query, isUnique ? "executeTakeFirst" : "execute")
+  }
+
+  const fn = arrowFn(
+    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
+    query
+  )
+
+  return objProp(generateLookupName(index), fn)
+}
+
+/** Generate lookup methods for all eligible indexes, deduplicating by name */
+const generateLookupMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] => {
+  const seen = new Set<string>()
+
+  return ctx.entity.indexes
+    .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
+    .filter(index => {
+      const name = generateLookupName(index)
+      if (seen.has(name)) return false
+      seen.add(name)
+      return true
+    })
+    .map(index => generateLookupMethod(index, ctx))
+}
+
+// ============================================================================
+// Plugin Definition
+// ============================================================================
+
+export const kyselyQueriesPlugin = definePlugin({
+  name: "kysely-queries",
+  provides: ["queries", "queries:kysely"],
+  requires: [],  // No dependency on types:kysely for now - uses external kysely-codegen types
+  configSchema: KyselyQueriesPluginConfig,
+  inflection: {
+    outputFile: ctx => `${ctx.entityName}.ts`,
+    symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
+  },
+
+  run: (ctx, config) => {
+    const enums = getEnumEntities(ctx.ir)
+    const dbTypesPath = config.dbTypesPath ?? "../DB.js"
+    const executeQueries = config.executeQueries ?? true
+
+    getTableEntities(ctx.ir)
+      .filter(entity => entity.tags.omit !== true)
+      .forEach(entity => {
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, dbTypesPath, executeQueries }
+        
+        const methods = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
+
+        if (methods.length === 0) return
+
+        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
+        const fileNameCtx: FileNameContext = {
+          entityName,
+          pgName: entity.pgName,
+          schema: entity.schemaName,
+          inflection: ctx.inflection,
+          entity,
+        }
+        const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
+
+        // Build the namespace object: export const users = { findById, findMany, ... }
+        const namespaceObj = b.objectExpression(
+          methods.map(m => m as Parameters<typeof b.objectExpression>[0][0])
+        )
+
+        // Lowercase entity name for the namespace variable
+        const namespaceName = entity.pgName
+
+        const constDecl = b.variableDeclaration("const", [
+          b.variableDeclarator(id(namespaceName), namespaceObj)
+        ])
+        const exportDecl = b.exportNamedDeclaration(constDecl, []) as n.Statement
+
+        const file = ctx
+          .file(filePath)
+          .header(
+            config.header ? `${config.header}\n` : "// This file is auto-generated. Do not edit.\n"
+          )
+
+        // Import Kysely type and DB from kysely-codegen output
+        file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+        file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+
+        // Import Insertable/Updateable helper types and table type if we generate create/update
+        const tableTypeName = getTableTypeName(entity)
+        if (entity.permissions.canInsert) {
+          file.import({ kind: "package", types: ["Insertable"], from: "kysely" })
+          file.import({ kind: "relative", types: [tableTypeName], from: dbTypesPath })
+        }
+        if (entity.permissions.canUpdate) {
+          file.import({ kind: "package", types: ["Updateable"], from: "kysely" })
+          // Only import table type if not already imported by canInsert
+          if (!entity.permissions.canInsert) {
+            file.import({ kind: "relative", types: [tableTypeName], from: dbTypesPath })
+          }
+        }
+
+        file.ast(conjure.program(exportDecl)).emit()
+      })
+  },
+})

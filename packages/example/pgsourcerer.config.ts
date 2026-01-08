@@ -7,6 +7,7 @@ import {
   zodPlugin,
   effectModelPlugin,
   sqlQueriesPlugin,
+  kyselyQueriesPlugin,
 } from "@danielfgray/pg-sourcerer";
 
 /**
@@ -46,7 +47,10 @@ export default defineConfig({
     // Generate Effect Model classes
     effectModelPlugin({ outputDir: "effect" }),
 
-    // Generate SQL query functions
-    sqlQueriesPlugin({ outputDir: "queries" }),
+    // Generate SQL query functions (disabled - using Kysely instead)
+    // sqlQueriesPlugin({ outputDir: "queries" }),
+
+    // Generate Kysely query functions
+    kyselyQueriesPlugin({ outputDir: "kysely" }),
   ],
 });
