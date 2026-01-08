@@ -201,6 +201,22 @@ export {
   type SymbolProgram,
 } from "./lib/conjure.js"
 
+// Hex - SQL query building primitives
+export {
+  hex,
+  type SqlStyle,
+  type QueryParts,
+  buildTemplateLiteral,
+  buildAwaitSqlTag,
+  buildAwaitSqlString,
+  buildQuery,
+  buildFirstRowDecl,
+  buildAllRowsDecl,
+  buildReturnQuery,
+  asyncFn,
+  exportFn,
+} from "./lib/hex.js"
+
 // Plugins
 export { typesPlugin } from "./plugins/types.js"
 export { zodPlugin } from "./plugins/zod.js"
