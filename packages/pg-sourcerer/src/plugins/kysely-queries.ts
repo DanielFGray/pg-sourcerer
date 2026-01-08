@@ -36,6 +36,12 @@ const KyselyQueriesPluginConfig = S.Struct({
    * When false, methods return the query builder for further customization.
    */
   executeQueries: S.optional(S.Boolean),
+  /**
+   * Whether to generate listMany() method for unfiltered table scans.
+   * Disabled by default since unfiltered scans don't use indexes.
+   * When enabled, generates: listMany(db, limit = 50, offset = 0)
+   */
+  generateListMany: S.optional(S.Boolean),
 })
 
 type KyselyQueriesPluginConfig = S.Schema.Type<typeof KyselyQueriesPluginConfig>
@@ -50,6 +56,7 @@ interface GenerationContext {
   readonly ir: SemanticIR
   readonly dbTypesPath: string
   readonly executeQueries: boolean
+  readonly generateListMany: boolean
 }
 
 /**
@@ -183,11 +190,14 @@ const deleteFrom = (tableRef: string): n.CallExpression =>
 const chain = (expr: n.Expression, method: string, args: n.Expression[] = []): n.CallExpression =>
   call(expr, method, args)
 
+/** Arrow function parameter - identifier or assignment pattern (for defaults) */
+type ArrowParam = n.Identifier | n.AssignmentPattern
+
 /**
  * Build arrow function expression: (params) => body
  */
 const arrowFn = (
-  params: n.Identifier[],
+  params: ArrowParam[],
   body: n.Expression,
 ): n.ArrowFunctionExpression => {
   const fn = b.arrowFunctionExpression(
@@ -244,97 +254,56 @@ const generateFindById = (ctx: GenerationContext): n.ObjectProperty | undefined 
   return objProp("findById", fn)
 }
 
+/** Default limit for findMany queries */
+const DEFAULT_LIMIT = 50
+
+/** Default offset for findMany queries */
+const DEFAULT_OFFSET = 0
+
 /**
- * Generate findMany method with optional pagination:
- * findMany: (db, opts?) => db.selectFrom('table').selectAll()
- *   .$if(opts?.limit != null, q => q.limit(opts!.limit!))
- *   .$if(opts?.offset != null, q => q.offset(opts!.offset!))
- *   .execute()
+ * Create a parameter with a default value: name = defaultValue
+ * Type is inferred from the default value, no explicit annotation.
  */
-const generateFindMany = (ctx: GenerationContext): n.ObjectProperty | undefined => {
+const paramWithDefault = (name: string, defaultValue: n.Expression): n.AssignmentPattern =>
+  b.assignmentPattern(id(name), toExpr(defaultValue))
+
+/**
+ * Generate listMany method with pagination defaults:
+ * listMany: (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
+ *   .limit(limit).offset(offset).execute()
+ */
+const generateListMany = (ctx: GenerationContext): n.ObjectProperty | undefined => {
   const { entity, executeQueries } = ctx
   if (!entity.permissions.canSelect) return undefined
 
   const tableRef = getTableRef(entity)
 
-  // Build the base query
-  let query: n.Expression = chain(selectFrom(tableRef), "selectAll")
-
-  // Add $if for limit
-  // q => q.limit(opts!.limit!)
-  const limitCallback = arrowFn(
-    [id("q")],
-    call(id("q"), "limit", [
-      member(
-        b.tsNonNullExpression(member(id("opts"), "limit")),
-        // This creates opts!.limit, we need to wrap the whole thing
-        // Actually we want: opts!.limit!
-        ""
-      )
-    ])
-  )
-  // Simpler approach - just use opts?.limit directly with non-null assertion where needed
-  const limitCheck = b.binaryExpression(
-    "!=",
-    toExpr(member(b.optionalMemberExpression(id("opts"), id("limit"), false, true), "")),
-    b.nullLiteral()
-  )
-
-  // Actually let's simplify - use a cleaner pattern
-  // $if(opts?.limit != null, q => q.limit(opts!.limit!))
-  query = call(query, "$if", [
-    b.binaryExpression(
-      "!=",
-      toExpr(b.optionalMemberExpression(id("opts"), id("limit"), false, true)),
-      b.nullLiteral()
+  // Build query: db.selectFrom('table').selectAll().limit(limit).offset(offset)
+  let query: n.Expression = chain(
+    chain(
+      chain(selectFrom(tableRef), "selectAll"),
+      "limit",
+      [id("limit")]
     ),
-    arrowFn(
-      [id("q")],
-      call(id("q"), "limit", [
-        b.tsNonNullExpression(
-          toExpr(member(b.tsNonNullExpression(toExpr(id("opts"))), "limit"))
-        )
-      ])
-    )
-  ])
-
-  // Add $if for offset
-  query = call(query, "$if", [
-    b.binaryExpression(
-      "!=",
-      toExpr(b.optionalMemberExpression(id("opts"), id("offset"), false, true)),
-      b.nullLiteral()
-    ),
-    arrowFn(
-      [id("q")],
-      call(id("q"), "offset", [
-        b.tsNonNullExpression(
-          toExpr(member(b.tsNonNullExpression(toExpr(id("opts"))), "offset"))
-        )
-      ])
-    )
-  ])
+    "offset",
+    [id("offset")]
+  )
 
   // Add .execute() if executeQueries is true
   if (executeQueries) {
     query = chain(query, "execute")
   }
 
-  // Build opts parameter type: { limit?: number; offset?: number }
-  const optsType = ts.objectType([
-    { name: "limit", type: ts.number(), optional: true },
-    { name: "offset", type: ts.number(), optional: true },
-  ])
-
   const fn = arrowFn(
     [
       typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
-      optionalTypedParam("opts", optsType),
+      paramWithDefault("limit", b.numericLiteral(DEFAULT_LIMIT)),
+      paramWithDefault("offset", b.numericLiteral(DEFAULT_OFFSET)),
     ],
     query
   )
 
-  return objProp("findMany", fn)
+  return objProp("listMany", fn)
 }
 
 /**
@@ -454,7 +423,7 @@ const generateDelete = (ctx: GenerationContext): n.ObjectProperty | undefined =>
 const generateCrudMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] =>
   [
     generateFindById(ctx),
-    generateFindMany(ctx),
+    ctx.generateListMany ? generateListMany(ctx) : undefined,
     generateCreate(ctx),
     generateUpdate(ctx),
     generateDelete(ctx),
@@ -481,7 +450,7 @@ const generateLookupName = (
   index: IndexDef,
   relation: Relation | undefined
 ): string => {
-  const isUnique = index.isUnique || index.isPrimary
+  const isUnique = isUniqueLookup(entity, index)
   // Kysely uses "findBy" prefix consistently, with "One" or "Many" suffix
   const prefix = isUnique ? "findOneBy" : "findManyBy"
 
@@ -504,7 +473,7 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Object
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
   const fieldName = field?.name ?? index.columns[0]!
-  const isUnique = index.isUnique || index.isPrimary
+  const isUnique = isUniqueLookup(entity, index)
 
   // Check if this index column corresponds to an FK relation
   const relation = findRelationForColumn(entity, columnName)
@@ -546,21 +515,59 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Object
   return objProp(methodName, fn)
 }
 
-/** Generate lookup methods for all eligible indexes, deduplicating by name */
-const generateLookupMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] => {
-  const seen = new Set<string>()
+/**
+ * Check if a column is covered by a unique constraint (not just unique index).
+ * This helps determine if a non-unique B-tree index on the column still
+ * returns at most one row.
+ */
+const columnHasUniqueConstraint = (entity: TableEntity, columnName: string): boolean => {
+  const constraints = entity.pgClass.getConstraints()
+  return constraints.some(c => {
+    // 'u' = unique constraint, 'p' = primary key
+    if (c.contype !== "u" && c.contype !== "p") return false
+    // Single-column constraint on our column?
+    const conkey = c.conkey ?? []
+    if (conkey.length !== 1) return false
+    // Find the attribute with this attnum
+    const attrs = entity.pgClass.getAttributes()
+    const attr = attrs.find(a => a.attnum === conkey[0])
+    return attr?.attname === columnName
+  })
+}
 
-  return ctx.entity.indexes
+/**
+ * Determine if a lookup should be treated as unique (returns one row).
+ * True if: index is unique, index is primary, OR column has unique constraint.
+ */
+const isUniqueLookup = (entity: TableEntity, index: IndexDef): boolean => {
+  if (index.isUnique || index.isPrimary) return true
+  // Check if the single column has a unique constraint
+  const columnName = index.columnNames[0]
+  return columnName ? columnHasUniqueConstraint(entity, columnName) : false
+}
+
+/** Generate lookup methods for all eligible indexes, deduplicating by column */
+const generateLookupMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] => {
+  const eligibleIndexes = ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
-    .filter(index => {
-      const columnName = index.columnNames[0]!
-      const relation = findRelationForColumn(ctx.entity, columnName)
-      const name = generateLookupName(ctx.entity, index, relation)
-      if (seen.has(name)) return false
-      seen.add(name)
-      return true
-    })
-    .map(index => generateLookupMethod(index, ctx))
+
+  // Group by column name, keeping only one index per column
+  // Prefer unique indexes, but also consider columns with unique constraints
+  const byColumn = new Map<string, IndexDef>()
+  for (const index of eligibleIndexes) {
+    const columnName = index.columnNames[0]!
+    const existing = byColumn.get(columnName)
+    if (!existing) {
+      byColumn.set(columnName, index)
+    } else {
+      // Prefer explicitly unique index over non-unique
+      if (index.isUnique && !existing.isUnique) {
+        byColumn.set(columnName, index)
+      }
+    }
+  }
+
+  return Array.from(byColumn.values()).map(index => generateLookupMethod(index, ctx))
 }
 
 // ============================================================================
@@ -581,11 +588,12 @@ export const kyselyQueriesPlugin = definePlugin({
     const enums = getEnumEntities(ctx.ir)
     const dbTypesPath = config.dbTypesPath ?? "../DB.js"
     const executeQueries = config.executeQueries ?? true
+    const generateListMany = config.generateListMany ?? false
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, dbTypesPath, executeQueries }
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, dbTypesPath, executeQueries, generateListMany }
         
         const methods = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
 

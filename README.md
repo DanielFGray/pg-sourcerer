@@ -207,27 +207,22 @@ import type { Kysely, Updateable } from "kysely";
 import type { DB, AppPublicUsers } from "../DB.js";
 
 export const users = {
-  findById: (db: Kysely<DB>, id: string) =>
-    db.selectFrom("app_public.users")
-      .selectAll()
-      .where("id", "=", id),
-
-  findMany: (db: Kysely<DB>, opts?: { limit?: number; offset?: number }) =>
-    db.selectFrom("app_public.users")
-      .selectAll()
-      .$if(opts?.limit != null, q => q.limit(opts!.limit!))
-      .$if(opts?.offset != null, q => q.offset(opts!.offset!)),
-
-  update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) =>
-    db.updateTable("app_public.users")
-      .set(data)
-      .where("id", "=", id)
-      .returningAll(),
-
-  findByUsername: (db: Kysely<DB>, username: string) =>
-    db.selectFrom("app_public.users")
-      .selectAll()
-      .where("username", "=", username),
+  findById: (db: Kysely<DB>, id: string) => db
+    .selectFrom("app_public.users")
+    .selectAll()
+    .where("id", "=", id)
+    .executeTakeFirst(),
+  update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) => db
+    .updateTable("app_public.users")
+    .set(data)
+    .where("id", "=", id)
+    .returningAll()
+    .executeTakeFirstOrThrow(),
+  findOneByUsername: (db: Kysely<DB>, username: string) => db
+    .selectFrom("app_public.users")
+    .selectAll()
+    .where("username", "=", username)
+    .executeTakeFirst()
 };
 ```
 

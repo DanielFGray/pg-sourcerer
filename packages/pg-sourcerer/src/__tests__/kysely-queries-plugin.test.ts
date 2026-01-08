@@ -149,7 +149,26 @@ describe("Kysely Queries Plugin", () => {
       })
     )
 
-    it.effect("generates findMany method with pagination", () =>
+    it.effect("generates listMany method with pagination when enabled", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", generateListMany: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        expect(userFile?.content).toContain("listMany:")
+        expect(userFile?.content).toContain("limit = 50")
+        expect(userFile?.content).toContain("offset = 0")
+        expect(userFile?.content).toContain(".limit(limit)")
+        expect(userFile?.content).toContain(".offset(offset)")
+      })
+    )
+
+    it.effect("does not generate listMany by default", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -160,10 +179,7 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        expect(userFile?.content).toContain("findMany:")
-        expect(userFile?.content).toContain("$if(")
-        expect(userFile?.content).toContain(".limit(")
-        expect(userFile?.content).toContain(".offset(")
+        expect(userFile?.content).not.toContain("listMany:")
       })
     )
 
@@ -232,8 +248,6 @@ describe("Kysely Queries Plugin", () => {
 
         // All methods should have db: Kysely<DB> as first param
         expect(userFile?.content).toMatch(/findById:\s*\(db:\s*Kysely<DB>/)
-        // findMany has multiline formatting so use [\s\S] instead of \s
-        expect(userFile?.content).toMatch(/findMany:[\s\S]*?\([\s\S]*?db:\s*Kysely<DB>/)
       })
     )
   })
