@@ -69,26 +69,14 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Setup Node for npm publishing
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
       - name: Publish pg-introspection to npm
         working-directory: packages/pg-introspection
-        run: |
-          bun pm pack
-          TARBALL=$(ls -1 *.tgz | head -1)
-          npm publish "$TARBALL" --access public --provenance --ignore-scripts || true
+        run: bun publish --access public --tolerate-republish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish pg-sourcerer to npm
         working-directory: packages/pg-sourcerer
-        run: |
-          bun pm pack
-          TARBALL=$(ls -1 *.tgz | head -1)
-          npm publish "$TARBALL" --access public --provenance --ignore-scripts || true
+        run: bun publish --access public --tolerate-republish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
