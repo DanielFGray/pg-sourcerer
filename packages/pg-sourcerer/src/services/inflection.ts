@@ -230,7 +230,7 @@ export const defaultInflection: CoreInflection = {
 
   // Configurable transforms (default to identity)
   entityName: (pgClass, tags) => tags.name ?? pgClass.relname,
-  shapeName: (entityName, kind) => entityName + kind,
+  shapeName: (entityName, kind) => kind === "row" ? entityName : entityName + kind,
   fieldName: (pgAttribute, tags) => tags.name ?? pgAttribute.attname,
   enumName: (pgType, tags) => tags.name ?? pgType.typname,
   enumValueName: (value) => value,
@@ -290,7 +290,7 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
       tags.name ?? entityFn(pgClass.relname),
 
     shapeName: (entityName, kind) =>
-      entityName + shapeSuffixFn(kind),
+      kind === "row" ? entityName : entityName + shapeSuffixFn(kind),
 
     fieldName: (pgAttribute, tags) =>
       tags.name ?? fieldFn(pgAttribute.attname),
@@ -461,6 +461,7 @@ export function composeInflection(
     },
 
     shapeName: (entityName, kind) => {
+      if (kind === "row") return entityName
       const afterPlugin = shapeSuffixFn ? shapeSuffixFn(kind) : kind
       // Base's shapeName concatenates, so we need to handle carefully
       // Actually base just does: entityName + kind, so we transform kind first
