@@ -121,90 +121,93 @@ function prependImports(
   forFile: string,
   symbols: SymbolRegistry
 ): n.Program {
-  const statements: StatementKind[] = []
-
   // Group imports by source path for merging
-  const bySource = new Map<
-    string,
-    { named: Set<string>; types: Set<string>; default?: string }
-  >()
+  const bySource = pipe(
+    imports,
+    Arr.reduce(
+      new Map<string, { named: Set<string>; types: Set<string>; default?: string }>(),
+      (map, ref) => {
+        const resolved = resolveImportRef(ref, forFile, symbols)
+        if (!resolved) return map
 
-  for (const ref of imports) {
-    let source: string
-    let named: string[] = []
-    let types: string[] = []
-    let defaultImport: string | undefined
-
-    switch (ref.kind) {
-      case "symbol": {
-        const symbol = symbols.resolve(ref.ref)
-        if (!symbol) continue // Skip unresolved symbols
-        const importStmt = symbols.importFor(symbol, forFile)
-        source = importStmt.from
-        named = [...importStmt.named]
-        types = [...importStmt.types]
-        defaultImport = importStmt.default
-        break
+        const { source, named, types, defaultImport } = resolved
+        const existing = map.get(source) ?? { named: new Set<string>(), types: new Set<string>() }
+        named.forEach((n) => existing.named.add(n))
+        types.forEach((t) => existing.types.add(t))
+        if (defaultImport) existing.default = defaultImport
+        map.set(source, existing)
+        return map
       }
-
-      case "package":
-      case "relative": {
-        source = ref.from
-        named = ref.names ? [...ref.names] : []
-        types = ref.types ? [...ref.types] : []
-        defaultImport = ref.default
-        break
-      }
-    }
-
-    // Merge with existing imports from same source
-    const existing = bySource.get(source) ?? {
-      named: new Set<string>(),
-      types: new Set<string>(),
-    }
-    named.forEach((n) => existing.named.add(n))
-    types.forEach((t) => existing.types.add(t))
-    if (defaultImport) existing.default = defaultImport
-    bySource.set(source, existing)
-  }
+    )
+  )
 
   // Generate import statements
   type ImportSpecifier = ImportSpecifierKind | ImportNamespaceSpecifierKind | ImportDefaultSpecifierKind
-  for (const [source, { named, types, default: defaultImport }] of bySource) {
-    const valueSpecifiers: ImportSpecifier[] = []
+  const statements: StatementKind[] = pipe(
+    [...bySource.entries()],
+    Arr.flatMap(([source, { named, types, default: defaultImport }]) => {
+      const result: StatementKind[] = []
 
-    // Default import
-    if (defaultImport) {
-      valueSpecifiers.push(b.importDefaultSpecifier(b.identifier(defaultImport)))
-    }
-
-    // Named imports (value imports)
-    for (const name of named) {
-      valueSpecifiers.push(
-        b.importSpecifier(b.identifier(name), b.identifier(name))
-      )
-    }
-
-    if (valueSpecifiers.length > 0) {
-      statements.push(b.importDeclaration(valueSpecifiers, b.stringLiteral(source)))
-    }
-
-    // Type imports as a separate type-only import declaration
-    if (types.size > 0) {
-      const typeSpecifiers: ImportSpecifier[] = []
-      for (const name of types) {
-        typeSpecifiers.push(
-          b.importSpecifier(b.identifier(name), b.identifier(name))
-        )
+      // Value imports (default + named)
+      const valueSpecifiers: ImportSpecifier[] = [
+        ...(defaultImport ? [b.importDefaultSpecifier(b.identifier(defaultImport))] : []),
+        ...pipe([...named], Arr.map((name) => b.importSpecifier(b.identifier(name), b.identifier(name)))),
+      ]
+      if (valueSpecifiers.length > 0) {
+        result.push(b.importDeclaration(valueSpecifiers, b.stringLiteral(source)))
       }
-      const typeImport = b.importDeclaration(typeSpecifiers, b.stringLiteral(source))
-      typeImport.importKind = "type"
-      statements.push(typeImport)
-    }
-  }
+
+      // Type imports as a separate type-only import declaration
+      if (types.size > 0) {
+        const typeSpecifiers: ImportSpecifier[] = pipe(
+          [...types],
+          Arr.map((name) => b.importSpecifier(b.identifier(name), b.identifier(name)))
+        )
+        const typeImport = b.importDeclaration(typeSpecifiers, b.stringLiteral(source))
+        typeImport.importKind = "type"
+        result.push(typeImport)
+      }
+
+      return result
+    })
+  )
 
   // Prepend imports to program body
   return b.program([...statements, ...ast.body])
+}
+
+/** Resolve an ImportRef to source/named/types/default */
+function resolveImportRef(
+  ref: ImportRef,
+  forFile: string,
+  symbols: SymbolRegistry
+): { source: string; named: string[]; types: string[]; defaultImport?: string } | undefined {
+  switch (ref.kind) {
+    case "symbol": {
+      const symbol = symbols.resolve(ref.ref)
+      if (!symbol) return undefined
+      const importStmt = symbols.importFor(symbol, forFile)
+      const base = {
+        source: importStmt.from,
+        named: [...importStmt.named],
+        types: [...importStmt.types],
+      }
+      return importStmt.default !== undefined
+        ? { ...base, defaultImport: importStmt.default }
+        : base
+    }
+    case "package":
+    case "relative": {
+      const base = {
+        source: ref.from,
+        named: ref.names ? [...ref.names] : [],
+        types: ref.types ? [...ref.types] : [],
+      }
+      return ref.default !== undefined
+        ? { ...base, defaultImport: ref.default }
+        : base
+    }
+  }
 }
 
 // =============================================================================

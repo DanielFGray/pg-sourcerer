@@ -113,24 +113,19 @@ const extractCycle = (graph: Graph.DirectedGraph<string, void>): string[] =>
 const checkDuplicates = (
   plugins: readonly ConfiguredPlugin[],
 ): Effect.Effect<void, DuplicatePlugin> =>
-  pipe(
+  Effect.reduce(
     plugins.map(({ plugin }) => plugin.name),
-    names => {
-      const seen = new Set<string>();
-      for (const name of names) {
-        if (seen.has(name)) {
-          return Effect.fail(
+    new Set<string>(),
+    (seen, name) =>
+      seen.has(name)
+        ? Effect.fail(
             new DuplicatePlugin({
               message: `Plugin "${name}" is registered multiple times`,
               plugin: name,
             }),
-          );
-        }
-        seen.add(name);
-      }
-      return Effect.void;
-    },
-  );
+          )
+        : Effect.succeed(new Set([...seen, name])),
+  ).pipe(Effect.asVoid);
 
 /** Validate a single plugin's config against its schema */
 const validatePluginConfig = (

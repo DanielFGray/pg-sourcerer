@@ -137,12 +137,10 @@ export function createTypeHintRegistry(hints: readonly TypeHint[]): TypeHintRegi
     const sorted = Arr.sort(matching, scoredHintOrder)
 
     // Merge hints - later (higher score/index) overrides earlier
-    const merged: Record<string, unknown> = {}
-    for (const sh of sorted) {
-      Object.assign(merged, sh.hint.hints)
-    }
-
-    return merged
+    return Arr.reduce(sorted, {} as Record<string, unknown>, (merged, sh) => ({
+      ...merged,
+      ...sh.hint.hints,
+    }))
   }
 
   return {

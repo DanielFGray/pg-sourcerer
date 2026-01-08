@@ -3,7 +3,7 @@
  *
  * Tracks emitted symbols for cross-file import resolution.
  */
-import { Context, Layer, MutableHashMap, Option, pipe } from "effect"
+import { Array as Arr, Context, Layer, MutableHashMap, Option, pipe } from "effect"
 import type { CapabilityKey } from "../ir/index.js"
 
 /**
@@ -152,52 +152,48 @@ export function createSymbolRegistry(): SymbolRegistry {
     },
 
     validate: () => {
-      const collisions: SymbolCollision[] = []
-      
-      // Group by file + symbol name
-      const byFileAndName = MutableHashMap.empty<
-        string,
-        { symbol: Symbol; plugin: string }[]
-      >()
-      
-      for (const entries of MutableHashMap.values(symbols)) {
-        for (const entry of entries) {
-          const key = `${entry.symbol.file}:${entry.symbol.name}`
-          pipe(
-            MutableHashMap.get(byFileAndName, key),
-            Option.match({
-              onNone: () => MutableHashMap.set(byFileAndName, key, [entry]),
-              onSome: (existing) => {
-                existing.push(entry)
-                MutableHashMap.set(byFileAndName, key, existing)
-              }
-            })
-          )
-        }
-      }
+      // Flatten all entries, group by file+name, find collisions
+      const allEntries = pipe(
+        MutableHashMap.values(symbols),
+        Arr.fromIterable,
+        Arr.flatten
+      )
 
-      for (const [key, entries] of byFileAndName) {
-        if (entries.length > 1) {
-          const [file, symbol] = key.split(":") as [string, string]
-          const plugins = [...new Set(entries.map(e => e.plugin))]
-          if (plugins.length > 1) {
-            collisions.push({ symbol, file, plugins })
+      // Group by file:name
+      const byFileAndName = pipe(
+        allEntries,
+        Arr.reduce(
+          new Map<string, { symbol: Symbol; plugin: string }[]>(),
+          (map, entry) => {
+            const key = `${entry.symbol.file}:${entry.symbol.name}`
+            const existing = map.get(key) ?? []
+            existing.push(entry)
+            map.set(key, existing)
+            return map
           }
-        }
-      }
+        )
+      )
 
-      return collisions
+      // Find entries with multiple plugins
+      return pipe(
+        [...byFileAndName.entries()],
+        Arr.filterMap(([key, entries]) => {
+          if (entries.length <= 1) return Option.none()
+          const [file, symbol] = key.split(":") as [string, string]
+          const plugins = [...new Set(entries.map((e) => e.plugin))]
+          return plugins.length > 1
+            ? Option.some({ symbol, file, plugins } as SymbolCollision)
+            : Option.none()
+        })
+      )
     },
 
-    getAll: () => {
-      const all: Symbol[] = []
-      for (const entries of MutableHashMap.values(symbols)) {
-        for (const entry of entries) {
-          all.push(entry.symbol)
-        }
-      }
-      return all
-    },
+    getAll: () =>
+      pipe(
+        MutableHashMap.values(symbols),
+        Arr.fromIterable,
+        Arr.flatMap((entries) => entries.map((e) => e.symbol))
+      ),
   }
 }
 
