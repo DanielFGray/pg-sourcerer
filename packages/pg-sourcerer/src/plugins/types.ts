@@ -113,14 +113,14 @@ function resolveFieldType(
   const fieldMatch = buildFieldMatch(entity, field)
   const tsTypeHint = typeHints.getHint<string>(fieldMatch, "tsType")
   
-  if (tsTypeHint) {
+  if (Option.isSome(tsTypeHint)) {
     const importPath = typeHints.getHint<string>(fieldMatch, "import")
-    const baseType = ts.ref(tsTypeHint)
+    const baseType = ts.ref(tsTypeHint.value)
     const result: ResolvedFieldType = {
       type: field.isArray ? ts.array(baseType) : baseType,
     }
-    if (importPath) {
-      result.customImport = { typeName: tsTypeHint, importPath }
+    if (Option.isSome(importPath)) {
+      result.customImport = { typeName: tsTypeHint.value, importPath: importPath.value }
     }
     return result
   }

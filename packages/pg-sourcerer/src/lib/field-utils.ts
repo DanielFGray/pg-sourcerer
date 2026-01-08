@@ -107,86 +107,84 @@ export function resolveFieldType(
   enums: Iterable<EnumDef>,
   extensions: readonly ExtensionInfo[]
 ): ResolvedType {
-  // 1. Check for enum
-  if (isEnumType(field)) {
-    const enumResult = pipe(
-      Option.fromNullable(getPgTypeName(field)),
-      Option.flatMap((pgTypeName) => findEnumByPgName(enums, pgTypeName)),
-      Option.map((enumDef): ResolvedType => ({
-        // Enum types don't have a TsType - they're custom types
-        // Return Unknown as placeholder, caller uses enumDef
-        tsType: TsType.Unknown,
-        enumDef,
-      }))
-    )
-    if (Option.isSome(enumResult)) {
-      return enumResult.value
-    }
-  }
-
-  // 2. Try OID-based mapping (built-in PostgreSQL types)
-  const oid = getTypeOid(field)
-  if (oid !== undefined) {
-    const tsTypeOpt = defaultPgToTs(oid)
-    if (Option.isSome(tsTypeOpt)) {
-      return { tsType: tsTypeOpt.value }
-    }
-  }
-
-  // 3. Try domain base type mapping
-  if (field.domainBaseType) {
-    const tsTypeOpt = defaultPgToTs(field.domainBaseType.typeOid)
-    if (Option.isSome(tsTypeOpt)) {
-      return { tsType: tsTypeOpt.value }
-    }
-  }
-
-  // 4. Try extension-based mapping for the direct type
   const pgType = field.pgAttribute.getType()
-  if (pgType) {
-    const tsTypeOpt = getExtensionTypeMapping(
-      pgType.typname,
-      String(pgType.typnamespace),
-      extensions
-    )
-    if (Option.isSome(tsTypeOpt)) {
-      return { tsType: tsTypeOpt.value }
-    }
-  }
 
-  // Try extension-based mapping for domain base types
-  if (field.domainBaseType) {
-    const tsTypeOpt = getExtensionTypeMapping(
-      field.domainBaseType.typeName,
-      field.domainBaseType.namespaceOid,
-      extensions
-    )
-    if (Option.isSome(tsTypeOpt)) {
-      return { tsType: tsTypeOpt.value }
-    }
-  }
+  // Helper to wrap TsType in ResolvedType
+  const fromTsType = (tsType: TsType): ResolvedType => ({ tsType })
 
-  // 5. For arrays, try to resolve element type
-  if (field.isArray && field.elementTypeName) {
-    // Check if element is an enum
-    const enumDefOpt = findEnumByPgName(enums, field.elementTypeName)
-    if (Option.isSome(enumDefOpt)) {
-      return { tsType: TsType.Unknown, enumDef: enumDefOpt.value }
-    }
+  // Try each resolution strategy in order, return first Some
+  return pipe(
+    // 1. Check for enum
+    Option.liftPredicate(field, isEnumType),
+    Option.flatMap(() => Option.fromNullable(getPgTypeName(field))),
+    Option.flatMap((pgTypeName) => findEnumByPgName(enums, pgTypeName)),
+    Option.map((enumDef): ResolvedType => ({ tsType: TsType.Unknown, enumDef })),
 
-    // Try extension-based mapping for array element type
-    if (pgType?.typnamespace) {
-      const tsTypeOpt = getExtensionTypeMapping(
-        field.elementTypeName,
-        String(pgType.typnamespace),
-        extensions
+    // 2. Try OID-based mapping (built-in PostgreSQL types)
+    Option.orElse(() =>
+      pipe(
+        Option.fromNullable(getTypeOid(field)),
+        Option.flatMap(defaultPgToTs),
+        Option.map(fromTsType)
       )
-      if (Option.isSome(tsTypeOpt)) {
-        return { tsType: tsTypeOpt.value }
-      }
-    }
-  }
+    ),
 
-  // 6. Fallback to unknown
-  return { tsType: TsType.Unknown }
+    // 3. Try domain base type mapping
+    Option.orElse(() =>
+      pipe(
+        Option.fromNullable(field.domainBaseType),
+        Option.flatMap((d) => defaultPgToTs(d.typeOid)),
+        Option.map(fromTsType)
+      )
+    ),
+
+    // 4. Try extension-based mapping for the direct type
+    Option.orElse(() =>
+      pipe(
+        Option.fromNullable(pgType),
+        Option.flatMap((t) =>
+          getExtensionTypeMapping(t.typname, String(t.typnamespace), extensions)
+        ),
+        Option.map(fromTsType)
+      )
+    ),
+
+    // 4b. Try extension-based mapping for domain base types
+    Option.orElse(() =>
+      pipe(
+        Option.fromNullable(field.domainBaseType),
+        Option.flatMap((d) =>
+          getExtensionTypeMapping(d.typeName, d.namespaceOid, extensions)
+        ),
+        Option.map(fromTsType)
+      )
+    ),
+
+    // 5. For arrays, try to resolve element type (enum first, then extension)
+    Option.orElse(() =>
+      pipe(
+        Option.liftPredicate(field, (f) => f.isArray && !!f.elementTypeName),
+        Option.flatMap((f) => {
+          // Check if element is an enum
+          const enumOpt = pipe(
+            findEnumByPgName(enums, f.elementTypeName!),
+            Option.map((enumDef): ResolvedType => ({ tsType: TsType.Unknown, enumDef }))
+          )
+          if (Option.isSome(enumOpt)) return enumOpt
+
+          // Try extension-based mapping for array element type
+          return pipe(
+            Option.fromNullable(pgType?.typnamespace),
+            Option.flatMap((ns) =>
+              getExtensionTypeMapping(f.elementTypeName!, String(ns), extensions)
+            ),
+            Option.map(fromTsType)
+          )
+        })
+      )
+    ),
+
+    // 6. Fallback to unknown
+    Option.getOrElse((): ResolvedType => ({ tsType: TsType.Unknown }))
+  )
 }

@@ -5,7 +5,7 @@
  * Builds entities (tables, views, composites), shapes, fields,
  * relations, and enums.
  */
-import { Context, Effect, Layer, pipe, Array, Option } from "effect"
+import { Context, Effect, Layer, pipe, Array as Arr, Option } from "effect"
 import type {
   Introspection,
   PgAttribute,
@@ -80,7 +80,7 @@ export class IRBuilderSvc extends Context.Tag("IRBuilder")<IRBuilderSvc, IRBuild
   */
 function isOmittedForShape(tags: SmartTags, kind: ShapeKind): boolean {
   if (tags.omit === true) return true
-  if (globalThis.Array.isArray(tags.omit)) {
+  if (Array.isArray(tags.omit)) {
     return tags.omit.includes(kind)
   }
   return false
@@ -137,7 +137,7 @@ function computeEntityPermissions(
   }
 
   const attributes = pgClass.getAttributes().filter((a) => a.attnum > 0)
-  const columnPerms = Array.reduce(
+  const columnPerms = Arr.reduce(
     attributes,
     basePerms,
     (acc, attr) => {
@@ -287,7 +287,7 @@ function buildShape(
 
     const filteredAttrs = pipe(
       attributes,
-      Array.filter((attr) => {
+      Arr.filter((attr) => {
         const tags = attributeTags.get(attr.attname) ?? {}
         return !isOmittedForShape(tags, kind)
       })
@@ -329,8 +329,11 @@ function entityKind(relkind: string): "table" | "view" {
  * Get primary key constraint from pgClass
  */
 function getPrimaryKeyConstraint(pgClass: PgClass): PgConstraint | undefined {
-  const constraints = pgClass.getConstraints()
-  return constraints.find((c) => c.contype === "p")
+  return pipe(
+    pgClass.getConstraints(),
+    Arr.findFirst((c) => c.contype === "p"),
+    Option.getOrUndefined
+  )
 }
 
 /**
@@ -932,9 +935,14 @@ function extractExtensions(
  * Get the fully qualified type name from a PgType.
  */
 function getTypeName(pgType: PgType | undefined): string {
-  if (!pgType) return "unknown"
-  const ns = pgType.getNamespace()?.nspname
-  return ns ? `${ns}.${pgType.typname}` : pgType.typname
+  return pipe(
+    Option.fromNullable(pgType),
+    Option.map((t) => {
+      const ns = t.getNamespace()?.nspname
+      return ns ? `${ns}.${t.typname}` : t.typname
+    }),
+    Option.getOrElse(() => "unknown")
+  )
 }
 
 /**
@@ -1119,7 +1127,7 @@ function createIRBuilderImpl(): IRBuilder {
           ...composites,
           ...functions,
         ]
-        Array.forEach(allEntities, (entity) => {
+        Arr.forEach(allEntities, (entity) => {
           builder.entities.set(entity.name, entity)
         })
         builder.extensions.push(...extensions)

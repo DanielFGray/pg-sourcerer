@@ -4,6 +4,7 @@
  * Tests for matching fields against configured type hints with precedence rules.
  */
 import { describe, it, expect } from "@effect/vitest"
+import { Option } from "effect"
 import {
   createTypeHintRegistry,
   emptyTypeHintRegistry,
@@ -34,7 +35,7 @@ describe("TypeHintRegistry", () => {
       }
 
       const result = emptyTypeHintRegistry.getHint<string>(field, "ts")
-      expect(result).toBeUndefined()
+      expect(Option.isNone(result)).toBe(true)
     })
   })
 
@@ -417,11 +418,11 @@ describe("TypeHintRegistry", () => {
           pgType: "uuid",
         }
 
-        expect(registry.getHint<string>(field, "ts")).toBe("string")
-        expect(registry.getHint<string>(field, "zod")).toBe("z.string().uuid()")
+        expect(Option.getOrNull(registry.getHint<string>(field, "ts"))).toBe("string")
+        expect(Option.getOrNull(registry.getHint<string>(field, "zod"))).toBe("z.string().uuid()")
       })
 
-      it("returns undefined for missing key", () => {
+      it("returns None for missing key", () => {
         const hints: TypeHint[] = [
           {
             match: { pgType: "uuid" },
@@ -437,10 +438,10 @@ describe("TypeHintRegistry", () => {
           pgType: "uuid",
         }
 
-        expect(registry.getHint<string>(field, "zod")).toBeUndefined()
+        expect(Option.isNone(registry.getHint<string>(field, "zod"))).toBe(true)
       })
 
-      it("returns undefined for non-matching field", () => {
+      it("returns None for non-matching field", () => {
         const hints: TypeHint[] = [
           {
             match: { pgType: "uuid" },
@@ -456,7 +457,7 @@ describe("TypeHintRegistry", () => {
           pgType: "text",
         }
 
-        expect(registry.getHint<string>(field, "ts")).toBeUndefined()
+        expect(Option.isNone(registry.getHint<string>(field, "ts"))).toBe(true)
       })
     })
 
