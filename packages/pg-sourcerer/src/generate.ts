@@ -130,6 +130,7 @@ export const generate = (
     const dbService = yield* DatabaseIntrospectionService
     const introspection = yield* dbService.introspect({
       connectionString: config.connectionString,
+      role: config.role,
     })
 
     const tables = introspection.classes.filter((c) => c.relkind === "r")
@@ -154,7 +155,7 @@ export const generate = (
     const inflectionLayer = makeInflectionLayer(config.inflection)
 
     const ir = yield* irBuilder
-      .build(introspection, { schemas: config.schemas as string[] })
+      .build(introspection, { schemas: config.schemas as string[], role: config.role })
       .pipe(Effect.provide(inflectionLayer))
 
     const enumEntities = getEnumEntities(ir)

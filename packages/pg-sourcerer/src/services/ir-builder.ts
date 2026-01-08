@@ -23,7 +23,6 @@ import type {
   DomainEntity,
   DomainConstraint,
   CompositeEntity,
-  CompositeField,
   ExtensionInfo,
   Field,
   EntityPermissions,
@@ -55,6 +54,8 @@ export interface IRBuilderOptions {
   readonly schemas: readonly string[]
   /** Exclude functions that belong to extensions (default: true) */
   readonly excludeExtensionFunctions?: boolean
+  /** Role to use for permission checks (defaults to current user) */
+  readonly role?: string
 }
 
 /**
@@ -70,6 +71,26 @@ export interface IRBuilder {
 
 /** Service tag */
 export class IRBuilderSvc extends Context.Tag("IRBuilder")<IRBuilderSvc, IRBuilder>() {}
+
+// ============================================================================
+// Shape Comparison
+// ============================================================================
+
+/**
+ * Compare two shapes for structural equality.
+ * Shapes are equal if they have the same fields with the same optionality.
+ * We compare by field name and optional flag since that's what differs between shapes.
+ */
+function shapesEqual(a: Shape, b: Shape): boolean {
+  if (a.fields.length !== b.fields.length) return false
+  for (let i = 0; i < a.fields.length; i++) {
+    const fieldA = a.fields[i]
+    const fieldB = b.fields[i]
+    if (fieldA === undefined || fieldB === undefined) return false
+    if (fieldA.name !== fieldB.name || fieldA.optional !== fieldB.optional) return false
+  }
+  return true
+}
 
 // ============================================================================
 // Field Building
@@ -91,30 +112,47 @@ function isOmittedForShape(tags: SmartTags, kind: ShapeKind): boolean {
 // ============================================================================
 
 /**
-  * Compute field permissions from column ACL or fallback to table-level permissions
+  * Compute field permissions from column ACL or fallback to table-level permissions.
+  *
+  * PostgreSQL ACL semantics:
+  * - If a column has explicit ACL (attacl is not null), column permissions ADD to table permissions
+  * - If a column has no explicit ACL (attacl is null), inherit from table-level permissions
+  *
+  * Column-level grants add to table-level grants (they don't replace them).
+  * For example: table SELECT + column UPDATE = both SELECT and UPDATE allowed.
   */
 function computeFieldPermissions(
   introspection: Introspection,
   attr: PgAttribute,
   role: PgRoles
 ): FieldPermissions {
-  // Get table for fallback permissions
   const pgClass = attr.getClass()
+  if (!pgClass) {
+    return { canSelect: false, canInsert: false, canUpdate: false }
+  }
 
-  // Get column-level permissions from ACL
-  const attributePermissions = pgClass
-    ? entityPermissions(introspection, attr, role)
-    : undefined
+  // Get table-level permissions (always needed)
+  const tablePerms = entityPermissions(introspection, pgClass, role)
 
-  // Get table-level permissions for fallback
-  const tablePermissions = pgClass
-    ? entityPermissions(introspection, pgClass, role)
-    : undefined
+  // Check if column has explicit ACL
+  const hasExplicitColumnAcl = attr.attacl != null && attr.attacl.length > 0
+
+  if (!hasExplicitColumnAcl) {
+    // No column-level ACL, use table permissions only
+    return {
+      canSelect: tablePerms.select ?? false,
+      canInsert: tablePerms.insert ?? false,
+      canUpdate: tablePerms.update ?? false,
+    }
+  }
+
+  // Column has explicit ACL - combine with table permissions (OR semantics)
+  const columnPerms = entityPermissions(introspection, attr, role)
 
   return {
-    canSelect: attributePermissions?.select ?? tablePermissions?.select ?? false,
-    canInsert: attributePermissions?.insert ?? tablePermissions?.insert ?? false,
-    canUpdate: attributePermissions?.update ?? tablePermissions?.update ?? false,
+    canSelect: (columnPerms.select ?? false) || (tablePerms.select ?? false),
+    canInsert: (columnPerms.insert ?? false) || (tablePerms.insert ?? false),
+    canUpdate: (columnPerms.update ?? false) || (tablePerms.update ?? false),
   }
 }
 
@@ -217,8 +255,7 @@ function buildField(
     const nullable = !(attr.attnotnull ?? false)
 
     // In insert shape, fields with defaults are optional
-    // In update shape, all fields are optional (except PKs, handled elsewhere)
-    // In patch shape, all fields are optional
+    // In update shape, all fields are optional
     // In row shape, only nullable fields are optional
     let optional: boolean
     switch (kind) {
@@ -226,9 +263,6 @@ function buildField(
         optional = hasDefault || isGenerated || isIdentity || nullable
         break
       case "update":
-        optional = true
-        break
-      case "patch":
         optional = true
         break
       case "row":
@@ -272,6 +306,28 @@ function buildField(
 }
 
 /**
+ * Check if a field has the required permission for the given shape kind.
+ * - row shape requires canSelect
+ * - insert shape requires canInsert
+ * - update shape requires canUpdate
+ */
+function hasPermissionForShape(
+  permissions: FieldPermissions,
+  kind: ShapeKind
+): boolean {
+  switch (kind) {
+    case "row":
+      return permissions.canSelect
+    case "insert":
+      return permissions.canInsert
+    case "update":
+      return permissions.canUpdate
+    default:
+      return true
+  }
+}
+
+/**
   * Build a Shape from attributes
   */
 function buildShape(
@@ -289,7 +345,11 @@ function buildShape(
       attributes,
       Arr.filter((attr) => {
         const tags = attributeTags.get(attr.attname) ?? {}
-        return !isOmittedForShape(tags, kind)
+        // Filter by @omit tags
+        if (isOmittedForShape(tags, kind)) return false
+        // Filter by permissions - only include fields the role can access for this shape kind
+        const permissions = computeFieldPermissions(introspection, attr, role)
+        return hasPermissionForShape(permissions, kind)
       })
     )
 
@@ -436,16 +496,36 @@ function buildEntity(
     // Compute entity permissions
     const permissions = computeEntityPermissions(introspection, pgClass, role)
 
-    // Build shapes object conditionally to satisfy exactOptionalPropertyTypes
-    const shapes: TableEntity["shapes"] =
-      kind === "table"
-        ? {
-            row: rowShape,
-            insert: yield* buildShape(name, "insert", attributes, attributeTags, introspection, role),
-            update: yield* buildShape(name, "update", attributes, attributeTags, introspection, role),
-            patch: yield* buildShape(name, "patch", attributes, attributeTags, introspection, role),
-          }
-        : { row: rowShape }
+    // Build shapes object conditionally:
+    // - Views only get row shape
+    // - Tables get insert/update only if:
+    //   1. They have fields (role has permission)
+    //   2. They're structurally different from previous shape
+    // - Patch is always identical to update (both have all fields optional), so we never emit it
+    let shapes: TableEntity["shapes"]
+    if (kind === "table") {
+      const insertShape = yield* buildShape(name, "insert", attributes, attributeTags, introspection, role)
+      const updateShape = yield* buildShape(name, "update", attributes, attributeTags, introspection, role)
+
+      // Only include insert if it has fields and is different from row
+      const includeInsert = insertShape.fields.length > 0 && !shapesEqual(rowShape, insertShape)
+      // Only include update if it has fields and is different from insert (or row if insert not included)
+      const includeUpdate = updateShape.fields.length > 0 && (includeInsert
+        ? !shapesEqual(insertShape, updateShape)
+        : !shapesEqual(rowShape, updateShape))
+
+      if (includeInsert && includeUpdate) {
+        shapes = { row: rowShape, insert: insertShape, update: updateShape }
+      } else if (includeInsert) {
+        shapes = { row: rowShape, insert: insertShape }
+      } else if (includeUpdate) {
+        shapes = { row: rowShape, update: updateShape }
+      } else {
+        shapes = { row: rowShape }
+      }
+    } else {
+      shapes = { row: rowShape }
+    }
 
     // Build entity conditionally to satisfy exactOptionalPropertyTypes
     const baseEntity = {
@@ -719,13 +799,14 @@ function buildDomain(
 // ============================================================================
 
 /**
- * Build a CompositeField from a PgAttribute
+ * Build a Field from a PgAttribute for composite types.
+ * Sets sensible defaults for properties that don't apply to composites.
  */
 function buildCompositeField(
   attr: PgAttribute,
   tags: SmartTags,
   introspection: Introspection
-): Effect.Effect<CompositeField, never, Inflection> {
+): Effect.Effect<Field, never, Inflection> {
   return Effect.gen(function* () {
     const inflection = yield* Inflection
     const pgType = attr.getType()
@@ -739,13 +820,20 @@ function buildCompositeField(
 
     const nullable = !(attr.attnotnull ?? false)
 
-    const field: CompositeField = {
+    // Composite fields use Field interface with defaults for inapplicable properties
+    const field: Field = {
       name: inflection.fieldName(attr, tags),
-      attributeName: attr.attname,
+      columnName: attr.attname,
       pgAttribute: attr,
       nullable,
-      tags,
+      optional: false, // Composites don't have optional fields
+      hasDefault: false, // Composites don't have defaults
+      isGenerated: false,
+      isIdentity: false,
       isArray,
+      tags,
+      extensions: new Map(),
+      permissions: { canSelect: true, canInsert: true, canUpdate: true },
     }
 
     // Build result with optional properties (exactOptionalPropertyTypes)
@@ -1071,8 +1159,9 @@ function createIRBuilderImpl(): IRBuilder {
           excludeExtensions: options.excludeExtensionFunctions ?? true,
         })
 
-        // Get the current role for permission checks, or use a fallback
-        const role: PgRoles = introspection.getCurrentUser() ?? {
+        // Get the role for permission checks
+        // If options.role is specified, look it up. Otherwise fall back to current user.
+        const fallbackRole: PgRoles = {
           rolname: "unknown",
           rolsuper: false,
           rolinherit: false,
@@ -1087,6 +1176,9 @@ function createIRBuilderImpl(): IRBuilder {
           rolconfig: null,
           _id: "0",
         }
+        const role: PgRoles = options.role
+          ? introspection.roles.find((r) => r.rolname === options.role) ?? fallbackRole
+          : introspection.getCurrentUser() ?? fallbackRole
 
         // Build entity name lookup first (needed for relations)
         const entityNameLookup = yield* buildEntityNameLookup(classes)

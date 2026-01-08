@@ -36,6 +36,9 @@ export const Config = S.Struct({
   /** Database connection string */
   connectionString: S.String,
 
+  /** PostgreSQL role to assume during introspection (for RLS-aware generation) */
+  role: S.optional(S.String),
+
   /** PostgreSQL schemas to introspect */
   schemas: S.optionalWith(S.Array(S.String), { default: () => ["public"] }),
 
@@ -64,6 +67,9 @@ export type Config = S.Schema.Type<typeof Config>
 export interface ConfigInput {
   /** Database connection string */
   readonly connectionString: string
+
+  /** PostgreSQL role to assume during introspection (for RLS-aware generation) */
+  readonly role?: string
 
   /** PostgreSQL schemas to introspect (default: ["public"]) */
   readonly schemas?: readonly string[]
@@ -100,6 +106,7 @@ export interface ConfigInput {
  */
 export interface ResolvedConfig {
   readonly connectionString: string
+  readonly role?: string
   readonly schemas: readonly string[]
   readonly outputDir: string
   readonly typeHints: readonly TypeHint[]
