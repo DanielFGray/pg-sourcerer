@@ -1,0 +1,46 @@
+{
+  "name": "@pg-sourcerer/pg-introspection",
+  "version": "1.0.0",
+  "description": "Strongly typed PostgreSQL introspection library (fork with opclass support)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-sourcerer/pg-sourcerer.git",
+    "directory": "packages/pg-introspection"
+  },
+  "keywords": [
+    "pg",
+    "postgres",
+    "postgresql",
+    "introspection"
+  ],
+  "author": "Benjie Gillam <benjie@jemjie.com>",
+  "contributors": [
+    "pg-sourcerer contributors"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "tslib": "^2.8.1"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

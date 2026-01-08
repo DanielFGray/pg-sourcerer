@@ -6,7 +6,7 @@
  */
 import { it, describe, expect } from "@effect/vitest"
 import { Effect } from "effect"
-import type { Introspection } from "pg-introspection"
+import type { Introspection } from "@pg-sourcerer/pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
@@ -79,7 +79,7 @@ describe("IR Builder Indexes", () => {
       })
     )
 
-    it.effect("captures GIN index with operator class", () =>
+    it.effect("captures GIN index with gin_trgm_ops operator class", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
@@ -91,6 +91,9 @@ describe("IR Builder Indexes", () => {
         expect(trgmIndex).toBeDefined()
         expect(trgmIndex?.method).toBe("gin")
         expect(trgmIndex?.columns).toEqual(["username"])
+        // Verify opclassNames includes gin_trgm_ops
+        expect(trgmIndex?.opclassNames).toBeDefined()
+        expect(trgmIndex?.opclassNames).toContain("gin_trgm_ops")
       })
     )
 
@@ -146,7 +149,7 @@ describe("IR Builder Indexes", () => {
       })
     )
 
-    it.effect("captures GIST index on tsvector", () =>
+    it.effect("captures GIST index on tsvector with opclassNames", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
@@ -156,6 +159,9 @@ describe("IR Builder Indexes", () => {
         // Find GIST index on search tsvector
         const gistIndex = posts?.indexes.find((idx) => idx.method === "gist")
         expect(gistIndex).toBeDefined()
+        // Verify opclassNames is populated (tsvector_ops)
+        expect(gistIndex?.opclassNames).toBeDefined()
+        expect(gistIndex?.opclassNames.length).toBeGreaterThan(0)
       })
     )
 

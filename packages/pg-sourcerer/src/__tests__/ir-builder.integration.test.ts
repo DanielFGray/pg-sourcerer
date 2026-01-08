@@ -6,7 +6,7 @@
  */
 import { it, describe, expect } from "@effect/vitest"
 import { Effect } from "effect"
-import type { Introspection } from "pg-introspection"
+import type { Introspection } from "@pg-sourcerer/pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"

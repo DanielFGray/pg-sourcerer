@@ -14,8 +14,8 @@ import type {
   PgType,
   PgProc,
   PgRoles,
-} from "pg-introspection"
-import { entityPermissions } from "pg-introspection"
+} from "@pg-sourcerer/pg-introspection"
+import { entityPermissions } from "@pg-sourcerer/pg-introspection"
 import type {
   DomainBaseTypeInfo,
   TableEntity,
@@ -592,6 +592,7 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
         isPartial: index.indpred !== null && index.indpred.length > 0,
         method: indexClass ? getIndexMethod(indexClass) : "btree",
         hasExpressions,
+        opclassNames: index.indclassnames ?? [],
       }
 
       // Add predicate only for partial indexes (exactOptionalPropertyTypes)
