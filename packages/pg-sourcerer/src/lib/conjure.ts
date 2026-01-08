@@ -259,6 +259,9 @@ export interface ObjBuilder {
   /** Add a property: `key: value` */
   prop(key: string, value: n.Expression): ObjBuilder
 
+  /** Add a property with string literal key: `"key": value` (for keys with special chars) */
+  stringProp(key: string, value: n.Expression): ObjBuilder
+
   /** Add a computed property: `[key]: value` */
   computed(key: n.Expression, value: n.Expression): ObjBuilder
 
@@ -278,6 +281,14 @@ function createObj(props: ObjectPropertyLike[] = []): ObjBuilder {
     prop(key, value) {
       const newProp = b.objectProperty(
         b.identifier(key),
+        toExpr(value)
+      )
+      return createObj([...props, newProp])
+    },
+
+    stringProp(key, value) {
+      const newProp = b.objectProperty(
+        b.stringLiteral(key),
         toExpr(value)
       )
       return createObj([...props, newProp])
@@ -811,6 +822,34 @@ const ts = {
       operator: "readonly",
       typeAnnotation: toTSType(type),
     }) as n.TSTypeOperator,
+
+  /** Promise type: `Promise<T>` */
+  promise: (inner: n.TSType) =>
+    b.tsTypeReference(
+      b.identifier("Promise"),
+      b.tsTypeParameterInstantiation([toTSType(inner)])
+    ),
+
+  /**
+   * Object type literal: `{ name: string; age?: number }`
+   * @example
+   * ts.objectType([
+   *   { name: "id", type: ts.string() },
+   *   { name: "count", type: ts.number(), optional: true },
+   * ])
+   */
+  objectType: (props: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[]) =>
+    b.tsTypeLiteral(
+      props.map(p => {
+        const sig = b.tsPropertySignature(
+          b.identifier(p.name),
+          b.tsTypeAnnotation(toTSType(p.type))
+        )
+        if (p.optional) sig.optional = true
+        if (p.readonly) sig.readonly = true
+        return sig
+      })
+    ),
 } as const
 
 // =============================================================================
