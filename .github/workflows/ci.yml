@@ -78,14 +78,17 @@ jobs:
       - name: Publish pg-introspection to npm
         working-directory: packages/pg-introspection
         run: |
-          TARBALL=$(bun pm pack | grep -o '[^ ]*\.tgz$')
+          bun pm pack
+          TARBALL=$(ls -1 *.tgz | head -1)
           npm publish "$TARBALL" --access public --provenance || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish pg-sourcerer to npm
+        working-directory: packages/pg-sourcerer
         run: |
-          TARBALL=$(bun pm pack | grep -o '[^ ]*\.tgz$')
+          bun pm pack
+          TARBALL=$(ls -1 *.tgz | head -1)
           npm publish "$TARBALL" --access public --provenance || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
