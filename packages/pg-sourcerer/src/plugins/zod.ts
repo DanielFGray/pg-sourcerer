@@ -249,7 +249,6 @@ export const zodPlugin = definePlugin({
 
         ctx
           .file(filePath)
-          .header("// This file is auto-generated. Do not edit.\n")
           .import({ kind: "package", names: ["z"], from: "zod" })
           .ast(conjure.symbolProgram(...statements))
           .emit();

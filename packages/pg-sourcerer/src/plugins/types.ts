@@ -331,7 +331,6 @@ export const typesPlugin = definePlugin({
 
         ctx
           .file(buildFilePath(fileNameCtx))
-          .header("// This file is auto-generated. Do not edit.\n")
           .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
           .emit()
       })
@@ -369,7 +368,6 @@ export const typesPlugin = definePlugin({
 
         const fileBuilder = ctx
           .file(buildFilePath(fileNameCtx))
-          .header("// This file is auto-generated. Do not edit.\n")
 
         buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
         addCustomImports(fileBuilder, result.customImports)
@@ -402,12 +400,11 @@ export const typesPlugin = definePlugin({
 
         const fileBuilder = ctx
           .file(buildFilePath(fileNameCtx))
-          .header("// This file is auto-generated. Do not edit.\n")
 
         buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
         addCustomImports(fileBuilder, result.customImports)
 
         fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
       })
-  },
+   },
 })

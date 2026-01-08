@@ -191,7 +191,7 @@ describe("Zod Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
 
         const userFile = all.find((e) => e.path.includes("User.ts"))
-        expect(userFile?.content).toContain("// This file is auto-generated. Do not edit.")
+        expect(userFile?.content).not.toContain("// This file is auto-generated. Do not edit.")
       })
     )
   })
