@@ -55,6 +55,11 @@ export {
   getDomainEntities,
   getCompositeEntities,
   getFunctionEntities,
+  // Reverse relations
+  type ReverseRelation,
+  type AllRelations,
+  getReverseRelations,
+  getAllRelations,
 } from "./ir/index.js"
 
 export { SmartTags, ShapeKind } from "./ir/index.js"
@@ -202,6 +207,7 @@ export { zodPlugin } from "./plugins/zod.js"
 export { arktypePlugin } from "./plugins/arktype.js"
 export { effectModelPlugin } from "./plugins/effect-model.js"
 export { sqlQueriesPlugin } from "./plugins/sql-queries.js"
+export { kyselyQueriesPlugin } from "./plugins/kysely-queries.js"
 
 // Generate orchestration
 export {
