@@ -220,14 +220,12 @@ export interface TableEntity extends EntityBase {
 
   /** Shapes for this entity */
   readonly shapes: {
-    /** Row shape - always present */
+    /** Base shape (row) - always present */
     readonly row: Shape
-    /** Insert shape - tables only */
+    /** Insert shape - only if different from base */
     readonly insert?: Shape
-    /** Update shape - tables only */
+    /** Update shape - only if different from insert (or base) */
     readonly update?: Shape
-    /** Patch shape - partial update */
-    readonly patch?: Shape
   }
 
   /** Relations to other entities */
@@ -300,31 +298,11 @@ export interface CompositeEntity extends EntityBase {
   readonly kind: "composite"
   /** Raw type from pg-introspection */
   readonly pgType: PgType
-  /** Fields in the composite type (similar to a row shape) */
-  readonly fields: readonly CompositeField[]
+  /** Fields in the composite type (reuses Field interface) */
+  readonly fields: readonly Field[]
 }
 
-/**
- * A field within a composite type
- */
-export interface CompositeField {
-  /** Inflected field name (camelCase) */
-  readonly name: string
-  /** Original PostgreSQL attribute name */
-  readonly attributeName: string
-  /** Raw attribute from pg-introspection */
-  readonly pgAttribute: PgAttribute
-  /** Whether the field can be NULL */
-  readonly nullable: boolean
-  /** Smart tags from comment */
-  readonly tags: SmartTags
-  /** PostgreSQL array type */
-  readonly isArray: boolean
-  /** For arrays, the element type name */
-  readonly elementTypeName?: string
-  /** If the field type is a domain, info about the underlying base type */
-  readonly domainBaseType?: DomainBaseTypeInfo
-}
+
 
 // ============================================================================
 // Function Entity
@@ -426,16 +404,7 @@ export function isFunctionEntity(entity: Entity): entity is FunctionEntity {
   return entity.kind === "function"
 }
 
-// ============================================================================
-// Legacy Compatibility
-// ============================================================================
 
-/**
- * @deprecated Use Entity with kind: "enum" instead. Will be removed in v1.0.
- * 
- * Alias for EnumEntity to ease migration. New code should use Entity directly.
- */
-export type EnumDef = EnumEntity
 
 // ============================================================================
 // Other Types

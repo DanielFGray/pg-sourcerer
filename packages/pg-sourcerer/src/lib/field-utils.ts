@@ -6,7 +6,8 @@
  * into their specific output format (TypeScript types, Zod schemas, etc.)
  */
 import { Option, pipe } from "effect"
-import type { Field, EnumDef, ExtensionInfo } from "../ir/semantic-ir.js"
+import type { namedTypes as n } from "ast-types"
+import type { Field, EnumEntity, ExtensionInfo } from "../ir/semantic-ir.js"
 import {
   defaultPgToTs,
   findEnumByPgName,
@@ -15,6 +16,9 @@ import {
   PgTypeOid,
 } from "../services/pg-types.js"
 import type { EnumLookupResult } from "../services/pg-types.js"
+import { conjure } from "./conjure.js"
+
+const { ts } = conjure
 
 // =============================================================================
 // Field Inspection - Basic type checks
@@ -77,6 +81,30 @@ export function isBigIntType(field: Field): boolean {
 // =============================================================================
 
 /**
+ * Convert TsType enum to AST type node.
+ * Shared by plugins that generate TypeScript types.
+ */
+export function tsTypeToAst(tsType: TsType): n.TSType {
+  switch (tsType) {
+    case TsType.String:
+      return ts.string()
+    case TsType.Number:
+      return ts.number()
+    case TsType.Boolean:
+      return ts.boolean()
+    case TsType.BigInt:
+      return ts.bigint()
+    case TsType.Date:
+      return ts.ref("Date")
+    case TsType.Buffer:
+      return ts.ref("Buffer")
+    case TsType.Unknown:
+    default:
+      return ts.unknown()
+  }
+}
+
+/**
  * Result of resolving a field's type
  */
 export interface ResolvedType {
@@ -104,7 +132,7 @@ export interface ResolvedType {
  */
 export function resolveFieldType(
   field: Field,
-  enums: Iterable<EnumDef>,
+  enums: Iterable<EnumEntity>,
   extensions: readonly ExtensionInfo[]
 ): ResolvedType {
   const pgType = field.pgAttribute.getType()
