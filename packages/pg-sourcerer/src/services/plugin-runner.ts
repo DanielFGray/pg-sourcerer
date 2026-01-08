@@ -211,7 +211,7 @@ const topoSort = (
   plugins: readonly ConfiguredPlugin[],
   graph: Graph.DirectedGraph<string, void>,
 ) => {
-  const byName = Object.groupBy(plugins, cp => cp.plugin.name);
+  const byName = Arr.groupBy(plugins, cp => cp.plugin.name);
 
   return Effect.if(Graph.isAcyclic(graph), {
     onTrue: () =>

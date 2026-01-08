@@ -1,5 +1,52 @@
 # Agent Notes for pg-sourcerer
 
+## Git Branching Strategy
+
+**Work on `develop`, release to `main`.**
+
+- Main worktree stays on `develop` branch for day-to-day work
+- CI runs tests on PRs and main pushes
+- CI publishes to npm on every main push (version must be bumped first)
+
+### Releasing to main
+
+```bash
+# 1. Bump version in packages/pg-sourcerer
+cd packages/pg-sourcerer && npm version patch  # or minor/major
+
+# 2. Commit and push to develop
+git add -A && git commit -m "chore: bump version" && git push
+
+# 3. Merge to main (use worktree to avoid branch switching issues with beads)
+git worktree add .worktrees/main main 2>/dev/null || true
+git -C .worktrees/main merge develop -m "Release $(npm pkg get version -w packages/pg-sourcerer | tr -d '\"')"
+git -C .worktrees/main push
+```
+
+### Syncing main→develop
+
+When changes are made directly to main (hotfixes, CI updates, etc.):
+
+```bash
+# Use the main worktree to merge back to develop
+git worktree add .worktrees/main main 2>/dev/null || true
+git -C .worktrees/main checkout develop
+git -C .worktrees/main merge main -m "Merge main into develop"
+git -C .worktrees/main push
+git -C .worktrees/main checkout main
+```
+
+Or simpler - merge from main worktree if beads cooperates:
+```bash
+git merge origin/main -m "Merge main into develop"
+```
+
+### Why worktrees?
+
+Beads daemon conflicts with branch switching - it modifies `.beads/issues.jsonl` continuously, causing checkout failures. Using worktrees avoids this by keeping each branch in a separate directory.
+
+**Note:** Beads also creates its own worktree at `.git/beads-worktrees/develop` for syncing. Don't remove it - beads will recreate it.
+
 ## Tooling
 
 - **Bun** - Runtime and package manager. Never use `npm` or `npx`.
