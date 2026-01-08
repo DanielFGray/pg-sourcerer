@@ -202,6 +202,7 @@ export {
 export { typesPlugin } from "./plugins/types.js"
 export { zodPlugin } from "./plugins/zod.js"
 export { effectModelPlugin } from "./plugins/effect-model.js"
+export { sqlQueriesPlugin } from "./plugins/sql-queries.js"
 
 // Generate orchestration
 export {

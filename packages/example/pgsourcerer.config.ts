@@ -1,5 +1,5 @@
 // @ts-check
-import { effectModelPlugin, typesPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
+import { effectModelPlugin, typesPlugin, sqlQueriesPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
 
 /**
  * pg-sourcerer configuration for the example project
@@ -30,5 +30,7 @@ export default defineConfig({
     typesPlugin({ outputDir: "types" }),
     // Generate Effect Model classes
     effectModelPlugin({ outputDir: "models" }),
+    // Generate SQL query functions
+    sqlQueriesPlugin({ outputDir: "queries" }),
   ],
 })
