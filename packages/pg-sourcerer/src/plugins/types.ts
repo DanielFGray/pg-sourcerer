@@ -4,7 +4,7 @@
  * Generates Row, Insert, Update, and Patch interfaces for each entity.
  * Supports user-configured type overrides via TypeHints.
  */
-import { Schema as S } from "effect"
+import { Option, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
@@ -237,9 +237,9 @@ function collectUsedEnums(
       if (isEnumType(field)) {
         const pgTypeName = getPgTypeName(field)
         if (pgTypeName) {
-          const enumEntity = findEnumByPgName(enums, pgTypeName)
-          if (enumEntity) {
-            usedEnums.add(enumEntity.name)
+          const enumEntityOpt = findEnumByPgName(enums, pgTypeName)
+          if (Option.isSome(enumEntityOpt)) {
+            usedEnums.add(enumEntityOpt.value.name)
           }
         }
       }

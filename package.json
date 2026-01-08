@@ -2,7 +2,8 @@
   "name": "pg-sourcerer-monorepo",
   "private": true,
   "scripts": {
-    "dev": "bun run --filter=pgsourcerer-demo dev",
+    "prestart": "cd packages/pg-sourcerer && bun run build",
+    "start": "cd packages/example && bun start",
     "test": " cd packages/pg-sourcerer && bun run test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"

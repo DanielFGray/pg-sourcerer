@@ -1,0 +1,21 @@
+id: require-option-type
+severity: error
+message: "Use Option.Option<T> instead of T | undefined"
+language: TypeScript
+rule:
+  kind: union_type
+  has:
+    regex: "^undefined$"
+note: |
+  Effect uses Option.Option<T> to represent optional values.
+  Using T | undefined is discouraged because:
+  1. Option provides better type-safety and explicit handling of absence
+  2. Option integrates better with Effect's functional APIs
+  3. Option.none() is more explicit than undefined
+
+  Replace:
+    foo: string | undefined
+  With:
+    foo: Option.Option<string>
+
+  Import from: import { Option } from "effect"

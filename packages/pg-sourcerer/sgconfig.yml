@@ -1,0 +1,10 @@
+sgconfig:
+  # Root configuration for ast-grep
+  # pg-sourcerer monorepo
+
+ruleDirs:
+  - rules
+
+supported_languages:
+  - TypeScript
+  - tsx
