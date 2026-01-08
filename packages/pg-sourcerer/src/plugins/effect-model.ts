@@ -13,13 +13,13 @@ import type { FileNameContext } from "../services/plugin.js";
 import { inflect } from "../services/inflection.js";
 import { TsType } from "../services/pg-types.js";
 import type { EnumLookupResult } from "../services/pg-types.js";
-import type { Field, TableEntity, EnumEntity, ExtensionInfo } from "../ir/semantic-ir.js";
-import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js";
+import type { Field, TableEntity, EnumEntity, ExtensionInfo, CompositeEntity } from "../ir/semantic-ir.js";
+import { getEnumEntities, getTableEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
 import { isUuidType, isDateType, isBigIntType, resolveFieldType } from "../lib/field-utils.js";
 
-const { exp, obj } = conjure;
+const { ts, exp, obj } = conjure;
 
 // ============================================================================
 // Configuration
@@ -30,6 +30,8 @@ const EffectModelPluginConfig = S.Struct({
   outputDir: S.String,
   /** How to handle enums: "inline" or "separate" file */
   enumStyle: S.optional(S.Union(S.Literal("inline"), S.Literal("separate"))),
+  /** Export inferred types for composite schemas (default: true) */
+  exportTypes: S.optional(S.Boolean),
 });
 
 type EffectModelPluginConfig = S.Schema.Type<typeof EffectModelPluginConfig>;
@@ -283,6 +285,62 @@ const generateEnumStatement = (enumEntity: EnumEntity): SymbolStatement =>
   );
 
 // ============================================================================
+// Composite Type Generation
+// ============================================================================
+
+interface CompositeFieldContext {
+  readonly enums: readonly EnumEntity[];
+  readonly extensions: readonly ExtensionInfo[];
+}
+
+/**
+ * Build the base Effect Schema type for a composite field (no Model wrappers)
+ */
+const buildCompositeFieldSchema = (field: Field, ctx: CompositeFieldContext): n.Expression => {
+  const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
+
+  if (resolved.enumDef) return buildEnumSchema(resolved.enumDef);
+  if (isUuidType(field)) return conjure.id("S").prop("UUID").build();
+  if (isDateType(field)) return conjure.id("S").prop("Date").build();
+  if (isBigIntType(field)) return conjure.id("S").prop("BigInt").build();
+
+  return tsTypeToEffectSchema(resolved.tsType);
+};
+
+/**
+ * Generate: export const CompositeName = S.Struct({ ... })
+ * Optionally: export type CompositeName = S.Schema.Type<typeof CompositeName>
+ */
+const generateCompositeStatements = (
+  composite: CompositeEntity,
+  ctx: CompositeFieldContext,
+  exportTypes: boolean,
+): readonly SymbolStatement[] => {
+  // Build S.Struct({ ... }) for composite fields
+  const fieldsObj = composite.fields.reduce((builder, field) => {
+    let schema = buildCompositeFieldSchema(field, ctx);
+    schema = wrapIf(schema, field.isArray, wrapArray);
+    schema = wrapIf(schema, field.nullable, wrapNullable);
+    return builder.prop(field.name, schema);
+  }, obj());
+
+  const structExpr = conjure.id("S").method("Struct", [fieldsObj.build()]).build();
+  const symbolCtx = { capability: "models:effect", entity: composite.name };
+
+  const schemaStatement = exp.const(composite.name, symbolCtx, structExpr);
+
+  if (!exportTypes) {
+    return [schemaStatement];
+  }
+
+  // Generate: export type CompositeName = S.Schema.Type<typeof CompositeName>
+  const inferType = ts.qualifiedRefWithParams(["S", "Schema", "Type"], [ts.typeof(composite.name)]);
+  const typeStatement = exp.type(composite.name, symbolCtx, inferType);
+
+  return [schemaStatement, typeStatement];
+};
+
+// ============================================================================
 // File Emission Helpers
 // ============================================================================
 
@@ -298,7 +356,7 @@ const buildFileNameContext = (
       ? I
       : never
     : never,
-  entity: TableEntity | EnumEntity,
+  entity: TableEntity | EnumEntity | CompositeEntity,
 ): FileNameContext => ({
   entityName,
   pgName,
@@ -380,6 +438,32 @@ export const effectModelPlugin = definePlugin({
           .import({ kind: "package", names: ["Model"], from: "@effect/sql" })
           .import({ kind: "package", names: ["Schema as S"], from: "effect" })
           .ast(conjure.symbolProgram(generateModelStatement(entity, className, fieldCtx)))
+          .emit();
+      });
+
+    // Generate composite type schema files
+    const compositeFieldCtx: CompositeFieldContext = {
+      enums: enumEntities,
+      extensions: ctx.ir.extensions,
+    };
+
+    getCompositeEntities(ctx.ir)
+      .filter(composite => composite.tags.omit !== true)
+      .forEach(composite => {
+        const fileNameCtx = buildFileNameContext(
+          composite.name,
+          composite.pgName,
+          composite.schemaName,
+          ctx.inflection,
+          composite,
+        );
+        const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
+        const exportTypes = config.exportTypes ?? true;
+
+        ctx
+          .file(filePath)
+          .import({ kind: "package", names: ["Schema as S"], from: "effect" })
+          .ast(conjure.symbolProgram(...generateCompositeStatements(composite, compositeFieldCtx, exportTypes)))
           .emit();
       });
   },

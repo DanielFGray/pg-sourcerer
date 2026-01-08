@@ -346,4 +346,63 @@ describe("ArkType Plugin", () => {
       })
     )
   })
+
+  describe("composite type generation", () => {
+    it.effect("generates ArkType schemas for composite types", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* arktypePlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        // Check for composite type file (UsernameSearch or TagSearchResult from example DB)
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        expect(compositeFile?.content).toContain("type({")
+      })
+    )
+
+    it.effect("generates inferred types for composites when exportTypes is true", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* arktypePlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        expect(compositeFile?.content).toContain(".infer")
+      })
+    )
+
+    it.effect("registers symbols for composite schemas", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* arktypePlugin.plugin.run({ outputDir: "schemas", exportTypes: true })
+          .pipe(Effect.provide(testLayer))
+
+        const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
+        const allSymbols = symbols.getAll()
+
+        // Should have registered composite schema
+        const compositeSymbol = allSymbols.find(
+          s => (s.entity === "UsernameSearch" || s.entity === "TagSearchResult") && !s.isType
+        )
+        expect(compositeSymbol).toBeDefined()
+        expect(compositeSymbol?.capability).toBe("schemas:arktype")
+      })
+    )
+  })
 })
