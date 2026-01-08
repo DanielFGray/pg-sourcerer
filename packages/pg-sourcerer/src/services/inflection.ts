@@ -5,7 +5,7 @@
  * Users configure with simple string→string functions that compose naturally.
  */
 import { Context, Layer, String as Str } from "effect"
-import type { PgAttribute, PgClass, PgProc, PgType } from "@pg-sourcerer/pg-introspection"
+import type { PgAttribute, PgClass, PgProc, PgType } from "@danielfgray/pg-introspection"
 import type { SmartTags, ShapeKind } from "../ir/index.js"
 
 // ============================================================================

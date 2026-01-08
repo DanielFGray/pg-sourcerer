@@ -8,7 +8,7 @@ import {
   inflect,
   composeInflection,
 } from "../services/inflection.js"
-import type { PgAttribute, PgClass, PgType } from "@pg-sourcerer/pg-introspection"
+import type { PgAttribute, PgClass, PgType } from "@danielfgray/pg-introspection"
 import type { SmartTags } from "../ir/index.js"
 
 // Helper to create minimal mock objects

@@ -1,5 +1,5 @@
 {
-  "name": "@pg-sourcerer/pg-introspection",
+  "name": "@danielfgray/pg-introspection",
   "version": "1.0.0",
   "description": "Strongly typed PostgreSQL introspection library (fork with opclass support)",
   "type": "module",
