@@ -892,6 +892,10 @@ const ts = {
         return sig
       })
     ),
+
+  /** Indexed access type: `T["key"]` or `T[K]` */
+  indexedAccess: (objectType: n.TSType, indexType: n.TSType) =>
+    b.tsIndexedAccessType(toTSType(objectType), toTSType(indexType)),
 } as const
 
 // =============================================================================

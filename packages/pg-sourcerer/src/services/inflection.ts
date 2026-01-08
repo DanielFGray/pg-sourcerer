@@ -338,14 +338,19 @@ export const InflectionLive = makeInflectionLayer()
 /**
  * Classic inflection config - matches the "opinionated" defaults of many ORMs:
  * - Entity names: singularize + PascalCase (users → User)
- * - Field names: camelCase (created_at → createdAt)
+ * - Field names: identity (preserved as snake_case to match DB)
  * - Enum names: PascalCase (user_status → UserStatus)
  * - Shape suffixes: capitalize (row → Row)
  * - Relation names: camelCase
+ * 
+ * Note: Field names are NOT transformed to camelCase by default because
+ * the generated types would not match what the database actually returns.
+ * If you use a Kysely plugin that transforms column names, you can override
+ * fieldName in your config.
  */
 export const classicInflectionConfig: InflectionConfig = {
   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
-  fieldName: inflect.camelCase,
+  // fieldName: identity (default) - preserves snake_case from database
   enumName: inflect.pascalCase,
   shapeSuffix: inflect.capitalize,
   relationName: inflect.camelCase,

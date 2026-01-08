@@ -5,11 +5,12 @@ import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import { definePlugin } from "../services/plugin.js";
 import type { FileNameContext } from "../services/plugin.js";
-import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR } from "../ir/semantic-ir.js";
+import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation } from "../ir/semantic-ir.js";
 import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../lib/conjure.js";
 import { hex, type SqlStyle, type QueryParts } from "../lib/hex.js";
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js";
+import { inflect } from "../services/inflection.js";
 
 const { ts, b, param } = conjure;
 
@@ -47,6 +48,55 @@ const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TS
   const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions);
   return resolved.enumDef ? ts.ref(resolved.enumDef.name) : tsTypeToAst(resolved.tsType);
 };
+
+// ============================================================================
+// FK Semantic Naming Helpers
+// ============================================================================
+
+/**
+ * Find a belongsTo relation that uses the given column as its local FK column.
+ * For single-column indexes only.
+ */
+const findRelationForColumn = (
+  entity: TableEntity,
+  columnName: string
+): Relation | undefined =>
+  entity.relations.find(
+    r => r.kind === "belongsTo" && r.columns.length === 1 && r.columns[0]?.local === columnName
+  );
+
+/**
+ * Derive semantic name for an FK-based lookup.
+ * Priority: @fieldName tag → column minus _id suffix → target entity name
+ */
+const deriveSemanticName = (relation: Relation, columnName: string): string => {
+  // 1. Check for @fieldName smart tag
+  if (relation.tags.fieldName && typeof relation.tags.fieldName === "string") {
+    return relation.tags.fieldName;
+  }
+
+  // 2. Strip common FK suffixes from column name
+  const suffixes = ["_id", "_fk", "Id", "Fk"];
+  for (const suffix of suffixes) {
+    if (columnName.endsWith(suffix)) {
+      const stripped = columnName.slice(0, -suffix.length);
+      if (stripped.length > 0) return stripped;
+    }
+  }
+
+  // 3. Fall back to target entity name (lowercased first char)
+  const target = relation.targetEntity;
+  return target.charAt(0).toLowerCase() + target.slice(1);
+};
+
+/**
+ * Capitalize first letter for use in function names
+ */
+/**
+ * Convert to PascalCase for use in function names.
+ * Handles snake_case (created_at → CreatedAt) and regular strings.
+ */
+const toPascalCase = (s: string): string => inflect.pascalCase(s);
 
 // ============================================================================
 // CRUD Function Generators
@@ -196,16 +246,33 @@ const shouldGenerateLookup = (index: IndexDef): boolean =>
   index.method !== "gin" &&
   index.method !== "gist";
 
-/** Generate a function name for an index-based lookup */
-const generateLookupName = (entity: TableEntity, index: IndexDef): string => {
-  const entitySingular = entity.name.replace(/s$/, "");
-  const byPart = index.columns
-    .map(col => `By${col.charAt(0).toUpperCase() + col.slice(1)}`)
-    .join("");
-  return `get${entitySingular}${byPart}`;
+/**
+ * Generate a function name for an index-based lookup.
+ * Uses semantic naming when the column corresponds to an FK relation.
+ */
+const generateLookupName = (
+  entity: TableEntity,
+  index: IndexDef,
+  relation: Relation | undefined
+): string => {
+  const isUnique = index.isUnique || index.isPrimary;
+  const entityName = isUnique
+    ? entity.name.replace(/s$/, "") // singular for unique
+    : entity.name.replace(/s$/, "") + "s"; // plural for non-unique
+
+  // Use semantic name if FK relation exists, otherwise fall back to column name
+  const columnName = index.columnNames[0]!;
+  const byName = relation
+    ? deriveSemanticName(relation, columnName)
+    : index.columns[0]!;
+
+  return `get${entityName}By${toPascalCase(byName)}`;
 };
 
-/** Generate a lookup function for a single-column index */
+/**
+ * Generate a lookup function for a single-column index.
+ * Uses semantic parameter naming when the column corresponds to an FK relation.
+ */
 const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Statement => {
   const { entity, sqlStyle } = ctx;
   const rowType = entity.shapes.row.name;
@@ -214,12 +281,29 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
   const fieldName = field?.name ?? index.columns[0]!;
   const isUnique = index.isUnique || index.isPrimary;
 
+  // Check if this index column corresponds to an FK relation
+  const relation = findRelationForColumn(entity, columnName);
+
+  // Use semantic param name if FK relation exists, otherwise use field name
+  const paramName = relation
+    ? deriveSemanticName(relation, columnName)
+    : fieldName;
+
+  // For semantic naming, use indexed access type (Post["userId"])
+  // For regular naming, use Pick<Post, "fieldName">
+  const useSemanticNaming = relation !== undefined && paramName !== fieldName;
+
   const parts: QueryParts = {
     templateParts: [`select * from ${entity.schemaName}.${entity.pgName} where ${columnName} = `, ""],
-    params: [b.identifier(fieldName)],
+    params: [b.identifier(paramName)],
   };
 
-  const fnName = generateLookupName(entity, index);
+  const fnName = generateLookupName(entity, index, relation);
+
+  // Build the parameter - use indexed access type for semantic naming
+  const paramNode = useSemanticNaming
+    ? param.typed(paramName, ts.indexedAccess(ts.ref(rowType), ts.literal(fieldName)))
+    : param.pick([fieldName], rowType);
 
   if (isUnique) {
     // Extract first row for unique lookups
@@ -227,7 +311,7 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
     const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
     return hex.exportFn(
-      hex.asyncFn(fnName, [param.pick([fieldName], rowType)], [
+      hex.asyncFn(fnName, [paramNode], [
         varDecl,
         b.returnStatement(b.identifier("result")),
       ]),
@@ -236,7 +320,7 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
 
   // Non-unique: return all matching rows
   return hex.exportFn(
-    hex.asyncFn(fnName, [param.pick([fieldName], rowType)], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType)))),
+    hex.asyncFn(fnName, [paramNode], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType)))),
   );
 };
 
@@ -247,7 +331,9 @@ const generateLookupFunctions = (ctx: GenerationContext): readonly n.Statement[]
   return ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary)
     .filter(index => {
-      const name = generateLookupName(ctx.entity, index);
+      const columnName = index.columnNames[0]!;
+      const relation = findRelationForColumn(ctx.entity, columnName);
+      const name = generateLookupName(ctx.entity, index, relation);
       if (seen.has(name)) return false;
       seen.add(name);
       return true;
