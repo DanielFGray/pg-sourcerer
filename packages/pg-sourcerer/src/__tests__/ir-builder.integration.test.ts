@@ -82,13 +82,8 @@ describe("IR Builder Integration", () => {
         const users = getTable(result, "User")
         expect(users).toBeDefined()
 
-        // Tables should have all 4 shapes
+        // Row shape has all fields (visitor has SELECT on table)
         expect(users?.shapes.row).toBeDefined()
-        expect(users?.shapes.insert).toBeDefined()
-        expect(users?.shapes.update).toBeDefined()
-        expect(users?.shapes.patch).toBeDefined()
-
-        // Row shape should have expected fields
         const rowFields = users?.shapes.row.fields ?? []
         const fieldNames = rowFields.map((f) => f.name)
 
@@ -101,6 +96,21 @@ describe("IR Builder Integration", () => {
         expect(fieldNames).toContain("isVerified") // camelCase from is_verified
         expect(fieldNames).toContain("createdAt")
         expect(fieldNames).toContain("updatedAt")
+
+        // Insert shape is undefined because visitor has no INSERT permission on users table
+        expect(users?.shapes.insert).toBeUndefined()
+
+        // Update shape only has fields visitor can UPDATE (column-level grants)
+        // visitor has UPDATE on: username, name, avatar_url, bio
+        expect(users?.shapes.update).toBeDefined()
+        const updateFields = users?.shapes.update?.fields ?? []
+        const updateFieldNames = updateFields.map((f) => f.name)
+        expect(updateFieldNames).toContain("username")
+        expect(updateFieldNames).toContain("name")
+        expect(updateFieldNames).toContain("avatarUrl")
+        expect(updateFieldNames).toContain("bio")
+        expect(updateFieldNames).not.toContain("id") // no UPDATE permission
+        expect(updateFieldNames).not.toContain("role") // no UPDATE permission
       })
     )
 
@@ -108,29 +118,33 @@ describe("IR Builder Integration", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
-        const users = getTable(result, "User")
-        const rowFields = users?.shapes.row.fields ?? []
-        const insertFields = users?.shapes.insert?.fields ?? []
+        const posts = getTable(result, "Post")
+        const rowFields = posts?.shapes.row.fields ?? []
+        
+        // visitor has SELECT on posts, INSERT/UPDATE only on body column
+        // So insert shape should only have body
+        const insertFields = posts?.shapes.insert?.fields ?? []
+        expect(insertFields.length).toBe(1)
 
-        // id is NOT NULL with default, so:
-        // - row: not nullable, not optional
-        // - insert: optional (has default)
+        // body is NOT NULL without default - required for insert
+        const bodyRow = rowFields.find((f) => f.name === "body")
+        const bodyInsert = insertFields.find((f) => f.name === "body")
+        expect(bodyRow?.nullable).toBe(false)
+        expect(bodyRow?.optional).toBe(false)
+        expect(bodyInsert?.optional).toBe(false) // required for insert (NOT NULL, no default)
+        expect(bodyInsert).toBeDefined()
+
+        // id is NOT NULL with default - visible in row shape but not in insert (no permission)
         const idRow = rowFields.find((f) => f.name === "id")
-        const idInsert = insertFields.find((f) => f.name === "id")
         expect(idRow?.nullable).toBe(false)
         expect(idRow?.optional).toBe(false)
-        expect(idInsert?.optional).toBe(true) // has default
+        // id is not in insert shape because visitor has no INSERT permission on id column
+        const idInsert = insertFields.find((f) => f.name === "id")
+        expect(idInsert).toBeUndefined()
 
-        // name is nullable (no NOT NULL constraint)
-        const nameRow = rowFields.find((f) => f.name === "name")
-        expect(nameRow?.nullable).toBe(true)
-        expect(nameRow?.optional).toBe(true)
-
-        // username is NOT NULL without default
-        const usernameRow = rowFields.find((f) => f.name === "username")
-        const usernameInsert = insertFields.find((f) => f.name === "username")
-        expect(usernameRow?.nullable).toBe(false)
-        expect(usernameInsert?.optional).toBe(false) // required for insert
+        // user_id is also not in insert shape - visitor has no INSERT permission
+        const userIdInsert = insertFields.find((f) => f.name === "userId")
+        expect(userIdInsert).toBeUndefined()
       })
     )
 
@@ -197,9 +211,9 @@ describe("IR Builder Integration", () => {
         if (recentPosts) {
           expect(recentPosts.kind).toBe("view")
           expect(recentPosts.shapes.row).toBeDefined()
+          // Views don't have insert/update shapes
           expect(recentPosts.shapes.insert).toBeUndefined()
           expect(recentPosts.shapes.update).toBeUndefined()
-          expect(recentPosts.shapes.patch).toBeUndefined()
         }
       })
     )
@@ -250,15 +264,17 @@ describe("IR Builder Integration", () => {
       })
     )
 
-    it.effect("patch shape makes all fields optional", () =>
+    // Note: patch shape no longer exists - update shape serves the same purpose
+    // (all fields optional). This test verifies update shape behavior instead.
+    it.effect("update shape makes all fields optional", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
         const users = getTable(result, "User")
-        const patchFields = users?.shapes.patch?.fields ?? []
+        const updateFields = users?.shapes.update?.fields ?? []
 
-        // All fields in patch shape should be optional
-        for (const field of patchFields) {
+        // All fields in update shape should be optional
+        for (const field of updateFields) {
           expect(field.optional).toBe(true)
         }
       })
@@ -526,7 +542,7 @@ describe("IR Builder Integration", () => {
         if (composite && composite.fields.length > 0) {
           const field = composite.fields[0]!
           expect(field.name).toBeDefined()
-          expect(field.attributeName).toBeDefined()
+          expect(field.columnName).toBeDefined() // Field uses columnName, not attributeName
           expect(field.pgAttribute).toBeDefined()
           expect(typeof field.nullable).toBe("boolean")
           expect(typeof field.isArray).toBe("boolean")
