@@ -12,7 +12,7 @@ import { NodeFileSystem, NodePath, NodeCommandExecutor } from "@effect/platform-
 
 import { generate } from "../generate.js"
 import { ConfigLoaderService } from "../services/config-loader.js"
-import { DatabaseIntrospectionService, DatabaseIntrospectionLive } from "../services/introspection.js"
+import { DatabaseIntrospectionService } from "../services/introspection.js"
 import { definePlugin } from "../services/plugin.js"
 import { typesPlugin } from "../plugins/types.js"
 import type { ResolvedConfig } from "../config.js"
@@ -24,6 +24,7 @@ import {
   CapabilityNotSatisfied,
   CapabilityConflict,
 } from "../errors.js"
+import { loadIntrospectionFixture } from "./fixtures/index.js"
 
 // Platform layers - NodeCommandExecutor depends on FileSystem, so provide it
 const PlatformLayer = Layer.mergeAll(
@@ -36,10 +37,10 @@ const PlatformLayer = Layer.mergeAll(
 const QuietLogger = Logger.minimumLogLevel(LogLevel.None)
 
 // Real database introspection layer (for plugin tests that need the real DB)
-const IntrospectionLayer = Layer.effect(
-  DatabaseIntrospectionService,
-  DatabaseIntrospectionLive
-)
+// Now uses fixture - no DB connection required
+const IntrospectionStubLayer = Layer.succeed(DatabaseIntrospectionService, {
+  introspect: () => Effect.succeed(loadIntrospectionFixture()),
+})
 
 /**
  * Create a stub ConfigLoader that returns the given config
@@ -226,7 +227,7 @@ layer(DatabaseErrorTestLayer)("Database Error Handling", (it) => {
 // Plugin Error Tests - Need real database for introspection
 // ============================================================================
 
-const PluginTestLayer = Layer.mergeAll(PlatformLayer, IntrospectionLayer)
+const PluginTestLayer = Layer.mergeAll(PlatformLayer, IntrospectionStubLayer)
 
 layer(PluginTestLayer)("Plugin Error Handling", (it) => {
   it.effect("returns PluginExecutionFailed when plugin throws", () =>
