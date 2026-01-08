@@ -4,8 +4,9 @@
   "scripts": {
     "prestart": "cd packages/pg-sourcerer && bun run build",
     "start": "cd packages/example && bun start",
+    "generate": " cd packages/example && bun run generate",
     "test": " cd packages/pg-sourcerer && bun run test",
-    "dev": "mprocs 'bun run build:watch'",
+    "dev": "mprocs 'bun run build:watch' 'bun run generate'",
     "build:watch": "cd packages/pg-sourcerer && bun run build:watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
