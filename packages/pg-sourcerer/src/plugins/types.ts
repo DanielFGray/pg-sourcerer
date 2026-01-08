@@ -4,7 +4,7 @@
  * Generates Row, Insert, Update, and Patch interfaces for each entity.
  * Supports user-configured type overrides via TypeHints.
  */
-import { Option, Schema as S } from "effect"
+import { Array as Arr, Option, pipe, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
@@ -102,21 +102,24 @@ const groupImportsByPath = (imports: readonly CustomImportInfo[]): Map<string, S
   }, new Map<string, Set<string>>())
 
 /** Collect enum names used by fields */
-const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> =>
-  fields
+const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> => {
+  const enumNames = fields
     .filter(isEnumType)
-    .reduce((acc, field) => {
+    .flatMap(field => {
       const pgTypeName = getPgTypeName(field)
-      if (pgTypeName) {
-        const enumOpt = findEnumByPgName(enums, pgTypeName)
-        if (Option.isSome(enumOpt)) acc.add(enumOpt.value.name)
-      }
-      return acc
-    }, new Set<string>())
+      if (!pgTypeName) return []
+      return pipe(
+        findEnumByPgName(enums, pgTypeName),
+        Option.map(e => e.name),
+        Option.toArray
+      )
+    })
+  return new Set(enumNames)
+}
 
 /** Build enum import refs from used enum names */
-const buildEnumImports = (usedEnums: Set<string>): ImportRef[] =>
-  [...usedEnums].map(enumName => ({
+const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
+  Arr.fromIterable(usedEnums).map(enumName => ({
     kind: "symbol" as const,
     ref: { capability: "types", entity: enumName },
   }))
@@ -137,24 +140,31 @@ const resolveFieldType = (field: Field, ctx: FieldContext): ResolvedFieldType =>
   const tsTypeHint = ctx.typeHints.getHint<string>(fieldMatch, "tsType")
 
   // 1. Check TypeHints first (highest priority)
-  if (Option.isSome(tsTypeHint)) {
-    const importPath = ctx.typeHints.getHint<string>(fieldMatch, "import")
-    const baseType = ts.ref(tsTypeHint.value)
-    return {
-      type: wrapArray(baseType, field.isArray),
-      customImport: Option.isSome(importPath)
-        ? { typeName: tsTypeHint.value, importPath: importPath.value }
-        : undefined,
-    }
-  }
-
-  // 2. Use shared field type resolution
-  const resolved = resolveFieldBaseType(field, ctx.enums, ctx.extensions)
-  const baseType = resolved.enumDef
-    ? ts.ref(resolved.enumDef.name)
-    : tsTypeToAst(resolved.tsType)
-
-  return { type: wrapArray(baseType, field.isArray) }
+  return pipe(
+    tsTypeHint,
+    Option.match({
+      onSome: typeName => {
+        const importPath = ctx.typeHints.getHint<string>(fieldMatch, "import")
+        const baseType = ts.ref(typeName)
+        return {
+          type: wrapArray(baseType, field.isArray),
+          customImport: pipe(
+            importPath,
+            Option.map(path => ({ typeName, importPath: path })),
+            Option.getOrUndefined
+          ),
+        }
+      },
+      onNone: () => {
+        // 2. Use shared field type resolution
+        const resolved = resolveFieldBaseType(field, ctx.enums, ctx.extensions)
+        const baseType = resolved.enumDef
+          ? ts.ref(resolved.enumDef.name)
+          : tsTypeToAst(resolved.tsType)
+        return { type: wrapArray(baseType, field.isArray) }
+      },
+    })
+  )
 }
 
 // ============================================================================
@@ -168,18 +178,20 @@ const generateShapeStatement = (
   shapeKind: "row" | "insert" | "update" | "patch",
   ctx: FieldContext
 ): GenerationResult => {
-  const customImports: CustomImportInfo[] = []
+  const resolvedFields = shape.fields.map(field => ({
+    field,
+    resolved: resolveFieldType(field, ctx),
+  }))
 
-  const properties = shape.fields.map(field => {
-    const resolved = resolveFieldType(field, ctx)
-    if (resolved.customImport) customImports.push(resolved.customImport)
+  const properties = resolvedFields.map(({ field, resolved }) => ({
+    name: field.name,
+    type: wrapNullable(resolved.type, field.nullable),
+    optional: field.optional || undefined,
+  }))
 
-    return {
-      name: field.name,
-      type: wrapNullable(resolved.type, field.nullable),
-      optional: field.optional || undefined,
-    }
-  })
+  const customImports = Arr.filterMap(resolvedFields, ({ resolved }) =>
+    Option.fromNullable(resolved.customImport)
+  )
 
   const statement = exp.interface(
     shape.name,
@@ -227,18 +239,20 @@ const generateCompositeStatement = (
   composite: CompositeEntity,
   ctx: FieldContext
 ): GenerationResult => {
-  const customImports: CustomImportInfo[] = []
+  const resolvedFields = composite.fields.map(field => ({
+    field,
+    resolved: resolveFieldType(field, ctx),
+  }))
 
-  const properties = composite.fields.map(field => {
-    const resolved = resolveFieldType(field, ctx)
-    if (resolved.customImport) customImports.push(resolved.customImport)
+  const properties = resolvedFields.map(({ field, resolved }) => ({
+    name: field.name,
+    type: wrapNullable(resolved.type, field.nullable),
+    optional: field.optional || undefined,
+  }))
 
-    return {
-      name: field.name,
-      type: wrapNullable(resolved.type, field.nullable),
-      optional: field.optional || undefined,
-    }
-  })
+  const customImports = Arr.filterMap(resolvedFields, ({ resolved }) =>
+    Option.fromNullable(resolved.customImport)
+  )
 
   const statement = exp.interface(
     composite.name,
@@ -259,13 +273,13 @@ const addCustomImports = (
   imports: readonly CustomImportInfo[]
 ): void => {
   const grouped = groupImportsByPath(imports)
-  grouped.forEach((typeNames, importPath) => {
+  for (const [importPath, typeNames] of grouped) {
     fileBuilder.import({
       kind: "relative" as const,
       types: [...typeNames],
       from: importPath,
     })
-  })
+  }
 }
 
 // ============================================================================
