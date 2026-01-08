@@ -61,7 +61,7 @@ This runs Docker, initializes database, applies migrations, and post-migration h
 
 ## Architecture Overview
 
-See `/ARCHITECTURE.md` in the repo root for the full plan.
+See `./docs/ARCHITECTURE.md` in the repo root for the full plan.
 
 ### Core Principle
 **The core plugin system shouldn't know what it's generating.** Core orchestrates plugins that declare capabilities and dependencies.
@@ -169,7 +169,7 @@ packages/pg-sourcerer/src/
 
 ## ⚠️ Effect Code: Read the Style Guide First
 
-**MANDATORY**: Read `/EFFECT_STYLE.md` before writing or modifying Effect code.
+**MANDATORY**: Read `./docs/EFFECT_STYLE.md` before writing or modifying Effect code.
 
 Effect has specific idioms that differ from typical TypeScript. The style guide covers:
 - Method `.pipe()` vs function `pipe()` (critical distinction)
@@ -178,7 +178,7 @@ Effect has specific idioms that differ from typical TypeScript. The style guide 
 - Anti-patterns and how to fix them
 - Service and error definitions
 
-### Quick Rules (see EFFECT_STYLE.md for full details)
+### Quick Rules (see ./docs/EFFECT_STYLE.md for full details)
 
 ```typescript
 // ✅ Effect values: method-style .pipe()
@@ -200,7 +200,7 @@ import { Array as A } from "effect"  // NO
 2. **Use Effect patterns** - Services via Context.Tag, errors via TaggedError
 3. **Think functionally** - Data transformations, not imperative steps
 4. **Test with @effect/vitest** - Use `it.effect` and `layer()`
-5. **Check ARCHITECTURE.md** - For design decisions and open questions
+5. **Check ./docs/ARCHITECTURE.md** - For design decisions and open questions
 6. **Query Context7** - For Effect-ts API questions
 7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
 
