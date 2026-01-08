@@ -533,3 +533,101 @@ export function getCompositeEntities(ir: SemanticIR): CompositeEntity[] {
 export function getFunctionEntities(ir: SemanticIR): FunctionEntity[] {
   return [...ir.entities.values()].filter(isFunctionEntity)
 }
+
+// ============================================================================
+// Reverse Relations (hasMany/hasOne from belongsTo)
+// ============================================================================
+
+/**
+ * A reversed relation - represents the "other side" of a belongsTo FK.
+ * 
+ * If orders.user_id → users.id creates a "orders belongsTo users" relation,
+ * the reverse is "users hasMany orders".
+ */
+export interface ReverseRelation {
+  /** The kind of reverse relationship */
+  readonly kind: "hasMany" | "hasOne"
+  /** Entity name that has the FK (the "child" table) */
+  readonly sourceEntity: string
+  /** Original constraint name */
+  readonly constraintName: string
+  /** Column mappings (same as original, but semantically reversed) */
+  readonly columns: readonly {
+    /** Column on the target (this) entity - the referenced column */
+    readonly local: string
+    /** Column on the source entity - the FK column */
+    readonly foreign: string
+  }[]
+  /** Original relation this was derived from */
+  readonly originalRelation: Relation
+}
+
+/**
+ * Get all reverse relations pointing TO this entity.
+ * 
+ * Scans all entities for belongsTo relations targeting the given entity
+ * and returns them as hasMany relations.
+ * 
+ * @example
+ * ```typescript
+ * // If orders.user_id → users.id exists as "orders belongsTo users"
+ * const reverseRels = getReverseRelations(ir, "User")
+ * // Returns: [{ kind: "hasMany", sourceEntity: "Order", ... }]
+ * ```
+ */
+export function getReverseRelations(
+  ir: SemanticIR,
+  entityName: string
+): readonly ReverseRelation[] {
+  const results: ReverseRelation[] = []
+
+  for (const entity of ir.entities.values()) {
+    if (!isTableEntity(entity)) continue
+
+    for (const relation of entity.relations) {
+      if (relation.targetEntity === entityName && relation.kind === "belongsTo") {
+        results.push({
+          // Default to hasMany; could be hasOne if unique constraint on FK
+          // TODO: detect unique constraint on FK columns for hasOne
+          kind: "hasMany",
+          sourceEntity: entity.name,
+          constraintName: relation.constraintName,
+          // Swap local/foreign perspective
+          columns: relation.columns.map((col) => ({
+            local: col.foreign,   // Referenced column becomes "local"
+            foreign: col.local,   // FK column becomes "foreign"
+          })),
+          originalRelation: relation,
+        })
+      }
+    }
+  }
+
+  return results
+}
+
+/**
+ * Get all relations for an entity in both directions.
+ * 
+ * Combines the entity's direct relations (belongsTo) with reverse relations
+ * (hasMany) from other entities pointing to this one.
+ */
+export interface AllRelations {
+  /** Direct relations from this entity (belongsTo) */
+  readonly belongsTo: readonly Relation[]
+  /** Reverse relations to this entity (hasMany) */
+  readonly hasMany: readonly ReverseRelation[]
+}
+
+export function getAllRelations(
+  ir: SemanticIR,
+  entityName: string
+): AllRelations | undefined {
+  const entity = ir.entities.get(entityName)
+  if (!entity || !isTableEntity(entity)) return undefined
+
+  return {
+    belongsTo: entity.relations.filter((r) => r.kind === "belongsTo"),
+    hasMany: getReverseRelations(ir, entityName),
+  }
+}

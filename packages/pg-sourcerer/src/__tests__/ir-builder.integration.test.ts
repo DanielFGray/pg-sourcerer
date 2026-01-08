@@ -10,7 +10,7 @@ import type { Introspection } from "@pg-sourcerer/pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
 import { ClassicInflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
-import { isTableEntity, getEnumEntities, getDomainEntities, getCompositeEntities, isDomainEntity, isCompositeEntity, type TableEntity, type DomainEntity, type CompositeEntity } from "../ir/semantic-ir.js"
+import { isTableEntity, getEnumEntities, getDomainEntities, getCompositeEntities, isDomainEntity, isCompositeEntity, getReverseRelations, getAllRelations, type TableEntity, type DomainEntity, type CompositeEntity } from "../ir/semantic-ir.js"
 import { beforeAll } from "vitest"
 
 // Connection string for example database
@@ -199,6 +199,44 @@ describe("IR Builder Integration", () => {
         const firstColumn = userRelation?.columns[0]
         expect(firstColumn?.local).toBe("user_id")
         expect(firstColumn?.foreign).toBe("id")
+      })
+    )
+
+    it.effect("computes reverse relations (hasMany)", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        // User should have reverse relations from Post (since Post belongsTo User)
+        const userReverseRels = getReverseRelations(result, "User")
+        expect(userReverseRels.length).toBeGreaterThan(0)
+
+        // Find the Post -> User reverse relation
+        const postRelation = userReverseRels.find((r) => r.sourceEntity === "Post")
+        expect(postRelation).toBeDefined()
+        expect(postRelation?.kind).toBe("hasMany")
+        
+        // Column mappings should be swapped
+        const col = postRelation?.columns[0]
+        expect(col?.local).toBe("id")       // Referenced column (on User)
+        expect(col?.foreign).toBe("user_id") // FK column (on Post)
+      })
+    )
+
+    it.effect("getAllRelations returns both directions", () =>
+      Effect.gen(function* () {
+        const result = yield* buildIR(["app_public"])
+
+        // User has no belongsTo (no FKs), but should have hasMany from Post
+        const userRels = getAllRelations(result, "User")
+        expect(userRels).toBeDefined()
+        expect(userRels?.belongsTo).toEqual([])
+        expect(userRels?.hasMany.length).toBeGreaterThan(0)
+
+        // Post has belongsTo User, and may have hasMany (e.g., comments)
+        const postRels = getAllRelations(result, "Post")
+        expect(postRels).toBeDefined()
+        expect(postRels?.belongsTo.length).toBeGreaterThan(0)
+        expect(postRels?.belongsTo.some((r) => r.targetEntity === "User")).toBe(true)
       })
     )
 
