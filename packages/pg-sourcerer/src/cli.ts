@@ -14,6 +14,7 @@ import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Console, Effect } from "effect";
 import { runGenerate, type GenerateError } from "./generate.js";
 import { runInit } from "./init.js";
+import packageJson from "../package.json" with { type: "json" };
 
 // ============================================================================
 // Options
@@ -130,11 +131,66 @@ const initCommand = Command.make("init", {}, () => runInit);
 // Root Command
 // ============================================================================
 
-const rootCommand = Command.make("pgsourcerer", {}, () =>
-  Console.log(
-    "pg-sourcerer - Generate TypeScript from PostgreSQL\n\nRun 'pgsourcerer --help' for usage.",
-  ),
-).pipe(Command.withSubcommands([generateCommand, initCommand]));
+// Root command runs generate by default (which triggers init if no config)
+const rootCommand = Command.make("pgsourcerer", { configPath, outputDir, dryRun }, args => {
+  const opts: {
+    configPath?: string;
+    outputDir?: string;
+    dryRun?: boolean;
+  } = {
+    dryRun: args.dryRun,
+  };
+  if (args.configPath._tag === "Some") {
+    opts.configPath = args.configPath.value;
+  }
+  if (args.outputDir._tag === "Some") {
+    opts.outputDir = args.outputDir.value;
+  }
+
+  const logSuccess = (result: { writeResults: readonly { written: boolean }[] }) => {
+    const written = result.writeResults.filter(r => r.written).length;
+    const total = result.writeResults.length;
+    const suffix = args.dryRun ? " (dry run)" : "";
+    return Console.log(`\n✓ Generated ${args.dryRun ? total : written} files${suffix}`);
+  };
+
+  return Effect.gen(function* () {
+    const result = yield* runGenerate(opts);
+    yield* logSuccess(result);
+  }).pipe(
+    Effect.catchTag("ConfigNotFound", error =>
+      Effect.gen(function* () {
+        yield* Console.error(`\n✗ No config file found`);
+        yield* Console.error(`  Searched: ${error.searchPaths.join(", ")}`);
+        const initResult = yield* runInit.pipe(
+          Effect.map(() => true),
+          Effect.catchAll(() => Effect.succeed(false)),
+        );
+        if (!initResult) {
+          return yield* Effect.fail(error);
+        }
+      }),
+    ),
+    Effect.catchAll((error: GenerateError) =>
+      Effect.gen(function* () {
+        yield* Console.error(`\n✗ Error: ${error._tag}`);
+        yield* Console.error(`  ${error.message}`);
+        if (error._tag === "ConfigInvalid") {
+          for (const e of error.errors) {
+            yield* Console.error(`    - ${e}`);
+          }
+        } else if (error._tag === "PluginConfigInvalid") {
+          for (const e of error.errors) {
+            yield* Console.error(`    - ${e}`);
+          }
+        } else if (error._tag === "CapabilityCycle") {
+          yield* Console.error(`  Cycle: ${error.cycle.join(" → ")}`);
+        }
+        yield* Effect.fail(error);
+      }),
+    ),
+  );
+}).pipe(Command.withSubcommands([generateCommand, initCommand]));
 
 // ============================================================================
 // CLI App
@@ -142,7 +198,7 @@ const rootCommand = Command.make("pgsourcerer", {}, () =>
 
 const cli = Command.run(rootCommand, {
   name: "pgsourcerer",
-  version: "0.0.1",
+  version: packageJson.version,
 });
 
 // Run with Node.js platform
