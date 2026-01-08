@@ -62,16 +62,38 @@ Options:
 Given a PostgreSQL table like:
 
 ```sql
-CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  username citext UNIQUE NOT NULL,
+create type app_public.user_role as enum('admin', 'moderator', 'user');
+create domain app_public.username as citext check(length(value) >= 2 and length(value) <= 24 and value ~ '^[a-zA-Z][a-zA-Z0-9_-]+$');
+create domain app_public.url as text check(value ~ '^https?://\S+');
+
+create table app_public.users (
+  id uuid primary key default gen_random_uuid(),
+  username app_public.username not null unique,
   name text,
-  role user_role NOT NULL DEFAULT 'user',
-  bio text NOT NULL DEFAULT '',
-  is_verified boolean NOT NULL DEFAULT false,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  avatar_url app_public.url,
+  role app_public.user_role not null default 'user',
+  bio text not null check(length(bio) <= 4000) default '',
+  is_verified boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
+
+alter table app_public.users enable row level security;
+create index on app_public.users (username);
+create index on app_public.users using gin(username gin_trgm_ops);
+
+-- We couldn't implement this relationship on the sessions table until the users table existed!
+alter table app_private.sessions
+  add constraint sessions_user_id_fkey
+  foreign key ("user_id") references app_public.users on delete cascade;
+
+-- Users are publicly visible, like on GitHub, Twitter, Facebook, Trello, etc.
+create policy select_all on app_public.users for select using (true);
+-- You can only update yourself.
+create policy update_self on app_public.users for update using (id = app_public.current_user_id());
+grant select on app_public.users to :DATABASE_VISITOR;
+-- NOTE: `insert` is not granted, because we'll handle that separately
+grant update(username, name, bio, avatar_url) on app_public.users to :DATABASE_VISITOR;
 ```
 
 Each plugin generates different artifacts:
@@ -155,6 +177,29 @@ export class User extends Model.Class<User>("User")({
 }) {}
 ```
 
+### `sqlQueriesPlugin` — Raw SQL Query Functions
+
+```typescript
+import { sql } from "./sql-tag.js";
+import type { User, UserInsert, UserUpdate } from "../types/User.js";
+
+export async function getUserById({ id }: Pick<User, "id">) {
+  const [result] = await sql<User[]>`
+    select * from app_public.users where id = ${id}
+  `;
+  return result;
+}
+
+export async function insertUser(data: UserInsert): Promise<User> {
+  const result = await sql<User[]>`
+    insert into app_public.users (username, name, bio)
+    values (${data.username}, ${data.name}, ${data.bio})
+    returning *
+  `;
+  return result[0]!;
+}
+```
+
 ### `kyselyQueriesPlugin` — Kysely Query Builders
 
 ```typescript
@@ -165,52 +210,25 @@ export const users = {
   findById: (db: Kysely<DB>, id: string) =>
     db.selectFrom("app_public.users")
       .selectAll()
-      .where("id", "=", id)
-      .executeTakeFirst(),
+      .where("id", "=", id),
 
   findMany: (db: Kysely<DB>, opts?: { limit?: number; offset?: number }) =>
     db.selectFrom("app_public.users")
       .selectAll()
       .$if(opts?.limit != null, q => q.limit(opts!.limit!))
-      .$if(opts?.offset != null, q => q.offset(opts!.offset!))
-      .execute(),
+      .$if(opts?.offset != null, q => q.offset(opts!.offset!)),
 
   update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) =>
     db.updateTable("app_public.users")
       .set(data)
       .where("id", "=", id)
-      .returningAll()
-      .executeTakeFirstOrThrow(),
+      .returningAll(),
 
   findByUsername: (db: Kysely<DB>, username: string) =>
     db.selectFrom("app_public.users")
       .selectAll()
-      .where("username", "=", username)
-      .executeTakeFirst(),
+      .where("username", "=", username),
 };
-```
-
-### `sqlQueriesPlugin` — Raw SQL Query Functions
-
-```typescript
-import { sql } from "./sql-tag.js";
-import type { User, UserInsert, UserUpdate } from "../types/User.js";
-
-export async function getUserById({ id }: Pick<User, "id">): Promise<User | undefined> {
-  const result = await sql<User[]>`
-    SELECT * FROM app_public.users WHERE id = ${id}
-  `;
-  return result[0];
-}
-
-export async function insertUser(data: UserInsert): Promise<User> {
-  const result = await sql<User[]>`
-    INSERT INTO app_public.users (username, name, bio)
-    VALUES (${data.username}, ${data.name}, ${data.bio})
-    RETURNING *
-  `;
-  return result[0]!;
-}
 ```
 
 ## Feature Support
