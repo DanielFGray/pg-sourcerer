@@ -126,6 +126,7 @@ export function createConfigLoader(): ConfigLoader {
           connectionString: parseResult.connectionString,
           schemas: parseResult.schemas,
           outputDir: parseResult.outputDir,
+          role: parseResult.role,
           typeHints: parseResult.typeHints,
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- inflection is S.Any in schema, validated by plugin system
           inflection: parseResult.inflection,
