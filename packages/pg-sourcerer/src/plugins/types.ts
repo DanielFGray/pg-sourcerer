@@ -8,15 +8,16 @@ import { Option, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
-import { findEnumByPgName, TsType } from "../services/pg-types.js"
+import { findEnumByPgName } from "../services/pg-types.js"
 import type {
   Field,
   Shape,
   TableEntity,
   EnumEntity,
+  CompositeEntity,
   ExtensionInfo,
 } from "../ir/semantic-ir.js"
-import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js"
+import { getEnumEntities, getTableEntities, getCompositeEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
 import type { ImportRef } from "../services/file-builder.js"
@@ -25,179 +26,159 @@ import {
   isEnumType,
   getPgTypeName,
   resolveFieldType as resolveFieldBaseType,
+  tsTypeToAst,
 } from "../lib/field-utils.js"
 
 const { ts, exp } = conjure
 
-/**
- * Plugin configuration schema
- *
- * Note: outputDir is required in the schema. Default is applied when
- * creating the plugin config, not via Schema.optionalWith, to avoid
- * type conflicts with exactOptionalPropertyTypes.
- */
+// ============================================================================
+// Configuration
+// ============================================================================
+
 const TypesPluginConfig = S.Struct({
-  /** Output directory relative to main outputDir */
   outputDir: S.String,
 })
 
-/** Default configuration values */
-const _defaultConfig = { outputDir: "types" } as const
+// ============================================================================
+// Types
+// ============================================================================
 
-/**
- * Convert a TsType string to an AST node
- */
-function tsTypeToAst(tsType: string): n.TSType {
-  switch (tsType) {
-    case TsType.String:
-      return ts.string()
-    case TsType.Number:
-      return ts.number()
-    case TsType.Boolean:
-      return ts.boolean()
-    case TsType.BigInt:
-      return ts.bigint()
-    case TsType.Date:
-      return ts.ref("Date")
-    case TsType.Buffer:
-      return ts.ref("Buffer")
-    case TsType.Unknown:
-    default:
-      return ts.unknown()
-  }
+/** Custom import info: type name and where to import from */
+interface CustomImportInfo {
+  readonly typeName: string
+  readonly importPath: string
 }
 
-/**
- * Build TypeHintFieldMatch from entity and field
- * For arrays, uses the element type name for matching (not the array type _foo)
- */
-function buildFieldMatch(entity: TableEntity, field: Field): TypeHintFieldMatch {
-  // For arrays, use the element type name for matching
-  // This allows { pgType: "citext" } to match citext[] columns
-  const pgTypeName = field.isArray && field.elementTypeName
-    ? field.elementTypeName
-    : field.pgAttribute.getType()?.typname ?? ""
-  
-  return {
-    schema: entity.schemaName,
-    table: entity.pgName,
-    column: field.columnName,
-    pgType: pgTypeName,
-  }
-}
-
-/**
- * Result of resolving a field's type
- */
+/** Result of resolving a field's type */
 interface ResolvedFieldType {
-  type: n.TSType
-  /** Custom import: { typeName, importPath } */
-  customImport?: { typeName: string; importPath: string }
+  readonly type: n.TSType
+  readonly customImport?: CustomImportInfo
 }
+
+/** Result of generating statements with imports */
+interface GenerationResult {
+  readonly statements: readonly SymbolStatement[]
+  readonly customImports: readonly CustomImportInfo[]
+}
+
+/** Context for field resolution */
+interface FieldContext {
+  readonly schemaName: string
+  readonly tableName: string
+  readonly enums: readonly EnumEntity[]
+  readonly extensions: readonly ExtensionInfo[]
+  readonly typeHints: TypeHintRegistry
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Build TypeHintFieldMatch from field and context */
+const buildFieldMatch = (field: Field, ctx: FieldContext): TypeHintFieldMatch => ({
+  schema: ctx.schemaName,
+  table: ctx.tableName,
+  column: field.columnName,
+  pgType: field.isArray && field.elementTypeName
+    ? field.elementTypeName
+    : field.pgAttribute.getType()?.typname ?? "",
+})
+
+/** Wrap type with null union if nullable */
+const wrapNullable = (typeNode: n.TSType, nullable: boolean): n.TSType =>
+  nullable ? ts.union(typeNode, ts.null()) : typeNode
+
+/** Wrap type in array if needed */
+const wrapArray = (typeNode: n.TSType, isArray: boolean): n.TSType =>
+  isArray ? ts.array(typeNode) : typeNode
+
+/** Group custom imports by path */
+const groupImportsByPath = (imports: readonly CustomImportInfo[]): Map<string, Set<string>> =>
+  imports.reduce((map, info) => {
+    const existing = map.get(info.importPath) ?? new Set()
+    existing.add(info.typeName)
+    map.set(info.importPath, existing)
+    return map
+  }, new Map<string, Set<string>>())
+
+/** Collect enum names used by fields */
+const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> =>
+  fields
+    .filter(isEnumType)
+    .reduce((acc, field) => {
+      const pgTypeName = getPgTypeName(field)
+      if (pgTypeName) {
+        const enumOpt = findEnumByPgName(enums, pgTypeName)
+        if (Option.isSome(enumOpt)) acc.add(enumOpt.value.name)
+      }
+      return acc
+    }, new Set<string>())
+
+/** Build enum import refs from used enum names */
+const buildEnumImports = (usedEnums: Set<string>): ImportRef[] =>
+  [...usedEnums].map(enumName => ({
+    kind: "symbol" as const,
+    ref: { capability: "types", entity: enumName },
+  }))
+
+// ============================================================================
+// Field Resolution
+// ============================================================================
 
 /**
  * Resolve a field to its TypeScript AST type node
- * 
+ *
  * Resolution order:
  * 1. TypeHints override (highest priority)
  * 2. Shared field type resolution (enum, OID, domain, extension)
  */
-function resolveFieldType(
-  field: Field,
-  entity: TableEntity,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
-  typeHints: TypeHintRegistry
-): ResolvedFieldType {
+const resolveFieldType = (field: Field, ctx: FieldContext): ResolvedFieldType => {
+  const fieldMatch = buildFieldMatch(field, ctx)
+  const tsTypeHint = ctx.typeHints.getHint<string>(fieldMatch, "tsType")
+
   // 1. Check TypeHints first (highest priority)
-  const fieldMatch = buildFieldMatch(entity, field)
-  const tsTypeHint = typeHints.getHint<string>(fieldMatch, "tsType")
-  
   if (Option.isSome(tsTypeHint)) {
-    const importPath = typeHints.getHint<string>(fieldMatch, "import")
+    const importPath = ctx.typeHints.getHint<string>(fieldMatch, "import")
     const baseType = ts.ref(tsTypeHint.value)
-    const result: ResolvedFieldType = {
-      type: field.isArray ? ts.array(baseType) : baseType,
+    return {
+      type: wrapArray(baseType, field.isArray),
+      customImport: Option.isSome(importPath)
+        ? { typeName: tsTypeHint.value, importPath: importPath.value }
+        : undefined,
     }
-    if (Option.isSome(importPath)) {
-      result.customImport = { typeName: tsTypeHint.value, importPath: importPath.value }
-    }
-    return result
   }
 
   // 2. Use shared field type resolution
-  const resolved = resolveFieldBaseType(field, enums, extensions)
-  
-  // If resolved to an enum, use the enum name
-  if (resolved.enumDef) {
-    const baseType = ts.ref(resolved.enumDef.name)
-    return { type: field.isArray ? ts.array(baseType) : baseType }
-  }
-  
-  // Convert TsType to AST node
-  const baseType = tsTypeToAst(resolved.tsType)
-  return { type: field.isArray ? ts.array(baseType) : baseType }
+  const resolved = resolveFieldBaseType(field, ctx.enums, ctx.extensions)
+  const baseType = resolved.enumDef
+    ? ts.ref(resolved.enumDef.name)
+    : tsTypeToAst(resolved.tsType)
+
+  return { type: wrapArray(baseType, field.isArray) }
 }
 
-/**
- * Wrap type with null union if nullable
- */
-function wrapNullableAst(typeNode: n.TSType, nullable: boolean): n.TSType {
-  if (!nullable) return typeNode
-  return ts.union(typeNode, ts.null())
-}
+// ============================================================================
+// Statement Generators
+// ============================================================================
 
-/**
- * Property signature for exp.interface()
- */
-interface PropSig {
-  name: string
-  type: n.TSType
-  optional?: boolean
-}
-
-/**
- * Custom import info: type name and where to import from
- */
-interface CustomImportInfo {
-  typeName: string
-  importPath: string
-}
-
-/**
- * Result of generating a shape statement
- */
-interface ShapeGenerationResult {
-  statement: SymbolStatement
-  customImports: CustomImportInfo[]
-}
-
-/**
- * Generate interface statement for a shape using exp.interface()
- */
-function generateShapeStatement(
+/** Generate interface statement for a shape */
+const generateShapeStatement = (
   shape: Shape,
-  entity: TableEntity,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
   entityName: string,
   shapeKind: "row" | "insert" | "update" | "patch",
-  typeHints: TypeHintRegistry
-): ShapeGenerationResult {
+  ctx: FieldContext
+): GenerationResult => {
   const customImports: CustomImportInfo[] = []
-  
-  const properties: PropSig[] = shape.fields.map((field) => {
-    const resolved = resolveFieldType(field, entity, enums, extensions, typeHints)
-    const typeWithNull = wrapNullableAst(resolved.type, field.nullable)
-    
-    // Track custom imports
-    if (resolved.customImport) {
-      customImports.push(resolved.customImport)
+
+  const properties = shape.fields.map(field => {
+    const resolved = resolveFieldType(field, ctx)
+    if (resolved.customImport) customImports.push(resolved.customImport)
+
+    return {
+      name: field.name,
+      type: wrapNullable(resolved.type, field.nullable),
+      optional: field.optional || undefined,
     }
-    
-    const prop: PropSig = { name: field.name, type: typeWithNull }
-    if (field.optional) prop.optional = true
-    return prop
   })
 
   const statement = exp.interface(
@@ -205,56 +186,98 @@ function generateShapeStatement(
     { capability: "types", entity: entityName, shape: shapeKind },
     properties
   )
-  
-  return { statement, customImports }
+
+  return { statements: [statement], customImports }
 }
 
-/**
- * Generate enum type alias using exp.typeAlias()
- */
-function generateEnumStatement(enumEntity: EnumEntity): SymbolStatement {
-  const unionType = ts.union(...enumEntity.values.map((value) => ts.literal(value)))
-  return exp.typeAlias(
+/** Generate enum type alias */
+const generateEnumStatement = (enumEntity: EnumEntity): SymbolStatement =>
+  exp.typeAlias(
     enumEntity.name,
     { capability: "types", entity: enumEntity.name },
-    unionType
+    ts.union(...enumEntity.values.map(ts.literal))
   )
-}
 
-/**
- * Collect enum names used by an entity's shapes
- */
-function collectUsedEnums(
+/** Generate all shape statements for a table entity */
+const generateTableStatements = (
   entity: TableEntity,
-  enums: readonly EnumEntity[]
-): Set<string> {
-  const usedEnums = new Set<string>()
-  const { row, insert, update, patch } = entity.shapes
+  ctx: FieldContext
+): GenerationResult => {
+  const { row, insert, update } = entity.shapes
+  type ShapeEntry = [Shape, "row" | "insert" | "update"]
+  
+  const shapeEntries: ShapeEntry[] = [
+    [row, "row"],
+    ...(insert ? [[insert, "insert"] as ShapeEntry] : []),
+    ...(update ? [[update, "update"] as ShapeEntry] : []),
+  ]
 
-  for (const shape of [row, insert, update, patch]) {
-    if (!shape) continue
-    for (const field of shape.fields) {
-      if (isEnumType(field)) {
-        const pgTypeName = getPgTypeName(field)
-        if (pgTypeName) {
-          const enumEntityOpt = findEnumByPgName(enums, pgTypeName)
-          if (Option.isSome(enumEntityOpt)) {
-            usedEnums.add(enumEntityOpt.value.name)
-          }
-        }
-      }
-    }
+  const results = shapeEntries.map(([shape, kind]) =>
+    generateShapeStatement(shape, entity.name, kind, ctx)
+  )
+
+  return {
+    statements: results.flatMap(r => r.statements),
+    customImports: results.flatMap(r => r.customImports),
   }
-
-  return usedEnums
 }
+
+/** Generate interface statement for a composite type */
+const generateCompositeStatement = (
+  composite: CompositeEntity,
+  ctx: FieldContext
+): GenerationResult => {
+  const customImports: CustomImportInfo[] = []
+
+  const properties = composite.fields.map(field => {
+    const resolved = resolveFieldType(field, ctx)
+    if (resolved.customImport) customImports.push(resolved.customImport)
+
+    return {
+      name: field.name,
+      type: wrapNullable(resolved.type, field.nullable),
+      optional: field.optional || undefined,
+    }
+  })
+
+  const statement = exp.interface(
+    composite.name,
+    { capability: "types", entity: composite.name },
+    properties
+  )
+
+  return { statements: [statement], customImports }
+}
+
+// ============================================================================
+// File Emission
+// ============================================================================
+
+/** Add custom imports to file builder grouped by path */
+const addCustomImports = (
+  fileBuilder: { import: (ref: ImportRef) => unknown },
+  imports: readonly CustomImportInfo[]
+): void => {
+  const grouped = groupImportsByPath(imports)
+  grouped.forEach((typeNames, importPath) => {
+    fileBuilder.import({
+      kind: "relative" as const,
+      types: [...typeNames],
+      from: importPath,
+    })
+  })
+}
+
+// ============================================================================
+// Plugin Definition
+// ============================================================================
 
 /**
  * Types Plugin
  *
  * Generates TypeScript interfaces for each entity's shapes (Row, Insert, Update, Patch)
  * and type aliases for PostgreSQL enums.
- * 
+ *
  * Supports type overrides via TypeHints configuration:
  * ```typescript
  * typeHints: [
@@ -268,130 +291,109 @@ export const typesPlugin = definePlugin({
   provides: ["types"],
   configSchema: TypesPluginConfig,
   inflection: {
-    outputFile: (ctx) => `${ctx.entityName}.ts`,
+    outputFile: ctx => `${ctx.entityName}.ts`,
     symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
   },
 
   run: (ctx, config) => {
     const { ir, typeHints } = ctx
-
-    // Get enum and table entities
     const enumEntities = getEnumEntities(ir)
-    const tableEntities = getTableEntities(ir)
 
-    // Generate enum type files - each enum gets its own file
-    for (const enumEntity of enumEntities) {
-      // Skip enums marked with @omit
-      if (enumEntity.tags.omit === true) continue
+    // Helper to build file path
+    const buildFilePath = (fileNameCtx: FileNameContext): string =>
+      `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
 
-      const statement = generateEnumStatement(enumEntity)
+    // Generate enum type files
+    enumEntities
+      .filter(e => e.tags.omit !== true)
+      .forEach(enumEntity => {
+        const fileNameCtx: FileNameContext = {
+          entityName: enumEntity.name,
+          pgName: enumEntity.pgName,
+          schema: enumEntity.schemaName,
+          inflection: ctx.inflection,
+          entity: enumEntity,
+        }
 
-      // Build file name context for outputFile
-      const fileNameCtx: FileNameContext = {
-        entityName: enumEntity.name,
-        pgName: enumEntity.pgName,
-        schema: enumEntity.schemaName,
-        inflection: ctx.inflection,
-        entity: enumEntity,
-      }
-      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
-      const filePath = `${config.outputDir}/${fileName}`
-
-      ctx
-        .file(filePath)
-        .header("// This file is auto-generated. Do not edit.\n")
-        .ast(conjure.symbolProgram(statement))
-        .emit()
-    }
+        ctx
+          .file(buildFilePath(fileNameCtx))
+          .header("// This file is auto-generated. Do not edit.\n")
+          .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
+          .emit()
+      })
 
     // Generate table/view entity type files
-    for (const entity of tableEntities) {
-      // Skip entities marked with @omit
-      if (entity.tags.omit === true) continue
+    getTableEntities(ir)
+      .filter(e => e.tags.omit !== true)
+      .forEach(entity => {
+        const fieldCtx: FieldContext = {
+          schemaName: entity.schemaName,
+          tableName: entity.pgName,
+          enums: enumEntities,
+          extensions: ir.extensions,
+          typeHints,
+        }
 
-      const name = entity.name
-      const statements: SymbolStatement[] = []
-      const allCustomImports: CustomImportInfo[] = []
-      const { row, insert, update, patch } = entity.shapes
+        const result = generateTableStatements(entity, fieldCtx)
 
-      // Generate Row interface
-      const rowResult = generateShapeStatement(
-        row, entity, enumEntities, ir.extensions, name, "row", typeHints
-      )
-      statements.push(rowResult.statement)
-      allCustomImports.push(...rowResult.customImports)
+        // Collect all fields from all shapes for enum detection
+        const allFields = [
+          ...entity.shapes.row.fields,
+          ...(entity.shapes.insert?.fields ?? []),
+          ...(entity.shapes.update?.fields ?? []),
+        ]
+        const usedEnums = collectUsedEnums(allFields, enumEntities)
 
-      // Generate optional shape interfaces
-      if (insert) {
-        const insertResult = generateShapeStatement(
-          insert, entity, enumEntities, ir.extensions, name, "insert", typeHints
-        )
-        statements.push(insertResult.statement)
-        allCustomImports.push(...insertResult.customImports)
-      }
-      if (update) {
-        const updateResult = generateShapeStatement(
-          update, entity, enumEntities, ir.extensions, name, "update", typeHints
-        )
-        statements.push(updateResult.statement)
-        allCustomImports.push(...updateResult.customImports)
-      }
-      if (patch) {
-        const patchResult = generateShapeStatement(
-          patch, entity, enumEntities, ir.extensions, name, "patch", typeHints
-        )
-        statements.push(patchResult.statement)
-        allCustomImports.push(...patchResult.customImports)
-      }
+        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
+        const fileNameCtx: FileNameContext = {
+          entityName,
+          pgName: entity.pgName,
+          schema: entity.schemaName,
+          inflection: ctx.inflection,
+          entity,
+        }
 
-      // Collect enum imports
-      const usedEnums = collectUsedEnums(entity, enumEntities)
-      const enumImports: ImportRef[] =
-        usedEnums.size > 0
-          ? [...usedEnums].map((enumName) => ({
-              kind: "symbol" as const,
-              ref: { capability: "types", entity: enumName },
-            }))
-          : []
+        const fileBuilder = ctx
+          .file(buildFilePath(fileNameCtx))
+          .header("// This file is auto-generated. Do not edit.\n")
 
-      // Build file name context for outputFile
-      const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
-      const fileNameCtx: FileNameContext = {
-        entityName,
-        pgName: entity.pgName,
-        schema: entity.schemaName,
-        inflection: ctx.inflection,
-        entity,
-      }
-      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
-      const filePath = `${config.outputDir}/${fileName}`
-      const fileBuilder = ctx
-        .file(filePath)
-        .header("// This file is auto-generated. Do not edit.\n")
+        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
+        addCustomImports(fileBuilder, result.customImports)
 
-      // Add enum imports (symbol refs, resolved automatically)
-      for (const ref of enumImports) {
-        fileBuilder.import(ref)
-      }
-      
-      // Add custom imports from type hints
-      // Group by import path, collect all type names for each path
-      const importsByPath = new Map<string, Set<string>>()
-      for (const info of allCustomImports) {
-        const existing = importsByPath.get(info.importPath) ?? new Set()
-        existing.add(info.typeName)
-        importsByPath.set(info.importPath, existing)
-      }
-      
-      for (const [importPath, typeNames] of importsByPath) {
-        fileBuilder.import({
-          kind: "relative" as const,
-          types: [...typeNames],
-          from: importPath,
-        })
-      }
+        fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
+      })
 
-      fileBuilder.ast(conjure.symbolProgram(...statements)).emit()
-    }
+    // Generate composite type files
+    getCompositeEntities(ir)
+      .filter(e => e.tags.omit !== true)
+      .forEach(composite => {
+        const fieldCtx: FieldContext = {
+          schemaName: composite.schemaName,
+          tableName: composite.pgName,
+          enums: enumEntities,
+          extensions: ir.extensions,
+          typeHints,
+        }
+
+        const result = generateCompositeStatement(composite, fieldCtx)
+        const usedEnums = collectUsedEnums(composite.fields, enumEntities)
+
+        const fileNameCtx: FileNameContext = {
+          entityName: composite.name,
+          pgName: composite.pgName,
+          schema: composite.schemaName,
+          inflection: ctx.inflection,
+          entity: composite,
+        }
+
+        const fileBuilder = ctx
+          .file(buildFilePath(fileNameCtx))
+          .header("// This file is auto-generated. Do not edit.\n")
+
+        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
+        addCustomImports(fileBuilder, result.customImports)
+
+        fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
+      })
   },
 })

@@ -2,426 +2,314 @@
  * Effect Model Plugin - Generate @effect/sql Model classes for entities
  *
  * Generates Model classes with proper variants based on:
- * - RLS permissions (canSelect, canInsert, canUpdate)
  * - Field properties (isGenerated, isIdentity, hasDefault, nullable)
  * - Smart tags (sensitive, insert override)
  */
-import { Schema as S } from "effect"
-import type { namedTypes as n } from "ast-types"
-import type { ExpressionKind } from "ast-types/lib/gen/kinds.js"
-import { definePlugin } from "../services/plugin.js"
-import type { FileNameContext } from "../services/plugin.js"
-import { inflect } from "../services/inflection.js"
-import { TsType } from "../services/pg-types.js"
-import type { EnumLookupResult } from "../services/pg-types.js"
-import type {
-  Field,
-  TableEntity,
-  EnumEntity,
-  ExtensionInfo,
-} from "../ir/semantic-ir.js"
-import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js"
-import { conjure } from "../lib/conjure.js"
-import type { SymbolStatement } from "../lib/conjure.js"
-import {
-  isUuidType,
-  isDateType,
-  isBigIntType,
-  resolveFieldType,
-} from "../lib/field-utils.js"
+import { Schema as S } from "effect";
+import type { namedTypes as n } from "ast-types";
+import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
+import { definePlugin } from "../services/plugin.js";
+import type { FileNameContext } from "../services/plugin.js";
+import { inflect } from "../services/inflection.js";
+import { TsType } from "../services/pg-types.js";
+import type { EnumLookupResult } from "../services/pg-types.js";
+import type { Field, TableEntity, EnumEntity, ExtensionInfo } from "../ir/semantic-ir.js";
+import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js";
+import { conjure } from "../lib/conjure.js";
+import type { SymbolStatement } from "../lib/conjure.js";
+import { isUuidType, isDateType, isBigIntType, resolveFieldType } from "../lib/field-utils.js";
 
-const { exp, obj } = conjure
+const { exp, obj } = conjure;
 
-/**
- * Plugin configuration schema
- */
+// ============================================================================
+// Configuration
+// ============================================================================
+
 const EffectModelPluginConfig = S.Struct({
   /** Output directory relative to main outputDir */
   outputDir: S.String,
   /** How to handle enums: "inline" or "separate" file */
   enumStyle: S.optional(S.Union(S.Literal("inline"), S.Literal("separate"))),
-})
+});
 
-type EffectModelPluginConfig = S.Schema.Type<typeof EffectModelPluginConfig>
+type EffectModelPluginConfig = S.Schema.Type<typeof EffectModelPluginConfig>;
 
-/**
- * Smart tag schema for effect:model plugin-specific options
- * These are nested under {"sourcerer": {"effect:model": {...}}}
- */
+// ============================================================================
+// Smart Tags
+// ============================================================================
+
 const EffectModelTagsSchema = S.Struct({
   /** Override insert optionality: "optional" or "required" */
   insert: S.optional(S.Union(S.Literal("optional"), S.Literal("required"))),
   /** Mark field as sensitive - excluded from json variants */
   sensitive: S.optional(S.Boolean),
-})
+});
 
-type EffectModelTags = S.Schema.Type<typeof EffectModelTagsSchema>
+type EffectModelTags = S.Schema.Type<typeof EffectModelTagsSchema>;
 
-/**
- * Extract effect:model smart tags from a field's tags
- */
-function getEffectModelTags(field: Field): EffectModelTags {
-  const pluginTags = field.tags["effect:model"]
-  if (!pluginTags) return {}
-  
-  // Validate against schema, return empty on failure
-  const result = S.decodeUnknownSync(EffectModelTagsSchema)(pluginTags)
-  return result
-}
+const getEffectModelTags = (field: Field): EffectModelTags => {
+  const pluginTags = field.tags["effect:model"];
+  if (!pluginTags) return {};
+  return S.decodeUnknownSync(EffectModelTagsSchema)(pluginTags);
+};
 
-/**
- * Check if a field is marked as sensitive via smart tag
- */
-function isSensitive(field: Field): boolean {
-  return getEffectModelTags(field).sensitive === true
-}
+const isSensitive = (field: Field): boolean => getEffectModelTags(field).sensitive === true;
 
-/**
- * Get insert optionality override from smart tag
- * Returns undefined if not specified (use default behavior)
- */
-function getInsertOverride(field: Field): "optional" | "required" | undefined {
-  return getEffectModelTags(field).insert
-}
+const getInsertOverride = (field: Field): "optional" | "required" | undefined =>
+  getEffectModelTags(field).insert;
 
-/**
- * Cast n.Expression to ExpressionKind for recast compatibility
- */
-function toExprKind(expr: n.Expression): ExpressionKind {
-  return expr as ExpressionKind
-}
+// ============================================================================
+// Schema Builders (pure functions)
+// ============================================================================
 
-/**
- * Map TypeScript type to Effect Schema expression
- */
-function tsTypeToEffectSchema(tsType: string): n.Expression {
-  switch (tsType) {
-    case TsType.String:
-      return conjure.id("S").prop("String").build()
-    case TsType.Number:
-      return conjure.id("S").prop("Number").build()
-    case TsType.Boolean:
-      return conjure.id("S").prop("Boolean").build()
-    case TsType.BigInt:
-      return conjure.id("S").prop("BigInt").build()
-    case TsType.Date:
-      return conjure.id("S").prop("Date").build()
-    case TsType.Buffer:
-    case TsType.Unknown:
-    default:
-      return conjure.id("S").prop("Unknown").build()
-  }
-}
+/** Cast n.Expression to ExpressionKind for recast compatibility */
+const toExprKind = (expr: n.Expression): ExpressionKind => expr as ExpressionKind;
 
-/**
- * Build S.Union(S.Literal(...), ...) for an enum
- */
-function buildEnumSchema(enumResult: EnumLookupResult): n.Expression {
-  const literals = enumResult.values.map((v: string) =>
-    conjure.id("S").method("Literal", [conjure.str(v)]).build()
-  )
-  return conjure.id("S").method("Union", literals).build()
-}
+/** Map TypeScript type to Effect Schema property access */
+const tsTypeToEffectSchema = (tsType: string): n.Expression => {
+  const prop =
+    tsType === TsType.String
+      ? "String"
+      : tsType === TsType.Number
+        ? "Number"
+        : tsType === TsType.Boolean
+          ? "Boolean"
+          : tsType === TsType.BigInt
+            ? "BigInt"
+            : tsType === TsType.Date
+              ? "Date"
+              : "Unknown";
+  return conjure.id("S").prop(prop).build();
+};
 
-/**
- * Build an Effect Schema expression for a base type.
- * Returns S.<Type> expression.
- */
-function buildEffectSchemaType(
-  field: Field,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
-): n.Expression {
-  // Use shared field type resolution
-  const resolved = resolveFieldType(field, enums, extensions)
+/** Build S.Union(S.Literal(...), ...) for an enum */
+const buildEnumSchema = (enumResult: EnumLookupResult): n.Expression =>
+  conjure
+    .id("S")
+    .method(
+      "Union",
+      enumResult.values.map(v =>
+        conjure
+          .id("S")
+          .method("Literal", [conjure.str(v)])
+          .build(),
+      ),
+    )
+    .build();
 
-  // If resolved to an enum, build enum schema
-  if (resolved.enumDef) {
-    return buildEnumSchema(resolved.enumDef)
-  }
+// ============================================================================
+// Schema Wrappers
+// ============================================================================
 
-  // Special cases that need specific Effect Schema types
-  // UUID -> S.UUID (more specific than just S.String)
-  if (isUuidType(field)) {
-    return conjure.id("S").prop("UUID").build()
-  }
+const wrapIf = (
+  schema: n.Expression,
+  condition: boolean,
+  wrapper: (s: n.Expression) => n.Expression,
+): n.Expression => (condition ? wrapper(schema) : schema);
 
-  // Date/timestamp -> S.Date
-  if (isDateType(field)) {
-    return conjure.id("S").prop("Date").build()
-  }
+const wrapNullable = (schema: n.Expression): n.Expression =>
+  conjure.id("S").method("NullOr", [schema]).build();
 
-  // BigInt (int8) -> S.BigInt
-  if (isBigIntType(field)) {
-    return conjure.id("S").prop("BigInt").build()
-  }
+const wrapArray = (schema: n.Expression): n.Expression =>
+  conjure.id("S").method("Array", [schema]).build();
 
-  // Use the resolved TsType
-  return tsTypeToEffectSchema(resolved.tsType)
-}
+const wrapGenerated = (schema: n.Expression): n.Expression =>
+  conjure.id("Model").method("Generated", [schema]).build();
 
-/**
- * Wrap schema with S.NullOr if nullable
- */
-function wrapNullable(schema: n.Expression, nullable: boolean): n.Expression {
-  if (!nullable) return schema
-  return conjure.id("S").method("NullOr", [schema]).build()
-}
+const wrapSensitive = (schema: n.Expression): n.Expression =>
+  conjure.id("Model").method("Sensitive", [schema]).build();
 
-/**
- * Wrap schema with S.Array if array type
- */
-function wrapArray(schema: n.Expression, isArray: boolean): n.Expression {
-  if (!isArray) return schema
-  return conjure.id("S").method("Array", [schema]).build()
-}
+const wrapFieldOption = (schema: n.Expression): n.Expression =>
+  conjure.id("Model").method("FieldOption", [schema]).build();
 
-/**
- * Wrap schema with Model.Generated
- */
-function wrapGenerated(schema: n.Expression): n.Expression {
-  return conjure.id("Model").method("Generated", [schema]).build()
-}
+// ============================================================================
+// Field Analysis
+// ============================================================================
 
-/**
- * Wrap schema with Model.Sensitive
- * Model.Sensitive excludes the field from JSON variants
- */
-function wrapSensitive(schema: n.Expression): n.Expression {
-  return conjure.id("Model").method("Sensitive", [schema]).build()
-}
-
-/**
- * Wrap schema with Model.FieldOption to make optional in insert variant
- * Model.FieldOption(schema) allows the field to be omitted on insert
- */
-function wrapFieldOption(schema: n.Expression): n.Expression {
-  return conjure.id("Model").method("FieldOption", [schema]).build()
+interface FieldContext {
+  readonly entity: TableEntity;
+  readonly enums: readonly EnumEntity[];
+  readonly extensions: readonly ExtensionInfo[];
 }
 
 /**
  * Determine if a field should be treated as DB-generated.
- * 
- * Generated fields are excluded from insert variants by Model.Generated.
- * 
- * This includes:
- * - GENERATED ALWAYS columns (isGenerated)
- * - IDENTITY columns (isIdentity)
- * - Primary key fields with defaults (like UUID with gen_random_uuid())
- * 
- * Note: We intentionally ignore ACL permissions here - they're runtime concerns,
- * not type generation concerns. The model represents the table structure.
+ * Includes GENERATED ALWAYS, IDENTITY, and PK fields with defaults.
  */
-function isDbGenerated(field: Field, entity: TableEntity): boolean {
-  // Explicit generated/identity columns
-  if (field.isGenerated || field.isIdentity) {
-    return true
-  }
-  
-  // Primary key fields with defaults should be treated as generated
-  // (e.g., UUID with gen_random_uuid())
-  if (field.hasDefault && entity.primaryKey) {
-    const isPkColumn = entity.primaryKey.columns.includes(field.columnName)
-    if (isPkColumn) {
-      return true
-    }
-  }
-  
-  return false
-}
+const isDbGenerated = (field: Field, entity: TableEntity): boolean =>
+  field.isGenerated ||
+  field.isIdentity ||
+  (field.hasDefault && entity.primaryKey?.columns.includes(field.columnName) === true);
 
 /**
- * Check if a field should use auto-timestamp generation.
- * 
- * Matches common patterns like created_at, updated_at with defaults.
+ * Check for auto-timestamp patterns (created_at, updated_at)
  */
-function isAutoTimestamp(field: Field): { kind: "insert" | "update" } | undefined {
-  if (!field.hasDefault) return undefined
-  
-  const name = field.columnName.toLowerCase()
-  
-  // created_at pattern - set on insert only
-  if (name === "created_at" || name === "createdat") {
-    return { kind: "insert" }
-  }
-  
-  // updated_at pattern - set on insert and update
-  if (name === "updated_at" || name === "updatedat") {
-    return { kind: "update" }
-  }
-  
-  return undefined
-}
+const getAutoTimestamp = (field: Field): "insert" | "update" | undefined => {
+  if (!field.hasDefault) return undefined;
+  const name = field.columnName.toLowerCase();
+  if (name === "created_at" || name === "createdat") return "insert";
+  if (name === "updated_at" || name === "updatedat") return "update";
+  return undefined;
+};
+
+// ============================================================================
+// Field → Schema Expression
+// ============================================================================
 
 /**
- * Build the complete field schema expression.
- * 
- * Uses clean @effect/sql Model patterns:
- * - Model.Generated(schema) for DB-generated fields
- * - Model.Sensitive(schema) for fields hidden from JSON
- * - Model.DateTimeInsertFromDate for created_at patterns
- * - Model.DateTimeUpdateFromDate for updated_at patterns
- * - Plain schema for regular fields
+ * Build the base Effect Schema type for a field
  */
-function buildFieldSchema(
-  field: Field,
-  entity: TableEntity,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
-): n.Expression {
-  // Start with the base type
-  let schema = buildEffectSchemaType(field, enums, extensions)
+const buildBaseSchemaType = (field: Field, ctx: FieldContext): n.Expression => {
+  const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
 
-  // Wrap with array if needed
-  schema = wrapArray(schema, field.isArray)
+  if (resolved.enumDef) return buildEnumSchema(resolved.enumDef);
+  if (isUuidType(field)) return conjure.id("S").prop("UUID").build();
+  if (isDateType(field)) return conjure.id("S").prop("Date").build();
+  if (isBigIntType(field)) return conjure.id("S").prop("BigInt").build();
 
-  // Wrap with nullable if needed
-  schema = wrapNullable(schema, field.nullable)
-  
-  // Check for insert optionality override via smart tag
-  const insertOverride = getInsertOverride(field)
-  
-  // Check for sensitive smart tag - use Model.Sensitive
-  if (isSensitive(field)) {
-    schema = wrapSensitive(schema)
-  }
-  
-  // Check for auto-timestamp patterns
-  const autoTs = isAutoTimestamp(field)
-  if (autoTs) {
-    // Use the appropriate DateTime helper based on pattern
-    if (autoTs.kind === "insert") {
-      return conjure.id("Model").prop("DateTimeInsertFromDate").build()
-    } else {
-      return conjure.id("Model").prop("DateTimeUpdateFromDate").build()
-    }
-  }
+  return tsTypeToEffectSchema(resolved.tsType);
+};
 
-  // Determine if field should be treated as generated
-  // `insert: "required"` overrides the default generated behavior
-  const shouldBeGenerated = insertOverride === "required" 
-    ? (field.isGenerated || field.isIdentity) // Only truly generated, not "has default"
-    : isDbGenerated(field, entity)
+/**
+ * Build the complete field schema expression with all wrappers applied
+ */
+const buildFieldSchema = (field: Field, ctx: FieldContext): n.Expression => {
+  // Check for auto-timestamp patterns first (returns early with special type)
+  const autoTs = getAutoTimestamp(field);
+  if (autoTs === "insert") return conjure.id("Model").prop("DateTimeInsertFromDate").build();
+  if (autoTs === "update") return conjure.id("Model").prop("DateTimeUpdateFromDate").build();
+
+  // Build base type with array/nullable wrappers
+  let schema = buildBaseSchemaType(field, ctx);
+  schema = wrapIf(schema, field.isArray, wrapArray);
+  schema = wrapIf(schema, field.nullable, wrapNullable);
+  schema = wrapIf(schema, isSensitive(field), wrapSensitive);
+
+  // Determine generated/optional status
+  const insertOverride = getInsertOverride(field);
+  const shouldBeGenerated =
+    insertOverride === "required"
+      ? field.isGenerated || field.isIdentity
+      : isDbGenerated(field, ctx.entity);
 
   if (shouldBeGenerated) {
-    schema = wrapGenerated(schema)
+    schema = wrapGenerated(schema);
   } else if (insertOverride === "optional") {
-    // Smart tag requests optional on insert
-    schema = wrapFieldOption(schema)
+    schema = wrapFieldOption(schema);
   }
 
-  return schema
-}
+  return schema;
+};
+
+// ============================================================================
+// Entity → Model Class
+// ============================================================================
 
 /**
- * Build Model.Class definition for an entity
- *
- * @param entity - The entity to generate
- * @param className - The inflected class name (e.g., "Users" for table "users")
- * @param enums - Enum entities for type lookup
- * @param extensions - Extension info for type mapping
+ * Build Model.Class<ClassName>("table_name")({ ...fields })
  */
-function buildModelClass(
+const buildModelClass = (
   entity: TableEntity,
   className: string,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
-): n.Expression {
-  // Build the fields object
-  let fieldsObj = obj()
+  ctx: FieldContext,
+): n.Expression => {
+  // Build fields object from row shape
+  const fieldsObj = entity.shapes.row.fields.reduce(
+    (builder, field) => builder.prop(field.name, buildFieldSchema(field, ctx)),
+    obj(),
+  );
 
-  for (const field of entity.shapes.row.fields) {
-    const schema = buildFieldSchema(field, entity, enums, extensions)
-    fieldsObj = fieldsObj.prop(field.name, schema)
-  }
-
-  // Build: Model.Class<ClassName>("table_name")({ ... })
-  // Note: className is inflected (e.g., "Users"), entity.name is the raw table name ("users")
-  
-  // First build Model.Class with type parameter
+  // Build: Model.Class<ClassName>("table_name")
   const modelClassRef = conjure.b.memberExpression(
     conjure.b.identifier("Model"),
-    conjure.b.identifier("Class")
-  )
-  
-  // Create the call with type argument: Model.Class<ClassName>
-  // The string argument is the raw table name for SQL queries
-  const modelClassWithType = conjure.b.callExpression(modelClassRef, [
-    conjure.str(entity.name)
-  ])
-  
-  // Add type arguments to the call: Model.Class<ClassName>
-  // Use typeParameters for TypeScript (not typeArguments which is for Flow)
-  ;(modelClassWithType as { typeParameters?: unknown }).typeParameters = 
-    conjure.b.tsTypeParameterInstantiation([
-      conjure.b.tsTypeReference(conjure.b.identifier(className))
-    ])
-  
-  // Now call that with the fields object: Model.Class<ClassName>("table_name")({ ... })
-  const modelCall = conjure.b.callExpression(modelClassWithType, [
-    fieldsObj.build()
-  ])
+    conjure.b.identifier("Class"),
+  );
 
-  return modelCall
-}
+  const modelClassWithType = conjure.b.callExpression(modelClassRef, [
+    conjure.str(entity.name),
+  ]);
+
+  // Add type parameters: Model.Class<ClassName>
+  // Use typeParameters for TypeScript (not typeArguments which is for Flow)
+  (modelClassWithType as { typeParameters?: unknown }).typeParameters =
+    conjure.b.tsTypeParameterInstantiation([
+      conjure.b.tsTypeReference(conjure.b.identifier(className)),
+    ]);
+
+  // Call with fields: Model.Class<ClassName>("table_name")({ ... })
+  return conjure.b.callExpression(modelClassWithType, [fieldsObj.build()]);
+};
 
 /**
- * Generate a Model class statement for an entity
- *
- * @param entity - The entity to generate
- * @param className - The inflected class name (e.g., "Users" for table "users")
- * @param enums - Enum entities for type lookup
- * @param extensions - Extension info for type mapping
+ * Generate: export class ClassName extends Model.Class<ClassName>("table")({ ... }) {}
  */
-function generateModelStatement(
+const generateModelStatement = (
   entity: TableEntity,
   className: string,
-  enums: readonly EnumEntity[],
-  extensions: readonly ExtensionInfo[],
-): SymbolStatement {
-  const modelExpr = buildModelClass(entity, className, enums, extensions)
+  ctx: FieldContext,
+): SymbolStatement => {
+  const modelExpr = buildModelClass(entity, className, ctx);
 
-  // We need to generate:
-  // export class ClassName extends Model.Class<ClassName>("table_name")({ ... }) {}
-  //
-  // This is a class declaration with extends - no type params on the class itself
   const classDecl = conjure.b.classDeclaration(
     conjure.b.identifier(className),
     conjure.b.classBody([]),
-    toExprKind(modelExpr)  // superClass
-  )
-
-  const exportDecl = conjure.b.exportNamedDeclaration(classDecl, [])
+    toExprKind(modelExpr),
+  );
 
   return {
     _tag: "SymbolStatement",
-    node: exportDecl,
+    node: conjure.b.exportNamedDeclaration(classDecl, []),
     symbol: {
       name: className,
       capability: "models:effect",
-      entity: entity.name,  // Keep original entity name for lookups
+      entity: entity.name,
       isType: false,
     },
-  }
-}
+  };
+};
 
 /**
- * Generate enum schema statement
+ * Generate enum schema: export const EnumName = S.Union(S.Literal(...), ...)
  */
-function generateEnumStatement(enumEntity: EnumEntity): SymbolStatement {
-  const enumResult: EnumLookupResult = {
-    name: enumEntity.name,
-    pgName: enumEntity.pgName,
-    values: enumEntity.values,
-  }
-  const schema = buildEnumSchema(enumResult)
-
-  return exp.const(
+const generateEnumStatement = (enumEntity: EnumEntity): SymbolStatement =>
+  exp.const(
     enumEntity.name,
     { capability: "models:effect", entity: enumEntity.name },
-    schema,
-  )
-}
+    buildEnumSchema({
+      name: enumEntity.name,
+      pgName: enumEntity.pgName,
+      values: enumEntity.values,
+    }),
+  );
+
+// ============================================================================
+// File Emission Helpers
+// ============================================================================
+
+const buildFileNameContext = (
+  entityName: string,
+  pgName: string,
+  schemaName: string,
+  inflection: Parameters<typeof definePlugin>[0]["run"] extends (
+    ctx: infer C,
+    ...args: unknown[]
+  ) => unknown
+    ? C extends { inflection: infer I }
+      ? I
+      : never
+    : never,
+  entity: TableEntity | EnumEntity,
+): FileNameContext => ({
+  entityName,
+  pgName,
+  schema: schemaName,
+  inflection,
+  entity,
+});
+
+// ============================================================================
+// Plugin Definition
+// ============================================================================
 
 /**
  * Effect Model Plugin
@@ -433,83 +321,68 @@ export const effectModelPlugin = definePlugin({
   provides: ["models:effect", "models"],
   configSchema: EffectModelPluginConfig,
   inflection: {
-    outputFile: (ctx) => `${ctx.entityName}.ts`,
+    outputFile: ctx => `${ctx.entityName}.ts`,
     symbolName: (entityName, _artifactKind) => entityName,
   },
-  // Plugin defaults: PascalCase for entity/class names
-  // Users can compose with additional transforms (e.g., singularize)
   inflectionDefaults: {
     entityName: inflect.pascalCase,
     enumName: inflect.pascalCase,
   },
 
   run: (ctx, config) => {
-    const { ir } = ctx
-    const enumStyle = config.enumStyle ?? "inline"
+    const enumEntities = getEnumEntities(ctx.ir);
+    const enumStyle = config.enumStyle ?? "inline";
 
-    // Get enum and table entities
-    const enumEntities = getEnumEntities(ir)
-    const tableEntities = getTableEntities(ir)
-
-    // Generate enum files - each enum gets its own file (unless inline)
+    // Generate separate enum files if configured
     if (enumStyle === "separate") {
-      for (const enumEntity of enumEntities) {
-        // Skip enums marked with @omit
-        if (enumEntity.tags.omit === true) continue
+      enumEntities
+        .filter(e => e.tags.omit !== true)
+        .forEach(enumEntity => {
+          const fileNameCtx = buildFileNameContext(
+            enumEntity.name,
+            enumEntity.pgName,
+            enumEntity.schemaName,
+            ctx.inflection,
+            enumEntity,
+          );
+          const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
 
-        const statement = generateEnumStatement(enumEntity)
+          ctx
+            .file(filePath)
+            .header("// This file is auto-generated. Do not edit.\n")
+            .import({ kind: "package", names: ["Schema as S"], from: "effect" })
+            .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
+            .emit();
+        });
+    }
 
-        // Build file name context for outputFile
-        const fileNameCtx: FileNameContext = {
-          entityName: enumEntity.name,
-          pgName: enumEntity.pgName,
-          schema: enumEntity.schemaName,
-          inflection: ctx.inflection,
-          entity: enumEntity,
-        }
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
-        const filePath = `${config.outputDir}/${fileName}`
+    // Generate table/view entity model files
+    getTableEntities(ctx.ir)
+      .filter(entity => entity.tags.omit !== true)
+      .forEach(entity => {
+        const className = ctx.inflection.entityName(entity.pgClass, entity.tags);
+        const fieldCtx: FieldContext = {
+          entity,
+          enums: enumEntities,
+          extensions: ctx.ir.extensions,
+        };
+
+        const fileNameCtx = buildFileNameContext(
+          className,
+          entity.pgName,
+          entity.schemaName,
+          ctx.inflection,
+          entity,
+        );
+        const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
 
         ctx
           .file(filePath)
           .header("// This file is auto-generated. Do not edit.\n")
+          .import({ kind: "package", names: ["Model"], from: "@effect/sql" })
           .import({ kind: "package", names: ["Schema as S"], from: "effect" })
-          .ast(conjure.symbolProgram(statement))
-          .emit()
-      }
-    }
-
-    // Generate table/view entity model files
-    for (const entity of tableEntities) {
-      // Skip entities marked with @omit
-      if (entity.tags.omit === true) continue
-
-      // Get the inflected class name (e.g., "Users" for table "users")
-      const className = ctx.inflection.entityName(entity.pgClass, entity.tags)
-
-      const statements: SymbolStatement[] = []
-
-      // Generate the Model class
-      statements.push(generateModelStatement(entity, className, enumEntities, ir.extensions))
-
-      // Build file name context for outputFile
-      const fileNameCtx: FileNameContext = {
-        entityName: className,
-        pgName: entity.pgName,
-        schema: entity.schemaName,
-        inflection: ctx.inflection,
-        entity,
-      }
-      const fileName = ctx.pluginInflection.outputFile(fileNameCtx)
-      const filePath = `${config.outputDir}/${fileName}`
-
-      ctx
-        .file(filePath)
-        .header("// This file is auto-generated. Do not edit.\n")
-        .import({ kind: "package", names: ["Model"], from: "@effect/sql" })
-        .import({ kind: "package", names: ["Schema as S"], from: "effect" })
-        .ast(conjure.symbolProgram(...statements))
-        .emit()
-    }
+          .ast(conjure.symbolProgram(generateModelStatement(entity, className, fieldCtx)))
+          .emit();
+      });
   },
-})
+});
