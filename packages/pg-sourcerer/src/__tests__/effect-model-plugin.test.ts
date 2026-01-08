@@ -342,13 +342,13 @@ describe("Effect Model Plugin", () => {
   })
 
   describe("enum fields", () => {
-    it.effect("generates enum as S.Union of S.Literal", () =>
+    it.effect("generates inline enum as S.Union of S.Literal when typeReferences is inline", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .plugin.run({ outputDir: "models" })
+          .plugin.run({ outputDir: "models", typeReferences: "inline" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
@@ -362,18 +362,18 @@ describe("Effect Model Plugin", () => {
       })
     )
 
-    it.effect("generates separate enum file when configured", () =>
+    it.effect("generates separate enum file by default (typeReferences: separate)", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
-          .plugin.run({ outputDir: "models", enumStyle: "separate" })
+          .plugin.run({ outputDir: "models" })
           .pipe(Effect.provide(testLayer))
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        // Each enum should have its own file when enumStyle: "separate"
+        // Each enum should have its own file when typeReferences: "separate" (default)
         const enumEntities = getEnumEntities(ir)
         if (enumEntities.length > 0) {
           for (const enumEntity of enumEntities) {
