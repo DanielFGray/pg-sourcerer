@@ -5,19 +5,20 @@
  * - Field properties (isGenerated, isIdentity, hasDefault, nullable)
  * - Smart tags (sensitive, insert override)
  */
-import { Schema as S } from "effect";
+import { Array as Arr, Option, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import { definePlugin } from "../services/plugin.js";
 import type { FileNameContext } from "../services/plugin.js";
 import { inflect } from "../services/inflection.js";
-import { TsType } from "../services/pg-types.js";
+import { findEnumByPgName, TsType } from "../services/pg-types.js";
 import type { EnumLookupResult } from "../services/pg-types.js";
 import type { Field, TableEntity, EnumEntity, ExtensionInfo, CompositeEntity } from "../ir/semantic-ir.js";
 import { getEnumEntities, getTableEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
-import { isUuidType, isDateType, isBigIntType, resolveFieldType } from "../lib/field-utils.js";
+import type { ImportRef } from "../services/file-builder.js";
+import { isUuidType, isDateType, isBigIntType, isEnumType, getPgTypeName, resolveFieldType } from "../lib/field-utils.js";
 
 const { ts, exp, obj } = conjure;
 
@@ -28,8 +29,10 @@ const { ts, exp, obj } = conjure;
 const EffectModelPluginConfig = S.Struct({
   /** Output directory relative to main outputDir */
   outputDir: S.String,
-  /** How to handle enums: "inline" or "separate" file */
-  enumStyle: S.optional(S.Union(S.Literal("inline"), S.Literal("separate"))),
+  /** How to represent enum values: 'strings' uses S.Union(S.Literal(...)), 'enum' uses S.Enums(TsEnum) */
+  enumStyle: S.optional(S.Union(S.Literal("strings"), S.Literal("enum"))),
+  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
+  typeReferences: S.optional(S.Union(S.Literal("inline"), S.Literal("separate"))),
   /** Export inferred types for composite schemas (default: true) */
   exportTypes: S.optional(S.Boolean),
 });
@@ -132,6 +135,8 @@ interface FieldContext {
   readonly entity: TableEntity;
   readonly enums: readonly EnumEntity[];
   readonly extensions: readonly ExtensionInfo[];
+  readonly enumStyle: "strings" | "enum";
+  readonly typeReferences: "inline" | "separate";
 }
 
 /**
@@ -164,7 +169,22 @@ const getAutoTimestamp = (field: Field): "insert" | "update" | undefined => {
 const buildBaseSchemaType = (field: Field, ctx: FieldContext): n.Expression => {
   const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
 
-  if (resolved.enumDef) return buildEnumSchema(resolved.enumDef);
+  if (resolved.enumDef) {
+    if (ctx.typeReferences === "separate") {
+      // Reference by name - the enum schema is imported
+      return conjure.id(resolved.enumDef.name).build();
+    } else if (ctx.enumStyle === "enum") {
+      // Inline native enum: S.Enums(EnumName)
+      // Note: This requires the TS enum to be generated/imported
+      return conjure.id("S").method("Enums", [
+        conjure.id(resolved.enumDef.name).build()
+      ]).build();
+    } else {
+      // Inline strings: S.Union(S.Literal(...), ...)
+      return buildEnumSchema(resolved.enumDef);
+    }
+  }
+  
   if (isUuidType(field)) return conjure.id("S").prop("UUID").build();
   if (isDateType(field)) return conjure.id("S").prop("Date").build();
   if (isBigIntType(field)) return conjure.id("S").prop("BigInt").build();
@@ -291,6 +311,8 @@ const generateEnumStatement = (enumEntity: EnumEntity): SymbolStatement =>
 interface CompositeFieldContext {
   readonly enums: readonly EnumEntity[];
   readonly extensions: readonly ExtensionInfo[];
+  readonly enumStyle: "strings" | "enum";
+  readonly typeReferences: "inline" | "separate";
 }
 
 /**
@@ -299,7 +321,18 @@ interface CompositeFieldContext {
 const buildCompositeFieldSchema = (field: Field, ctx: CompositeFieldContext): n.Expression => {
   const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
 
-  if (resolved.enumDef) return buildEnumSchema(resolved.enumDef);
+  if (resolved.enumDef) {
+    if (ctx.typeReferences === "separate") {
+      return conjure.id(resolved.enumDef.name).build();
+    } else if (ctx.enumStyle === "enum") {
+      return conjure.id("S").method("Enums", [
+        conjure.id(resolved.enumDef.name).build()
+      ]).build();
+    } else {
+      return buildEnumSchema(resolved.enumDef);
+    }
+  }
+  
   if (isUuidType(field)) return conjure.id("S").prop("UUID").build();
   if (isDateType(field)) return conjure.id("S").prop("Date").build();
   if (isBigIntType(field)) return conjure.id("S").prop("BigInt").build();
@@ -338,6 +371,70 @@ const generateCompositeStatements = (
   const typeStatement = exp.type(composite.name, symbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
+};
+
+// ============================================================================
+// Enum Helpers
+// ============================================================================
+
+/** Collect enum names used by fields */
+const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> => {
+  const enumNames = fields
+    .filter(isEnumType)
+    .flatMap(field => {
+      const pgTypeName = getPgTypeName(field);
+      if (!pgTypeName) return [];
+      return pipe(
+        findEnumByPgName(enums, pgTypeName),
+        Option.map(e => e.name),
+        Option.toArray,
+      );
+    });
+  return new Set(enumNames);
+};
+
+/** Build import refs for used enums */
+const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
+  Arr.fromIterable(usedEnums).map(enumName => ({
+    kind: "symbol" as const,
+    ref: { capability: "models:effect", entity: enumName },
+  }));
+
+/**
+ * Generate enum schema for native enum style.
+ * Generates: export enum EnumName { A = 'a', ... } + export const EnumNameSchema = S.Enums(EnumName)
+ */
+const generateNativeEnumStatements = (enumEntity: EnumEntity): readonly SymbolStatement[] => {
+  const symbolCtx = { capability: "models:effect", entity: enumEntity.name };
+
+  // Generate: export enum EnumName { A = 'a', B = 'b', ... }
+  const enumDecl = conjure.b.tsEnumDeclaration(
+    conjure.b.identifier(enumEntity.name),
+    enumEntity.values.map(v =>
+      conjure.b.tsEnumMember(
+        conjure.b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
+        conjure.str(v),
+      ),
+    ),
+  );
+  const enumStatement: SymbolStatement = {
+    _tag: "SymbolStatement",
+    node: conjure.b.exportNamedDeclaration(enumDecl, []),
+    symbol: {
+      name: enumEntity.name,
+      capability: "models:effect",
+      entity: enumEntity.name,
+      isType: true,
+    },
+  };
+
+  const schemaName = `${enumEntity.name}Schema`;
+  const schemaExpr = conjure.id("S").method("Enums", [
+    conjure.id(enumEntity.name).build()
+  ]).build();
+  const schemaStatement = exp.const(schemaName, symbolCtx, schemaExpr);
+
+  return [enumStatement, schemaStatement];
 };
 
 // ============================================================================
@@ -389,10 +486,11 @@ export const effectModelPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enumEntities = getEnumEntities(ctx.ir);
-    const enumStyle = config.enumStyle ?? "inline";
+    const enumStyle = config.enumStyle ?? "strings";
+    const typeReferences = config.typeReferences ?? "separate";
 
     // Generate separate enum files if configured
-    if (enumStyle === "separate") {
+    if (typeReferences === "separate") {
       enumEntities
         .filter(e => e.tags.omit !== true)
         .forEach(enumEntity => {
@@ -405,10 +503,14 @@ export const effectModelPlugin = definePlugin({
           );
           const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
 
+          const statements = enumStyle === "enum"
+            ? generateNativeEnumStatements(enumEntity)
+            : [generateEnumStatement(enumEntity)];
+
           ctx
             .file(filePath)
             .import({ kind: "package", names: ["Schema as S"], from: "effect" })
-            .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
+            .ast(conjure.symbolProgram(...statements))
             .emit();
         });
     }
@@ -422,6 +524,8 @@ export const effectModelPlugin = definePlugin({
           entity,
           enums: enumEntities,
           extensions: ctx.ir.extensions,
+          enumStyle,
+          typeReferences,
         };
 
         const fileNameCtx = buildFileNameContext(
@@ -433,10 +537,19 @@ export const effectModelPlugin = definePlugin({
         );
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
 
-        ctx
+        // Collect enum usage for imports
+        const usedEnums = typeReferences === "separate"
+          ? collectUsedEnums(entity.shapes.row.fields, enumEntities)
+          : new Set<string>();
+
+        const fileBuilder = ctx
           .file(filePath)
           .import({ kind: "package", names: ["Model"], from: "@effect/sql" })
-          .import({ kind: "package", names: ["Schema as S"], from: "effect" })
+          .import({ kind: "package", names: ["Schema as S"], from: "effect" });
+
+        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+        fileBuilder
           .ast(conjure.symbolProgram(generateModelStatement(entity, className, fieldCtx)))
           .emit();
       });
@@ -445,6 +558,8 @@ export const effectModelPlugin = definePlugin({
     const compositeFieldCtx: CompositeFieldContext = {
       enums: enumEntities,
       extensions: ctx.ir.extensions,
+      enumStyle,
+      typeReferences,
     };
 
     getCompositeEntities(ctx.ir)
@@ -460,9 +575,18 @@ export const effectModelPlugin = definePlugin({
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
         const exportTypes = config.exportTypes ?? true;
 
-        ctx
+        // Collect enum usage for imports
+        const usedEnums = typeReferences === "separate"
+          ? collectUsedEnums(composite.fields, enumEntities)
+          : new Set<string>();
+
+        const fileBuilder = ctx
           .file(filePath)
-          .import({ kind: "package", names: ["Schema as S"], from: "effect" })
+          .import({ kind: "package", names: ["Schema as S"], from: "effect" });
+
+        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+        fileBuilder
           .ast(conjure.symbolProgram(...generateCompositeStatements(composite, compositeFieldCtx, exportTypes)))
           .emit();
       });
