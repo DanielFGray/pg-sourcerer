@@ -25,7 +25,7 @@
     "checkJs": true,
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
+    "exactOptionalPropertyTypes": false,
     // Style Options
     // "noImplicitReturns": true,
     // "noImplicitOverride": true,

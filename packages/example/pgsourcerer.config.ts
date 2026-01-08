@@ -1,5 +1,13 @@
 // @ts-check
-import { effectModelPlugin, typesPlugin, sqlQueriesPlugin, defineConfig, inflect } from "@danielfgray/pg-sourcerer"
+import {
+  defineConfig,
+  inflect,
+  typesPlugin,
+  arktypePlugin,
+  zodPlugin,
+  effectModelPlugin,
+  sqlQueriesPlugin,
+} from "@danielfgray/pg-sourcerer";
 
 /**
  * pg-sourcerer configuration for the example project
@@ -7,8 +15,8 @@ import { effectModelPlugin, typesPlugin, sqlQueriesPlugin, defineConfig, inflect
  * Generates Effect Model classes from the database schema.
  */
 export default defineConfig({
-  // Database connection - uses environment variables
-  connectionString: process.env.AUTH_DATABASE_URL ?? process.env.DATABASE_URL ?? "",
+  connectionString: process.env.AUTH_DATABASE_URL!, // ?? process.env.DATABASE_URL ?? "",
+  role: "visitor",
 
   // Schemas to introspect
   schemas: ["app_public", "app_private"],
@@ -18,7 +26,7 @@ export default defineConfig({
 
   // Inflection: PascalCase entities/enums, camelCase fields
   inflection: {
-    entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+    entityName: name => inflect.pascalCase(inflect.singularize(name)),
     fieldName: inflect.camelCase,
     enumName: inflect.pascalCase,
     shapeSuffix: inflect.capitalize,
@@ -28,9 +36,17 @@ export default defineConfig({
   plugins: [
     // Generate TypeScript types
     typesPlugin({ outputDir: "types" }),
+
+    // Generate Zod schemas
+    // zodPlugin({ outputDir: "zod", exportTypes: false }),
+
+    // Generate ArkType schemas
+    arktypePlugin({ outputDir: "ark", exportTypes: true }),
+
     // Generate Effect Model classes
-    effectModelPlugin({ outputDir: "models" }),
+    effectModelPlugin({ outputDir: "effect" }),
+
     // Generate SQL query functions
     sqlQueriesPlugin({ outputDir: "queries" }),
   ],
-})
+});
