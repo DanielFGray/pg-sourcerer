@@ -68,7 +68,7 @@ const availablePlugins: readonly PluginChoice[] = [
 // Prompts
 // ============================================================================
 
-const baseConnectionStringPrompt = Prompt.text({
+const connectionStringPrompt = Prompt.text({
   message: "Database connection string",
   validate: (value) =>
     value.trim().length === 0
@@ -80,13 +80,14 @@ const baseConnectionStringPrompt = Prompt.text({
  * Prompt for connection string and immediately test it.
  * Re-prompts on failure until successful.
  */
-const promptAndTestConnection = (): Effect.Effect<
-  string,
-  Terminal.QuitException,
-  Terminal.Terminal
-> =>
+const promptAndTestConnection = (
+  defaultValue?: string
+): Effect.Effect<string, Terminal.QuitException, Terminal.Terminal> =>
   Effect.gen(function* () {
-    const connStr = yield* baseConnectionStringPrompt
+    const prompt = defaultValue
+      ? Prompt.text({ message: "Database connection string", default: defaultValue })
+      : connectionStringPrompt
+    const connStr = yield* prompt
 
     yield* Console.log("Testing connection...")
     const result = yield* testConnection(connStr).pipe(
@@ -100,38 +101,57 @@ const promptAndTestConnection = (): Effect.Effect<
     } else {
       yield* Console.error(`✗ ${result.error}`)
       yield* Console.log("Please try again.\n")
-      return yield* promptAndTestConnection() // Recurse
+      // On retry, use the failed value as the new default so user can edit it
+      return yield* promptAndTestConnection(connStr)
     }
   })
 
-const schemasPrompt = Prompt.text({
-  message: "Schemas to introspect (comma-separated)",
-  default: "public",
-}).pipe(Prompt.map((s) => s.split(",").map((x) => x.trim()).filter((x) => x.length > 0)))
+/**
+ * Role prompt with explanation of when to use it.
+ * 
+ * If using Row Level Security (RLS), set this to the role your app connects as.
+ * This ensures generated types only include columns/tables visible to that role.
+ * Leave empty if not using RLS or connecting as a superuser.
+ */
+const makeRolePrompt = () =>
+  Prompt.text({
+    message: "PostgreSQL role (for RLS - leave empty if not using RLS)",
+    default: "",
+  }).pipe(Prompt.map((s) => s.trim() || undefined))
 
-const outputDirPrompt = Prompt.text({
-  message: "Output directory",
-  default: "src/generated",
-})
+const makeSchemasPrompt = () =>
+  Prompt.text({
+    message: "Schemas to introspect (comma-separated)",
+    default: "public",
+  }).pipe(Prompt.map((s) => s.split(",").map((x) => x.trim()).filter((x) => x.length > 0)))
 
-const pluginsPrompt = Prompt.multiSelect({
-  message: "Select plugins to enable (space to toggle, enter to confirm)",
-  choices: availablePlugins.map((p) => ({
-    title: `${p.title} - ${p.description}`,
-    value: p.value,
-    selected: p.selected,
-  })),
-})
+const makeOutputDirPrompt = () =>
+  Prompt.text({
+    message: "Output directory",
+    default: "src/generated",
+  })
 
-const classicInflectionPrompt = Prompt.confirm({
-  message: "Use classic inflection? (PascalCase entities, camelCase fields)",
-  initial: true,
-})
+const makePluginsPrompt = () =>
+  Prompt.multiSelect({
+    message: "Select plugins to enable (space to toggle, enter to confirm)",
+    choices: availablePlugins.map((p) => ({
+      title: `${p.title} - ${p.description}`,
+      value: p.value,
+      selected: p.selected,
+    })),
+  })
 
-const formatterPrompt = Prompt.text({
-  message: "Formatter command (optional, leave empty to skip)",
-  default: "",
-})
+const makeClassicInflectionPrompt = () =>
+  Prompt.confirm({
+    message: "Use classic inflection? (PascalCase entities, camelCase fields)",
+    initial: true,
+  })
+
+const makeFormatterPrompt = () =>
+  Prompt.text({
+    message: "Formatter command (optional, leave empty to skip)",
+    default: "",
+  })
 
 // ============================================================================
 // Connection Test
@@ -163,6 +183,7 @@ const testConnection = (connectionString: string) =>
 
 interface InitAnswers {
   connectionString: string
+  role: string | undefined
   schemas: readonly string[]
   outputDir: string
   plugins: readonly string[]
@@ -191,6 +212,11 @@ const generateConfigContent = (answers: InitAnswers): string => {
   // Build the config object
   let configObj = conjure.obj()
     .prop("connectionString", conjure.str(answers.connectionString))
+
+  // Role (only if set)
+  if (answers.role) {
+    configObj = configObj.prop("role", conjure.str(answers.role))
+  }
 
   // Schemas (only if not just ["public"])
   if (answers.schemas.length !== 1 || answers.schemas[0] !== "public") {
@@ -241,16 +267,26 @@ const CONFIG_FILENAME = "pgsourcerer.config.ts"
 
 export const runInit = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
+  const configPath = `${process.cwd()}/${CONFIG_FILENAME}`
+
+  // Check if config already exists
+  const exists = yield* fs.exists(configPath)
+  if (exists) {
+    yield* Console.error(`\n✗ ${CONFIG_FILENAME} already exists`)
+    yield* Console.log("  Edit it directly or delete it to start fresh.")
+    return yield* Effect.fail(new Error("Config already exists"))
+  }
 
   yield* Console.log("\n🔧 pg-sourcerer config generator\n")
 
   // Collect answers - connection string is tested immediately
   const connectionString = yield* promptAndTestConnection()
-  const schemas = yield* schemasPrompt
-  const outputDir = yield* outputDirPrompt
-  const plugins = yield* pluginsPrompt
-  const classicInflection = yield* classicInflectionPrompt
-  const formatter = yield* formatterPrompt
+  const role = yield* makeRolePrompt()
+  const schemas = yield* makeSchemasPrompt()
+  const outputDir = yield* makeOutputDirPrompt()
+  const plugins = yield* makePluginsPrompt()
+  const classicInflection = yield* makeClassicInflectionPrompt()
+  const formatter = yield* makeFormatterPrompt()
 
   // Validate at least one plugin selected
   if (plugins.length === 0) {
@@ -260,26 +296,12 @@ export const runInit = Effect.gen(function* () {
 
   const answers: InitAnswers = {
     connectionString,
+    role,
     schemas: schemas.length > 0 ? schemas : ["public"],
     outputDir: outputDir.trim() || "src/generated",
     plugins,
     classicInflection,
     formatter,
-  }
-
-  // Check for existing config
-  const configPath = `${process.cwd()}/${CONFIG_FILENAME}`
-  const exists = yield* fs.exists(configPath)
-
-  if (exists) {
-    const overwrite = yield* Prompt.confirm({
-      message: `${CONFIG_FILENAME} already exists. Overwrite?`,
-      initial: false,
-    })
-    if (!overwrite) {
-      yield* Console.log("Aborted.")
-      return
-    }
   }
 
   // Generate and write config
