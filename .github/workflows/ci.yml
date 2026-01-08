@@ -76,12 +76,16 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish pg-introspection to npm
-        run: npm publish --access public --provenance || true
         working-directory: packages/pg-introspection
+        run: |
+          TARBALL=$(bun pm pack | grep -o '[^ ]*\.tgz$')
+          npm publish "$TARBALL" --access public --provenance || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish pg-sourcerer to npm
-        run: npm publish --access public --provenance
+        run: |
+          TARBALL=$(bun pm pack | grep -o '[^ ]*\.tgz$')
+          npm publish "$TARBALL" --access public --provenance || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
