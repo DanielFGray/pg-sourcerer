@@ -21,6 +21,7 @@
       "name": "pgsourcerer-demo",
       "dependencies": {
         "@danielfgray/pg-sourcerer": "workspace:*",
+        "@effect/cli": "catalog:",
         "@effect/platform": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -62,6 +63,7 @@
         "effect": "catalog:",
         "lilconfig": "^3.1.3",
         "pg": "catalog:",
+        "postgres": "catalog:",
         "recast": "^0.23.11",
       },
       "devDependencies": {
@@ -85,6 +87,7 @@
     "effect": "^3.19.14",
     "pg": "^8.16.0",
     "pg-introspection": "^1.0.0-rc.2",
+    "postgres": "^3.4.7",
     "typescript": "^5.7.2",
     "vitest": "^3.2.4",
   },
@@ -900,6 +903,8 @@
     "possible-typed-array-names": ["possible-typed-array-names@1.1.0", "", {}, "sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg=="],
 
     "postcss": ["postcss@8.5.6", "", { "dependencies": { "nanoid": "^3.3.11", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg=="],
+
+    "postgres": ["postgres@3.4.8", "", {}, "sha512-d+JFcLM17njZaOLkv6SCev7uoLaBtfK86vMUXhW1Z4glPWh4jozno9APvW/XKFJ3CCxVoC7OL38BqRydtu5nGg=="],
 
     "postgres-array": ["postgres-array@2.0.0", "", {}, "sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA=="],
 
