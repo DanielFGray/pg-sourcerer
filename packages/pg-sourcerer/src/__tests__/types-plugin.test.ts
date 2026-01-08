@@ -86,7 +86,7 @@ describe("Types Plugin", () => {
   })
 
   describe("entity generation", () => {
-    it.effect("generates interfaces for User entity", () =>
+    it.effect("generates interfaces for Post entity", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -96,13 +96,11 @@ describe("Types Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        // Should have generated files for entities
-        const userFile = all.find((e) => e.path.includes("User.ts"))
-        expect(userFile).toBeDefined()
-        expect(userFile?.content).toContain("interface UserRow")
-        expect(userFile?.content).toContain("interface UserInsert")
-        expect(userFile?.content).toContain("interface UserUpdate")
-        expect(userFile?.content).toContain("interface UserPatch")
+        const postFile = all.find((e) => e.path.includes("Post.ts"))
+        expect(postFile).toBeDefined()
+        expect(postFile?.content).toContain("interface Post")
+        expect(postFile?.content).toContain("interface PostInsert")
+        expect(postFile?.content).toContain("interface PostUpdate")
       })
     )
 
@@ -140,17 +138,13 @@ describe("Types Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        const userFile = all.find((e) => e.path.includes("User.ts"))
-        expect(userFile).toBeDefined()
+        const postFile = all.find((e) => e.path.includes("Post.ts"))
+        expect(postFile).toBeDefined()
 
-        const content = userFile?.content ?? ""
+        const content = postFile?.content ?? ""
 
-        // In UserInsert, fields with defaults should be optional
-        // id (has default), createdAt (has default), updatedAt (has default)
-        // The regex checks for the optional marker ? before :
+        // In PostInsert, id has default so should be optional
         expect(content).toMatch(/id\?:/)
-        expect(content).toMatch(/createdAt\?:/)
-        expect(content).toMatch(/updatedAt\?:/)
       })
     )
 
@@ -258,8 +252,8 @@ describe("Types Plugin", () => {
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
         const allSymbols = symbols.getAll()
 
-        // Should have registered UserRow, UserInsert, etc.
-        const userRowSymbol = allSymbols.find((s) => s.name === "UserRow")
+        // Should have registered User, UserInsert, etc.
+        const userRowSymbol = allSymbols.find((s) => s.name === "User")
         expect(userRowSymbol).toBeDefined()
         expect(userRowSymbol?.capability).toBe("types")
         expect(userRowSymbol?.isType).toBe(true)

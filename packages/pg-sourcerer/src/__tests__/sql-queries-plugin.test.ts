@@ -196,8 +196,8 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // findUserById should return Promise<UserRow | null>
-        expect(userFile?.content).toMatch(/findUserById[\s\S]+?:\s*Promise<UserRow\s*\|\s*null>/)
+        // findUserById should return Promise<User | null>
+        expect(userFile?.content).toMatch(/findUserById[\s\S]+?:\s*Promise<User\s*\|\s*null>/)
       })
     )
 
@@ -212,8 +212,8 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        // getPostByUserId should return Promise<PostRow[]>
-        expect(postFile?.content).toMatch(/getPostByUserId[\s\S]+?:\s*Promise<PostRow\[\]>/)
+        // getPostByUserId should return Promise<Post[]>
+        expect(postFile?.content).toMatch(/getPostByUserId[\s\S]+?:\s*Promise<Post\[\]>/)
       })
     )
 
@@ -267,7 +267,7 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        expect(userFile?.content).toMatch(/import.*UserRow.*from/)
+        expect(userFile?.content).toMatch(/import.*User.*from/)
       })
     )
 

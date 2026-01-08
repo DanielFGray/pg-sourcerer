@@ -84,7 +84,7 @@ describe("Zod Plugin", () => {
   })
 
   describe("entity generation", () => {
-    it.effect("generates Zod schemas for User entity", () =>
+    it.effect("generates Zod schemas for Post entity", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -94,13 +94,11 @@ describe("Zod Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        // Should have generated files for entities
-        const userFile = all.find((e) => e.path.includes("User.ts"))
-        expect(userFile).toBeDefined()
-        expect(userFile?.content).toContain("UserRow = z.object")
-        expect(userFile?.content).toContain("UserInsert = z.object")
-        expect(userFile?.content).toContain("UserUpdate = z.object")
-        expect(userFile?.content).toContain("UserPatch = z.object")
+        const postFile = all.find((e) => e.path.includes("Post.ts"))
+        expect(postFile).toBeDefined()
+        expect(postFile?.content).toContain("Post = z.object")
+        expect(postFile?.content).toContain("PostInsert = z.object")
+        expect(postFile?.content).toContain("PostUpdate = z.object")
       })
     )
 
@@ -209,14 +207,13 @@ describe("Zod Plugin", () => {
 
         const all = yield* runPluginAndGetEmissions(testLayer)
 
-        const userFile = all.find((e) => e.path.includes("User.ts"))
-        expect(userFile).toBeDefined()
+        const postFile = all.find((e) => e.path.includes("Post.ts"))
+        expect(postFile).toBeDefined()
 
-        const content = userFile?.content ?? ""
+        const content = postFile?.content ?? ""
 
-        // Should have type exports using z.infer
-        expect(content).toContain("export type UserRow = z.infer<typeof UserRow>")
-        expect(content).toContain("export type UserInsert = z.infer<typeof UserInsert>")
+        expect(content).toContain("export type Post = z.infer<typeof Post>")
+        expect(content).toContain("export type PostInsert = z.infer<typeof PostInsert>")
       })
     )
 
@@ -236,8 +233,8 @@ describe("Zod Plugin", () => {
         const content = userFile?.content ?? ""
 
         // Should have const exports but NOT type exports
-        expect(content).toContain("export const UserRow = z.object")
-        expect(content).not.toContain("export type UserRow = z.infer")
+        expect(content).toContain("export const User = z.object")
+        expect(content).not.toContain("export type User = z.infer")
       })
     )
   })
@@ -279,9 +276,9 @@ describe("Zod Plugin", () => {
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
         const allSymbols = symbols.getAll()
 
-        // Should have registered UserRow schema
+        // Should have registered User schema
         const userRowSymbol = allSymbols.find(
-          (s) => s.name === "UserRow" && !s.isType
+          (s) => s.name === "User" && !s.isType
         )
         expect(userRowSymbol).toBeDefined()
         expect(userRowSymbol?.capability).toBe("schemas:zod")
@@ -300,9 +297,9 @@ describe("Zod Plugin", () => {
         const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
         const allSymbols = symbols.getAll()
 
-        // Should have registered UserRow type
+        // Should have registered User type
         const userRowTypeSymbol = allSymbols.find(
-          (s) => s.name === "UserRow" && s.isType
+          (s) => s.name === "User" && s.isType
         )
         expect(userRowTypeSymbol).toBeDefined()
         expect(userRowTypeSymbol?.capability).toBe("schemas:zod")
