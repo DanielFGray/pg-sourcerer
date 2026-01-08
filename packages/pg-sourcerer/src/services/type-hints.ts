@@ -15,7 +15,7 @@
  *
  * For same specificity, later rules in config override earlier ones.
  */
-import { Context, Layer, Order, pipe, Array as Arr } from "effect"
+import { Context, Layer, Option, Order, pipe, Array as Arr } from "effect"
 import type { TypeHint, TypeHintMatch } from "../config.js"
 
 /**
@@ -41,7 +41,7 @@ export interface TypeHintRegistry {
   /**
    * Get a specific hint value for a field
    */
-  readonly getHint: <T>(field: TypeHintFieldMatch, key: string) => T | undefined
+  readonly getHint: <T>(field: TypeHintFieldMatch, key: string) => Option.Option<T>
 }
 
 /**
@@ -146,9 +146,9 @@ export function createTypeHintRegistry(hints: readonly TypeHint[]): TypeHintRegi
   return {
     getHints: getHintsImpl,
 
-    getHint: <T>(field: TypeHintFieldMatch, key: string): T | undefined => {
+    getHint: <T>(field: TypeHintFieldMatch, key: string): Option.Option<T> => {
       const allHints = getHintsImpl(field)
-      return allHints[key] as T | undefined
+      return Option.fromNullable(allHints[key] as T | undefined)
     },
   }
 }
@@ -158,7 +158,7 @@ export function createTypeHintRegistry(hints: readonly TypeHint[]): TypeHintRegi
  */
 export const emptyTypeHintRegistry: TypeHintRegistry = {
   getHints: () => ({}),
-  getHint: () => undefined,
+  getHint: () => Option.none(),
 }
 
 /**
