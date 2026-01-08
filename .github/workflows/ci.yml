@@ -80,7 +80,7 @@ jobs:
         run: |
           bun pm pack
           TARBALL=$(ls -1 *.tgz | head -1)
-          npm publish "$TARBALL" --access public --provenance || true
+          npm publish "$TARBALL" --access public --provenance --ignore-scripts || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -89,6 +89,6 @@ jobs:
         run: |
           bun pm pack
           TARBALL=$(ls -1 *.tgz | head -1)
-          npm publish "$TARBALL" --access public --provenance || true
+          npm publish "$TARBALL" --access public --provenance --ignore-scripts || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
