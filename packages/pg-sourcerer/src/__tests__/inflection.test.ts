@@ -194,12 +194,11 @@ describe("Inflection Service", () => {
   })
 
   describe("shapeName", () => {
-    it("appends kind unchanged to entity name (identity - no transforms)", () => {
-      // defaultInflection applies no transforms to shapeSuffix
-      expect(defaultInflection.shapeName("User", "row")).toBe("Userrow")
+    it("returns entity name for row, appends kind for others", () => {
+      // row shape has no suffix, insert/update have suffix appended
+      expect(defaultInflection.shapeName("User", "row")).toBe("User")
       expect(defaultInflection.shapeName("User", "insert")).toBe("Userinsert")
       expect(defaultInflection.shapeName("User", "update")).toBe("Userupdate")
-      expect(defaultInflection.shapeName("User", "patch")).toBe("Userpatch")
     })
   })
 
@@ -356,21 +355,23 @@ describe("createInflection", () => {
   })
 
   describe("with shapeSuffix chain", () => {
-    it("applies capitalize transform", () => {
+    it("applies capitalize transform to non-row shapes only", () => {
       const inflection = createInflection({
         shapeSuffix: inflect.capitalize,
       })
 
-      expect(inflection.shapeName("User", "row")).toBe("UserRow")
+      // row shape never gets suffix
+      expect(inflection.shapeName("User", "row")).toBe("User")
       expect(inflection.shapeName("User", "insert")).toBe("UserInsert")
     })
 
-    it("applies uppercase transform", () => {
+    it("applies uppercase transform to non-row shapes only", () => {
       const inflection = createInflection({
         shapeSuffix: inflect.uppercase,
       })
 
-      expect(inflection.shapeName("User", "row")).toBe("UserROW")
+      // row shape never gets suffix
+      expect(inflection.shapeName("User", "row")).toBe("User")
       expect(inflection.shapeName("User", "insert")).toBe("UserINSERT")
     })
   })
@@ -399,7 +400,8 @@ describe("createInflection", () => {
       expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
       expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("userId")
       expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
-      expect(inflection.shapeName("User", "row")).toBe("UserRow")
+      // row shape never gets suffix
+      expect(inflection.shapeName("User", "row")).toBe("User")
     })
   })
 
@@ -548,22 +550,24 @@ describe("composeInflection", () => {
   })
 
   describe("shapeSuffix composition", () => {
-    it("applies plugin transform to shape suffix", () => {
+    it("applies plugin transform to non-row shape suffix", () => {
       const composed = composeInflection(defaultInflection, {
         shapeSuffix: inflect.uppercase,
       })
 
-      expect(composed.shapeName("User", "row")).toBe("UserROW")
+      // row shape never gets suffix
+      expect(composed.shapeName("User", "row")).toBe("User")
       expect(composed.shapeName("User", "insert")).toBe("UserINSERT")
     })
 
-    it("composes with base shapeName behavior", () => {
+    it("composes with base shapeName behavior for non-row shapes", () => {
       // Plugin: capitalize  Base: (identity)
       const composed = composeInflection(defaultInflection, {
         shapeSuffix: inflect.capitalize,
       })
 
-      expect(composed.shapeName("User", "row")).toBe("UserRow")
+      // row shape never gets suffix
+      expect(composed.shapeName("User", "row")).toBe("User")
       expect(composed.shapeName("User", "insert")).toBe("UserInsert")
     })
   })
@@ -632,8 +636,9 @@ describe("composeInflection", () => {
       // enums: "USER_STATUS" → lowercase → "user_status" → pascalCase → "UserStatus"
       expect(composed.enumName(mockPgType("USER_STATUS"), emptyTags)).toBe("UserStatus")
 
-      // shapes: "row" → uppercase → "ROW" (then concatenated)
-      expect(composed.shapeName("User", "row")).toBe("UserROW")
+      // shapes: row never gets suffix, insert gets uppercase suffix
+      expect(composed.shapeName("User", "row")).toBe("User")
+      expect(composed.shapeName("User", "insert")).toBe("UserINSERT")
     })
   })
 })
