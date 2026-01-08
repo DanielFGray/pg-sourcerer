@@ -1,6 +1,6 @@
 {
   "name": "@danielfgray/pg-sourcerer",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "PostgreSQL code generation framework with a plugin ecosystem",
   "type": "module",
   "main": "dist/index.js",
@@ -24,7 +24,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/cli.js",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",
