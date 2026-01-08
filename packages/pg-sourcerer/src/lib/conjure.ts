@@ -749,12 +749,54 @@ const ts = {
     return ref
   },
 
-  /** Qualified name reference: `Namespace.Type` */
-  qualifiedRef: (qualifier: string, name: string, typeParams?: n.TSType[]) => {
-    const ref = b.tsTypeReference(
-      b.tsQualifiedName(b.identifier(qualifier), b.identifier(name))
-    )
+  /** 
+   * Qualified name reference: `Namespace.Type` or `Namespace.Nested.Type`
+   * 
+   * @param parts - Dot-separated path segments (e.g., "S", "Schema", "Type" for S.Schema.Type)
+   *                or two strings for simple qualified names (e.g., "z", "infer")
+   * @param typeParams - Optional type parameters
+   */
+  qualifiedRef: (first: string, second: string, typeParamsOrThird?: n.TSType[] | string, ...rest: string[]) => {
+    let parts: string[];
+    let typeParams: n.TSType[] | undefined;
+
+    if (typeof typeParamsOrThird === "string") {
+      // Called with multiple string parts: qualifiedRef("S", "Schema", "Type", ...)
+      parts = [first, second, typeParamsOrThird, ...rest];
+      typeParams = undefined;
+    } else {
+      // Called with two parts and optional type params: qualifiedRef("z", "infer", [typeParams])
+      parts = [first, second];
+      typeParams = typeParamsOrThird;
+    }
+
+    // Build nested qualified name from parts
+    // e.g., ["S", "Schema", "Type"] -> S.Schema.Type
+    let qualifiedName: n.Identifier | n.TSQualifiedName = b.identifier(parts[0]!);
+    for (let i = 1; i < parts.length; i++) {
+      qualifiedName = b.tsQualifiedName(qualifiedName, b.identifier(parts[i]!));
+    }
+
+    const ref = b.tsTypeReference(qualifiedName);
     if (typeParams && typeParams.length > 0) {
+      ref.typeParameters = b.tsTypeParameterInstantiation(
+        typeParams.map(toTSType)
+      )
+    }
+    return ref
+  },
+
+  /**
+   * Qualified name with type params after path: `S.Schema.Type<T>`
+   * Use when you need both nested path AND type parameters.
+   */
+  qualifiedRefWithParams: (parts: string[], typeParams: n.TSType[]) => {
+    let qualifiedName: n.Identifier | n.TSQualifiedName = b.identifier(parts[0]!);
+    for (let i = 1; i < parts.length; i++) {
+      qualifiedName = b.tsQualifiedName(qualifiedName, b.identifier(parts[i]!));
+    }
+    const ref = b.tsTypeReference(qualifiedName);
+    if (typeParams.length > 0) {
       ref.typeParameters = b.tsTypeParameterInstantiation(
         typeParams.map(toTSType)
       )

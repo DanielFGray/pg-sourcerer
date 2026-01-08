@@ -682,4 +682,130 @@ describe("Effect Model Plugin", () => {
       )
     })
   })
+
+  describe("composite type generation", () => {
+    it.effect("generates S.Struct schemas for composite types", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        // Check for composite type file (UsernameSearch or TagSearchResult from example DB)
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        expect(compositeFile?.content).toContain("S.Struct")
+      })
+    )
+
+    it.effect("composite schemas do not use Model.Class", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        // Composites use S.Struct, not Model.Class
+        expect(compositeFile?.content).not.toContain("Model.Class")
+      })
+    )
+
+    it.effect("composite schemas only import Schema, not Model", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        // Should import Schema as S from effect, but NOT Model from @effect/sql
+        expect(compositeFile?.content).toContain('import { Schema as S } from "effect"')
+        expect(compositeFile?.content).not.toContain('@effect/sql')
+      })
+    )
+
+    it.effect("registers symbols for composite schemas", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models" })
+          .pipe(Effect.provide(testLayer))
+
+        const symbols = yield* Symbols.pipe(Effect.provide(testLayer))
+        const allSymbols = symbols.getAll()
+
+        // Should have registered composite schema
+        const compositeSymbol = allSymbols.find(
+          s => (s.entity === "UsernameSearch" || s.entity === "TagSearchResult") && !s.isType
+        )
+        expect(compositeSymbol).toBeDefined()
+        expect(compositeSymbol?.capability).toBe("models:effect")
+      })
+    )
+
+    it.effect("exports inferred types for composites by default", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        // Should have S.Schema.Type<typeof X> for inferred type
+        expect(compositeFile?.content).toContain("S.Schema.Type<typeof")
+      })
+    )
+
+    it.effect("does not export inferred types when exportTypes is false", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* effectModelPlugin
+          .plugin.run({ outputDir: "models", exportTypes: false })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+
+        const compositeFile = all.find(e => 
+          e.path.includes("UsernameSearch.ts") || e.path.includes("TagSearchResult.ts")
+        )
+        expect(compositeFile).toBeDefined()
+        // Should NOT have type export
+        expect(compositeFile?.content).not.toContain("S.Schema.Type")
+        // But should still have the schema
+        expect(compositeFile?.content).toContain("S.Struct")
+      })
+    )
+  })
 })

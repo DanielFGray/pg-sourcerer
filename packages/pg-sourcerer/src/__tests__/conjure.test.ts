@@ -687,6 +687,24 @@ describe("Conjure", () => {
         )
         expect(printStmt(result)).toBe("let x: React.FC<Props>;")
       })
+
+      it("creates nested qualified type reference", () => {
+        const result = conjure.stmt.let(
+          "x",
+          undefined,
+          conjure.ts.qualifiedRef("S", "Schema", "Type")
+        )
+        expect(printStmt(result)).toBe("let x: S.Schema.Type;")
+      })
+
+      it("creates nested qualified type with params via qualifiedRefWithParams", () => {
+        const result = conjure.stmt.let(
+          "x",
+          undefined,
+          conjure.ts.qualifiedRefWithParams(["S", "Schema", "Type"], [conjure.ts.typeof("Foo")])
+        )
+        expect(printStmt(result)).toBe("let x: S.Schema.Type<typeof Foo>;")
+      })
     })
 
     describe("composite types", () => {

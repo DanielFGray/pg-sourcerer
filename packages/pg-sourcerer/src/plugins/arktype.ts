@@ -21,8 +21,9 @@ import type {
   ExtensionInfo,
   TableEntity,
   EnumEntity,
+  CompositeEntity,
 } from "../ir/semantic-ir.js";
-import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js";
+import { getTableEntities, getEnumEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
 import { isUuidType, isDateType, resolveFieldType } from "../lib/field-utils.js";
@@ -233,6 +234,50 @@ const generateEntityStatements = (
   );
 
 // ============================================================================
+// Composite Type Generation
+// ============================================================================
+
+/**
+ * Build type({ ... }) expression from composite fields
+ */
+const buildCompositeArkTypeObject = (composite: CompositeEntity, ctx: FieldContext): n.Expression => {
+  const objBuilder = composite.fields.reduce((builder, field) => {
+    const typeString = resolveFieldArkTypeString(field, ctx);
+    // Use "key?" syntax for optional fields
+    if (field.optional) {
+      return builder.stringProp(`${field.name}?`, conjure.str(typeString));
+    }
+    return builder.prop(field.name, conjure.str(typeString));
+  }, obj());
+
+  return conjure.id("type").call([objBuilder.build()]).build();
+};
+
+/**
+ * Generate schema const + optional inferred type for a composite type
+ */
+const generateCompositeStatements = (
+  composite: CompositeEntity,
+  ctx: FieldContext,
+  exportTypes: boolean
+): readonly SymbolStatement[] => {
+  const symbolCtx = { capability: "schemas:arktype", entity: composite.name };
+  const schemaExpr = buildCompositeArkTypeObject(composite, ctx);
+
+  const schemaStatement = exp.const(composite.name, symbolCtx, schemaExpr);
+
+  if (!exportTypes) {
+    return [schemaStatement];
+  }
+
+  // Generate: export type CompositeName = typeof CompositeName.infer
+  const inferType = ts.typeof(`${composite.name}.infer`);
+  const typeStatement = exp.type(composite.name, symbolCtx, inferType);
+
+  return [schemaStatement, typeStatement];
+};
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -267,6 +312,29 @@ export const arktypePlugin = definePlugin({
           schema: entity.schemaName,
           inflection: ctx.inflection,
           entity,
+        };
+        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
+        const filePath = `${config.outputDir}/${fileName}`;
+
+        ctx
+          .file(filePath)
+          .import({ kind: "package", names: ["type"], from: "arktype" })
+          .ast(conjure.symbolProgram(...statements))
+          .emit();
+      });
+
+    // Generate composite type schemas
+    getCompositeEntities(ctx.ir)
+      .filter((composite) => composite.tags.omit !== true)
+      .forEach((composite) => {
+        const statements = generateCompositeStatements(composite, fieldCtx, config.exportTypes);
+
+        const fileNameCtx: FileNameContext = {
+          entityName: composite.name,
+          pgName: composite.pgName,
+          schema: composite.schemaName,
+          inflection: ctx.inflection,
+          entity: composite,
         };
         const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
         const filePath = `${config.outputDir}/${fileName}`;
