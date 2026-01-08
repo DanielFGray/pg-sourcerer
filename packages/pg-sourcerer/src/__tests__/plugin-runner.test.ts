@@ -1042,7 +1042,7 @@ layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
               .ast(
                 conjure.symbolProgram(
                   conjure.exp.interface(
-                    "UserRow",
+                    "User",
                     { capability: "types", entity: "User", shape: "row" },
                     [{ name: "id", type: conjure.ts.string() }]
                   )
@@ -1057,7 +1057,7 @@ layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
           // Check symbols were registered
           const symbols = result.symbols.getAll()
           expect(symbols).toHaveLength(1)
-          expect(symbols[0]!.name).toBe("UserRow")
+          expect(symbols[0]!.name).toBe("User")
           expect(symbols[0]!.file).toBe("types/User.ts")
           expect(symbols[0]!.capability).toBe("types")
           expect(symbols[0]!.entity).toBe("User")
@@ -1068,7 +1068,7 @@ layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
           expect(emissions).toHaveLength(1)
           expect(emissions[0]!.path).toBe("types/User.ts")
           expect(emissions[0]!.content).toContain("// Auto-generated")
-          expect(emissions[0]!.content).toContain("export interface UserRow")
+          expect(emissions[0]!.content).toContain("export interface User")
         })
       )
 
@@ -1082,7 +1082,7 @@ layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
               .ast(
                 conjure.symbolProgram(
                   conjure.exp.interface(
-                    "UserRow",
+                    "User",
                     { capability: "types", entity: "User" },
                     []
                   )
@@ -1094,7 +1094,7 @@ layer(PluginRunnerTestLayer)("PluginRunner", (it) => {
               .ast(
                 conjure.symbolProgram(
                   conjure.exp.interface(
-                    "PostRow",
+                    "Post",
                     { capability: "types", entity: "Post" },
                     []
                   )

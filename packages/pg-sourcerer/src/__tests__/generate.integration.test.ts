@@ -88,11 +88,10 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           // Header comment
           expect(userContent).toContain("AUTO-GENERATED")
 
-          // All four shape interfaces should exist
-          expect(userContent).toContain("export interface UserRow")
+          // Shape interfaces (patch no longer generated - identical to update)
+          expect(userContent).toContain("export interface User")
           expect(userContent).toContain("export interface UserInsert")
           expect(userContent).toContain("export interface UserUpdate")
-          expect(userContent).toContain("export interface UserPatch")
 
           // Fields should be camelCase (from classicInflectionConfig)
           expect(userContent).toContain("avatarUrl")
