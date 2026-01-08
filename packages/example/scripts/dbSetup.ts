@@ -1,6 +1,14 @@
+#!/usr/bin/env bun
+/**
+ * Database setup script
+ *
+ * Drops and recreates databases and roles for local development.
+ * Uses @effect/cli Prompt for user confirmation.
+ */
+import { Prompt } from "@effect/cli";
+import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Effect, Schedule, pipe, Duration, Data } from "effect";
 import pg from "pg";
-import * as Prompt from "../../lib/prompt.js";
 
 // Environment variables
 const {
@@ -94,11 +102,16 @@ const acquireConnection = (pool: pg.Pool) =>
       }),
   );
 
-// Prompt user for confirmation
+// Prompt user for confirmation using @effect/cli
 const confirmAction = Effect.gen(function* () {
+  // Support NOCONFIRM env var for non-interactive mode
+  if (process.env.NOCONFIRM) {
+    return true;
+  }
+
   const result = yield* Prompt.confirm({
-    message: "press y to continue:",
-    default: true,
+    message: "Press y to continue:",
+    initial: true,
   });
 
   if (!result) {
@@ -207,5 +220,5 @@ const program = Effect.gen(function* () {
   );
 });
 
-// Run the program - Effect runtime handles SIGINT/SIGTERM automatically
-Effect.runFork(program);
+// Run with Node.js platform (provides Terminal for prompts)
+program.pipe(Effect.provide(NodeContext.layer), NodeRuntime.runMain);
