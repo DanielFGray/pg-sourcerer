@@ -950,7 +950,7 @@ describe("Conjure", () => {
   describe("export helpers (exp.*)", () => {
     it("creates exported interface with symbol metadata", () => {
       const iface = conjure.exp.interface(
-        "UserRow",
+        "User",
         { capability: "types", entity: "User", shape: "row" },
         [
           { name: "id", type: conjure.ts.string() },
@@ -961,7 +961,7 @@ describe("Conjure", () => {
 
       expect(iface._tag).toBe("SymbolStatement")
       expect(iface.symbol).toEqual({
-        name: "UserRow",
+        name: "User",
         capability: "types",
         entity: "User",
         shape: "row",
@@ -969,7 +969,7 @@ describe("Conjure", () => {
       })
 
       const code = printStmt(iface.node)
-      expect(code).toContain("export interface UserRow")
+      expect(code).toContain("export interface User")
       expect(code).toContain("id: string")
       expect(code).toContain("email: string")
       expect(code).toContain("age?: number")
@@ -1052,7 +1052,7 @@ describe("Conjure", () => {
     it("extracts symbols from SymbolStatements", () => {
       const prog = conjure.symbolProgram(
         conjure.exp.interface(
-          "UserRow",
+          "User",
           { capability: "types", entity: "User", shape: "row" },
           [{ name: "id", type: conjure.ts.string() }]
         ),
@@ -1066,7 +1066,7 @@ describe("Conjure", () => {
       expect(prog._tag).toBe("SymbolProgram")
       expect(prog.symbols).toHaveLength(2)
       expect(prog.symbols[0]).toEqual({
-        name: "UserRow",
+        name: "User",
         capability: "types",
         entity: "User",
         shape: "row",
@@ -1084,7 +1084,7 @@ describe("Conjure", () => {
       const prog = conjure.symbolProgram(
         conjure.stmt.const("x", conjure.num(1)),
         conjure.exp.interface(
-          "UserRow",
+          "User",
           { capability: "types", entity: "User" },
           []
         ),
@@ -1093,11 +1093,11 @@ describe("Conjure", () => {
 
       expect(prog._tag).toBe("SymbolProgram")
       expect(prog.symbols).toHaveLength(1)
-      expect(prog.symbols[0]!.name).toBe("UserRow")
+      expect(prog.symbols[0]!.name).toBe("User")
 
       const code = conjure.print(prog.node)
       expect(code).toContain("const x = 1")
-      expect(code).toContain("export interface UserRow")
+      expect(code).toContain("export interface User")
       expect(code).toContain("const y = 2")
     })
 
