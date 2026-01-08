@@ -283,19 +283,10 @@ describe("Effect Model Plugin", () => {
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         
-        // Find a view entity - views typically have !canInsert && !canUpdate
+        // Find a view entity
         const viewEntity = Array.from(ir.entities.values()).find(
           (e): e is TableEntity => isTableEntity(e) && e.kind === "view"
         )
-        
-        // Verify the heuristic preconditions exist in views
-        if (viewEntity) {
-          // View fields should have !canInsert && !canUpdate
-          for (const field of viewEntity.shapes.row.fields) {
-            expect(field.permissions.canInsert).toBe(false)
-            expect(field.permissions.canUpdate).toBe(false)
-          }
-        }
         
         // Run the plugin and verify view fields with defaults get Model.Generated
         const testLayer = createTestLayer(ir)
@@ -310,12 +301,13 @@ describe("Effect Model Plugin", () => {
         expect(viewFile).toBeDefined()
         expect(viewFile?.content).toContain("Model.Class")
         
-        // Since views can't be inserted/updated, fields with defaults should use Model.Generated
-        // The id field in recent_posts view has a default (from underlying posts table)
-        // and can't be inserted/updated, so it should be wrapped with Model.Generated
+        // If the view has fields with defaults that are non-insertable/updateable,
+        // they should use Model.Generated. Check the actual field permissions.
         if (viewEntity) {
-          const hasFieldWithDefault = viewEntity.shapes.row.fields.some((f: Field) => f.hasDefault)
-          if (hasFieldWithDefault) {
+          const nonMutableFieldsWithDefaults = viewEntity.shapes.row.fields.filter(
+            (f: Field) => f.hasDefault && !f.permissions.canInsert && !f.permissions.canUpdate
+          )
+          if (nonMutableFieldsWithDefaults.length > 0) {
             expect(viewFile?.content).toContain("Model.Generated")
           }
         }

@@ -2,13 +2,17 @@
 /**
  * Generate introspection fixture from the example database
  *
- * Run: bun scripts/generate-fixture.ts
+ * Usage:
+ *   bun scripts/generate-fixture.ts                    # owner fixture (default)
+ *   bun scripts/generate-fixture.ts --role visitor     # visitor fixture
+ *
  * Requires: cd packages/example && docker compose up
  */
 import { Effect } from "effect"
 import { writeFileSync } from "fs"
 import { join } from "path"
 import { introspectDatabase } from "../src/services/introspection.js"
+import { parseArgs } from "util"
 
 const { DATABASE_URL } = process.env
 
@@ -18,24 +22,34 @@ async function main() {
     process.exit(1)
   }
 
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      role: { type: "string", short: "r" },
+    },
+  })
+
+  const role = values.role
+
   const introspection = await Effect.runPromise(
     introspectDatabase({
       connectionString: DATABASE_URL,
-      role: "visitor",
+      ...(role ? { role } : {}),
     })
   )
 
-  // Introspection object needs to be serialized
-  // We stringify it directly since pg-introspection parses JSON internally
+  const filename = role ? `${role}_introspection.json` : "introspection.json"
   const fixturePath = join(
     import.meta.dirname,
-    "../src/__tests__/fixtures/introspection.json"
+    "../src/__tests__/fixtures",
+    filename
   )
 
   const json = JSON.stringify(introspection, null, 2)
   writeFileSync(fixturePath, json)
 
   console.log(`Wrote fixture to ${fixturePath}`)
+  console.log(`Role: ${role ?? "(connection default)"}`)
   console.log(`Size: ${(json.length / 1024).toFixed(1)} KB`)
 }
 
