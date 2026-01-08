@@ -39,7 +39,7 @@ describe("SymbolRegistry", () => {
       const registry = createSymbolRegistry()
 
       const rowSymbol: Symbol = {
-        name: "UserRow",
+        name: "User",
         file: "types/User.ts",
         capability: "types",
         entity: "User",
@@ -151,15 +151,16 @@ describe("SymbolRegistry", () => {
       expect(registry.validate()).toEqual([])
     })
 
-    it("detects collision when same name in same file from different plugins", () => {
+    it("detects collision when same name and kind in same file from different plugins", () => {
       const registry = createSymbolRegistry()
 
+      // Both are types - this is a collision
       registry.register(
         { name: "User", file: "types/User.ts", capability: "types", entity: "User", isType: true, isDefault: false },
         "plugin-a"
       )
       registry.register(
-        { name: "User", file: "types/User.ts", capability: "schemas", entity: "User", isType: false, isDefault: false },
+        { name: "User", file: "types/User.ts", capability: "schemas", entity: "User", isType: true, isDefault: false },
         "plugin-b"
       )
 
@@ -169,6 +170,22 @@ describe("SymbolRegistry", () => {
       expect(collisions[0]?.file).toBe("types/User.ts")
       expect(collisions[0]?.plugins).toContain("plugin-a")
       expect(collisions[0]?.plugins).toContain("plugin-b")
+    })
+
+    it("no collision when type and value have same name in same file from different plugins", () => {
+      const registry = createSymbolRegistry()
+
+      // One is a type, one is a value - allowed (different namespaces in TS)
+      registry.register(
+        { name: "User", file: "types/User.ts", capability: "types", entity: "User", isType: true, isDefault: false },
+        "plugin-a"
+      )
+      registry.register(
+        { name: "User", file: "types/User.ts", capability: "schemas", entity: "User", isType: false, isDefault: false },
+        "plugin-b"
+      )
+
+      expect(registry.validate()).toEqual([])
     })
 
     it("no collision when same plugin registers same name multiple times", () => {

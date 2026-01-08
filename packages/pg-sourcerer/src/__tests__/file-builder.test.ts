@@ -107,7 +107,7 @@ describe("FileBuilder", () => {
 
       const program = conjure.symbolProgram(
         conjure.exp.interface(
-          "UserRow",
+          "User",
           { capability: "types", entity: "User", shape: "row" },
           [{ name: "id", type: conjure.ts.string() }]
         ),
@@ -123,7 +123,7 @@ describe("FileBuilder", () => {
       const allSymbols = symbols.getAll()
       expect(allSymbols).toHaveLength(2)
 
-      const userSymbol = allSymbols.find((s) => s.name === "UserRow")
+      const userSymbol = allSymbols.find((s) => s.name === "User")
       expect(userSymbol).toBeDefined()
       expect(userSymbol!.file).toBe("output/types.ts")
       expect(userSymbol!.capability).toBe("types")
@@ -168,7 +168,7 @@ describe("FileBuilder", () => {
         .ast(
           conjure.symbolProgram(
             conjure.exp.interface(
-              "UserRow",
+              "User",
               { capability: "types", entity: "User" },
               []
             )

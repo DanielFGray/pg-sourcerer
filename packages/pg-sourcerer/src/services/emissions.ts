@@ -176,6 +176,9 @@ function prependImports(
   return b.program([...statements, ...ast.body])
 }
 
+/** Normalize path for comparison (remove leading ./) */
+const normalizePath = (path: string): string => path.replace(/^\.\//, "")
+
 /** Resolve an ImportRef to source/named/types/default */
 function resolveImportRef(
   ref: ImportRef,
@@ -186,6 +189,8 @@ function resolveImportRef(
     case "symbol": {
       const symbol = symbols.resolve(ref.ref)
       if (!symbol) return undefined
+      // Skip import if symbol is in the same file (already declared locally)
+      if (normalizePath(symbol.file) === normalizePath(forFile)) return undefined
       const importStmt = symbols.importFor(symbol, forFile)
       const base = {
         source: importStmt.from,

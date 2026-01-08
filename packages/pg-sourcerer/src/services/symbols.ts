@@ -152,20 +152,21 @@ export function createSymbolRegistry(): SymbolRegistry {
     },
 
     validate: () => {
-      // Flatten all entries, group by file+name, find collisions
+      // Flatten all entries, group by file+name+isType, find collisions
+      // A type and a value with the same name are allowed (different namespaces)
       const allEntries = pipe(
         MutableHashMap.values(symbols),
         Arr.fromIterable,
         Arr.flatten
       )
 
-      // Group by file:name
-      const byFileAndName = pipe(
+      // Group by file:name:isType (type vs value namespace)
+      const byFileNameAndKind = pipe(
         allEntries,
         Arr.reduce(
           new Map<string, { symbol: Symbol; plugin: string }[]>(),
           (map, entry) => {
-            const key = `${entry.symbol.file}:${entry.symbol.name}`
+            const key = `${entry.symbol.file}:${entry.symbol.name}:${entry.symbol.isType}`
             const existing = map.get(key) ?? []
             existing.push(entry)
             map.set(key, existing)
@@ -174,9 +175,9 @@ export function createSymbolRegistry(): SymbolRegistry {
         )
       )
 
-      // Find entries with multiple plugins
+      // Find entries with multiple plugins in same namespace
       return pipe(
-        [...byFileAndName.entries()],
+        [...byFileNameAndKind.entries()],
         Arr.filterMap(([key, entries]) => {
           if (entries.length <= 1) return Option.none()
           const [file, symbol] = key.split(":") as [string, string]

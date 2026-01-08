@@ -305,7 +305,7 @@ describe("Emission Buffer", () => {
       const symbols = createSymbolRegistry()
       const program = b.program([])
       const imports: ImportRef[] = [
-        { kind: "relative", types: ["UserRow"], from: "./types.js" },
+        { kind: "relative", types: ["User"], from: "./types.js" },
       ]
 
       buffer.emitAst("output/schema.ts", program, "zod-plugin", undefined, imports)
@@ -315,7 +315,7 @@ describe("Emission Buffer", () => {
       expect(all).toHaveLength(1)
       // types are imported with type-only import declaration
       expect(all[0]!.content).toContain("import type")
-      expect(all[0]!.content).toContain("UserRow")
+      expect(all[0]!.content).toContain("User")
       expect(all[0]!.content).toContain("./types.js")
     })
 
@@ -326,7 +326,7 @@ describe("Emission Buffer", () => {
       // Register a symbol first
       symbols.register(
         {
-          name: "UserRow",
+          name: "User",
           file: "generated/types/User.ts",
           capability: "types",
           entity: "User",
@@ -359,7 +359,7 @@ describe("Emission Buffer", () => {
       expect(all).toHaveLength(1)
       // Should have relative import from schemas/User.ts to types/User.ts
       expect(all[0]!.content).toContain("import")
-      expect(all[0]!.content).toContain("UserRow")
+      expect(all[0]!.content).toContain("User")
       expect(all[0]!.content).toContain("../types/User.js")
     })
 
