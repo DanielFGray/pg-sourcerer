@@ -131,6 +131,7 @@ export function createConfigLoader(): ConfigLoader {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- inflection is S.Any in schema, validated by plugin system
           inflection: parseResult.inflection,
           plugins: parseResult.plugins,
+          formatter: parseResult.formatter,
         };
 
         return resolved;
