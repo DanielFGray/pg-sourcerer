@@ -50,9 +50,182 @@ Options:
 
 | Plugin | Provides | Description |
 |--------|----------|-------------|
-| `typesPlugin` | TypeScript interfaces | `UserRow`, `UserInsert`, `UserUpdate` |
+| `typesPlugin` | TypeScript interfaces | `User`, `UserInsert`, `UserUpdate` |
 | `zodPlugin` | Zod schemas | Runtime validation with inferred types |
+| `arktypePlugin` | ArkType validators | String-based type syntax with inference |
 | `effectModelPlugin` | Effect Model classes | Rich models with Schema integration |
+| `kyselyQueriesPlugin` | Kysely query builders | Type-safe CRUD operations |
+| `sqlQueriesPlugin` | Raw SQL functions | Parameterized query helpers |
+
+## What Gets Generated
+
+Given a PostgreSQL table like:
+
+```sql
+CREATE TABLE users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  username citext UNIQUE NOT NULL,
+  name text,
+  role user_role NOT NULL DEFAULT 'user',
+  bio text NOT NULL DEFAULT '',
+  is_verified boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Each plugin generates different artifacts:
+
+### `typesPlugin` — TypeScript Interfaces
+
+```typescript
+import type { UserRole } from "./UserRole.js";
+
+export interface User {
+  id: string;
+  username: string;
+  name?: string | null;
+  role: UserRole;
+  bio: string;
+  isVerified: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserUpdate {
+  username?: string;
+  name?: string | null;
+  bio?: string;
+}
+```
+
+### `zodPlugin` — Zod Schemas
+
+```typescript
+import { z } from "zod";
+
+export const User = z.object({
+  id: z.string().uuid(),
+  username: z.string(),
+  name: z.string().nullable().optional(),
+  role: z.enum(["admin", "moderator", "user"]),
+  bio: z.string(),
+  isVerified: z.boolean(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export type User = z.infer<typeof User>;
+```
+
+### `arktypePlugin` — ArkType Validators
+
+```typescript
+import { type } from "arktype";
+
+export const User = type({
+  id: "string.uuid",
+  username: "string",
+  "name?": "string | null",
+  role: "'admin' | 'moderator' | 'user'",
+  bio: "string",
+  isVerified: "boolean",
+  createdAt: "Date",
+  updatedAt: "Date",
+});
+
+export type User = typeof User.infer;
+```
+
+### `effectModelPlugin` — Effect SQL Models
+
+```typescript
+import { Model } from "@effect/sql";
+import { Schema as S } from "effect";
+
+export class User extends Model.Class<User>("User")({
+  id: Model.Generated(S.UUID),
+  username: S.String,
+  name: S.NullOr(S.String),
+  role: S.Union(S.Literal("admin"), S.Literal("moderator"), S.Literal("user")),
+  bio: S.String,
+  isVerified: S.Boolean,
+  createdAt: Model.DateTimeInsertFromDate,
+  updatedAt: Model.DateTimeUpdateFromDate,
+}) {}
+```
+
+### `kyselyQueriesPlugin` — Kysely Query Builders
+
+```typescript
+import type { Kysely, Updateable } from "kysely";
+import type { DB, AppPublicUsers } from "../DB.js";
+
+export const users = {
+  findById: (db: Kysely<DB>, id: string) =>
+    db.selectFrom("app_public.users")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst(),
+
+  findMany: (db: Kysely<DB>, opts?: { limit?: number; offset?: number }) =>
+    db.selectFrom("app_public.users")
+      .selectAll()
+      .$if(opts?.limit != null, q => q.limit(opts!.limit!))
+      .$if(opts?.offset != null, q => q.offset(opts!.offset!))
+      .execute(),
+
+  update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) =>
+    db.updateTable("app_public.users")
+      .set(data)
+      .where("id", "=", id)
+      .returningAll()
+      .executeTakeFirstOrThrow(),
+
+  findByUsername: (db: Kysely<DB>, username: string) =>
+    db.selectFrom("app_public.users")
+      .selectAll()
+      .where("username", "=", username)
+      .executeTakeFirst(),
+};
+```
+
+### `sqlQueriesPlugin` — Raw SQL Query Functions
+
+```typescript
+import { sql } from "./sql-tag.js";
+import type { User, UserInsert, UserUpdate } from "../types/User.js";
+
+export async function getUserById({ id }: Pick<User, "id">): Promise<User | undefined> {
+  const result = await sql<User[]>`
+    SELECT * FROM app_public.users WHERE id = ${id}
+  `;
+  return result[0];
+}
+
+export async function insertUser(data: UserInsert): Promise<User> {
+  const result = await sql<User[]>`
+    INSERT INTO app_public.users (username, name, bio)
+    VALUES (${data.username}, ${data.name}, ${data.bio})
+    RETURNING *
+  `;
+  return result[0]!;
+}
+```
+
+## Feature Support
+
+| Feature | types | zod | arktype | effect-model | kysely | sql |
+|---------|:-----:|:---:|:-------:|:------------:|:------:|:---:|
+| Row types | ✓ | ✓ | ✓ | ✓ | — | imports |
+| Insert shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
+| Update shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
+| Enums | ✓ | ✓ | ✓ | ✓ | — | — |
+| Composite types | ✓ | ✓ | ✓ | ✓ | — | — |
+| Views | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| CRUD queries | — | — | — | — | ✓ | ✓ |
+| Index lookups | — | — | — | — | ✓ | ✓ |
+| Runtime validation | — | ✓ | ✓ | ✓ | — | — |
 
 ## Smart Tags
 
