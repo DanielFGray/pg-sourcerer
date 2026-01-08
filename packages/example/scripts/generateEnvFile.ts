@@ -1,12 +1,19 @@
+#!/usr/bin/env bun
+/**
+ * Environment file generator
+ *
+ * Interactive prompts to generate a .env file with database configuration.
+ * Uses @effect/cli Prompt for user input.
+ */
 import path from "node:path";
 import crypto from "node:crypto";
 import dotenv from "dotenv";
+import { Prompt } from "@effect/cli";
+import { NodeContext, NodeRuntime } from "@effect/platform-node";
+import { FileSystem, Terminal } from "@effect/platform";
 import { Effect, pipe, Array as A } from "effect";
 import * as S from "effect/Schema";
-import { FileSystem } from "@effect/platform";
-import { NodeFileSystem } from "@effect/platform-node";
 import { envSchema } from "../server/envSchema.js";
-import * as Prompt from "../../lib/prompt.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const DOTENV_PATH = path.resolve(".env");
@@ -16,12 +23,12 @@ const DOTENV_PATH = path.resolve(".env");
 const generatePassword = (len: number) =>
   crypto.randomBytes(len).toString("base64").replace(/\W/g, "_");
 
-const validName = (s: string): true | string =>
+const validName = (s: string): Effect.Effect<string, string> =>
   s.length < 4
-    ? "must be at least 4 characters"
+    ? Effect.fail("must be at least 4 characters")
     : s !== s.toLowerCase()
-      ? "must be lowercase"
-      : true;
+      ? Effect.fail("must be lowercase")
+      : Effect.succeed(s);
 
 const sanitizeName = (name: string) =>
   name.replace(/\W/g, "_").replace(/__+/g, "_").replace(/^_/, "");
@@ -33,7 +40,7 @@ const packageName = sanitizeName(packageJson.name);
 type Ctx = Record<string, string>;
 
 interface FieldDef {
-  prompt?: { message: string; validate?: (s: string) => true | string };
+  prompt?: { message: string; validate?: (s: string) => Effect.Effect<string, string> };
   derive?: (ctx: Ctx) => string;
   generate?: () => string;
 }
@@ -108,7 +115,7 @@ const resolveField = (
   resolved: Ctx,
   interactive: boolean,
   defaults: Ctx,
-): Effect.Effect<string | undefined, never, never> => {
+): Effect.Effect<string | undefined, never, Terminal.Terminal> => {
   // Keep existing value
   if (existing[key]) return Effect.succeed(existing[key]);
 
@@ -121,11 +128,14 @@ const resolveField = (
   // Interactive prompt for user-facing fields
   if (interactive && def.prompt) {
     const defaultValue = defaults[key] ?? def.derive?.(resolved);
-    return Prompt.input({
+    return Prompt.text({
       message: def.prompt.message,
       default: defaultValue,
       validate: def.prompt.validate,
-    });
+    }).pipe(
+      // Handle QuitException by returning undefined
+      Effect.catchTag("QuitException", () => Effect.sync(() => process.exit(0))),
+    );
   }
 
   // Non-interactive or derived-only: use derive function
@@ -197,4 +207,5 @@ const program = Effect.gen(function* () {
   yield* Effect.log(`.env ${action}`);
 });
 
-program.pipe(Effect.provide(NodeFileSystem.layer), Effect.runFork);
+// Run with Node.js platform (provides Terminal for prompts, FileSystem for file I/O)
+program.pipe(Effect.provide(NodeContext.layer), NodeRuntime.runMain);
