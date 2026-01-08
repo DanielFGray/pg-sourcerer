@@ -9,7 +9,7 @@ import {
   makeIntrospectionQuery,
   parseIntrospectionResults,
   type Introspection,
-} from "pg-introspection"
+} from "@pg-sourcerer/pg-introspection"
 import { ConnectionFailed, IntrospectionFailed } from "../errors.js"
 
 /**

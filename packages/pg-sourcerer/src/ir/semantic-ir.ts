@@ -4,7 +4,7 @@
  * This is the core data structure that plugins consume.
  * It represents semantic intent, not code.
  */
-import type { PgAttribute, PgClass, PgType, PgProc } from "pg-introspection"
+import type { PgAttribute, PgClass, PgType, PgProc } from "@pg-sourcerer/pg-introspection"
 import type { SmartTags, ShapeKind } from "./smart-tags.js"
 
 /**
@@ -142,6 +142,8 @@ export interface IndexDef {
   readonly method: IndexMethod
   /** True if any "column" is actually an expression (not a real column) */
   readonly hasExpressions: boolean
+  /** Operator class names for each indexed column (e.g., "gin_trgm_ops", "tsvector_ops") */
+  readonly opclassNames: readonly string[]
 }
 
 /**
