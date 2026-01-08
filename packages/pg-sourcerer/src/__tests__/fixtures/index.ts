@@ -4,7 +4,7 @@
  * Provides pre-captured introspection data from the example database
  * so tests can run without a live database connection.
  */
-import { parseIntrospectionResults, type Introspection } from "@pg-sourcerer/pg-introspection";
+import { parseIntrospectionResults, type Introspection } from "@danielfgray/pg-introspection";
 import introspectionData from "./introspection.json" with { type: "json" };
 
 /**

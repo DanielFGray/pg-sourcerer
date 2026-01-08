@@ -4,7 +4,7 @@
  * This is the core data structure that plugins consume.
  * It represents semantic intent, not code.
  */
-import type { PgAttribute, PgClass, PgType, PgProc } from "@pg-sourcerer/pg-introspection"
+import type { PgAttribute, PgClass, PgType, PgProc } from "@danielfgray/pg-introspection"
 import type { SmartTags, ShapeKind } from "./smart-tags.js"
 
 /**

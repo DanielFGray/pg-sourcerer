@@ -14,8 +14,8 @@ import type {
   PgType,
   PgProc,
   PgRoles,
-} from "@pg-sourcerer/pg-introspection"
-import { entityPermissions } from "@pg-sourcerer/pg-introspection"
+} from "@danielfgray/pg-introspection"
+import { entityPermissions } from "@danielfgray/pg-introspection"
 import type {
   DomainBaseTypeInfo,
   TableEntity,
