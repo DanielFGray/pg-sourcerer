@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pg-sourcerer/pg-sourcerer.git",
+    "url": "https://github.com/DanielFGray/pg-sourcerer.git",
     "directory": "packages/pg-introspection"
   },
   "keywords": [

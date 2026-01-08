@@ -1,6 +1,6 @@
 {
   "name": "@danielfgray/pg-sourcerer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PostgreSQL code generation framework with a plugin ecosystem",
   "type": "module",
   "main": "dist/index.js",
