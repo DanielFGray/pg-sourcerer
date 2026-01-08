@@ -27,10 +27,11 @@ export default defineConfig({
 
   formatter: "bunx biome format --write",
 
-  // Inflection: PascalCase entities/enums, camelCase fields
+  // Inflection: PascalCase entities/enums, preserve field names (snake_case)
+  // Field names stay snake_case to match what PostgreSQL/Kysely actually returns
   inflection: {
     entityName: name => inflect.pascalCase(inflect.singularize(name)),
-    fieldName: inflect.camelCase,
+    // fieldName: identity by default - preserves snake_case from DB
     enumName: inflect.pascalCase,
     shapeSuffix: inflect.capitalize,
   },
@@ -47,7 +48,7 @@ export default defineConfig({
     arktypePlugin({ outputDir: "ark", exportTypes: true }),
 
     // Generate Effect Model classes
-    effectModelPlugin({ outputDir: "effect" }),
+    // effectModelPlugin({ outputDir: "effect" }),
 
     // Generate SQL query functions (disabled - using Kysely instead)
     // sqlQueriesPlugin({ outputDir: "queries" }),

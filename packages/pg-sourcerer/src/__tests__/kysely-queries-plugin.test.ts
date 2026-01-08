@@ -251,7 +251,7 @@ describe("Kysely Queries Plugin", () => {
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
         // users table has unique index on username
-        expect(userFile?.content).toContain("findByUsername:")
+        expect(userFile?.content).toContain("findOneByUsername:")
       })
     )
 
@@ -266,10 +266,11 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        // posts table has index on user_id
-        expect(postFile?.content).toContain("findByUserId:")
+        // posts table has index on user_id (FK to users)
+        // Uses semantic naming: findManyByUser instead of findManyByUserId
+        expect(postFile?.content).toContain("findManyByUser:")
         // Non-unique should use execute() not executeTakeFirst()
-        expect(postFile?.content).toMatch(/findByUserId[\s\S]*?\.execute\(\)/)
+        expect(postFile?.content).toMatch(/findManyByUser[\s\S]*?\.execute\(\)/)
       })
     )
   })

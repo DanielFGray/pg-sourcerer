@@ -297,7 +297,7 @@ describe("SQL Queries Plugin", () => {
       })
     )
 
-    it.effect("generates getEntityByField for non-unique index", () =>
+    it.effect("generates getEntitysByField for non-unique FK index with semantic naming", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -308,8 +308,8 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        // posts table has non-unique index on user_id
-        expect(postFile?.content).toContain("getPostByUserId")
+        // posts.user_id FK → uses semantic naming: getPostsByUser (plural, derived from "user_id" → "user")
+        expect(postFile?.content).toContain("getPostsByUser")
       })
     )
   })
@@ -397,7 +397,7 @@ describe("SQL Queries Plugin", () => {
       })
     )
 
-    it.effect("non-unique index uses sql<Row[]> and returns array directly", () =>
+    it.effect("non-unique FK index uses sql<Row[]> and returns array directly", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -408,8 +408,8 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        // getPostByUserId should return sql<Post[]> directly
-        expect(postFile?.content).toMatch(/getPostByUserId[\s\S]+?return\s+await\s+sql<Post\[\]>/)
+        // getPostsByUser (semantic naming) should return sql<Post[]> directly
+        expect(postFile?.content).toMatch(/getPostsByUser[\s\S]+?return\s+await\s+sql<Post\[\]>/)
       })
     )
 
@@ -446,6 +446,22 @@ describe("SQL Queries Plugin", () => {
         expect(userFile?.content).toMatch(/Pick<User,\s*"id">/)
         // Should use destructuring pattern { id }
         expect(userFile?.content).toMatch(/\{\s*id\s*\}:\s*Pick<User/)
+      })
+    )
+
+    it.effect("uses indexed access type for FK semantic parameters", () =>
+      Effect.gen(function* () {
+        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const testLayer = createTestLayer(ir)
+
+        yield* sqlQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const postFile = all.find((e) => e.path.includes("Post.ts"))
+
+        // FK-based lookup with semantic param name uses Post["user_id"] type (snake_case field names)
+        expect(postFile?.content).toMatch(/getPostsByUser\(user:\s*Post\["user_id"\]/)
       })
     )
   })

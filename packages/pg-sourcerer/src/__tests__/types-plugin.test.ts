@@ -119,11 +119,11 @@ describe("Types Plugin", () => {
 
         const content = userFile?.content ?? ""
 
-        // Check expected field types
+        // Check expected field types (snake_case - matches DB column names)
         expect(content).toContain("id: string") // UUID
         expect(content).toContain("username: string") // citext -> string via typcategory
-        expect(content).toContain("createdAt: Date")
-        expect(content).toContain("isVerified: boolean")
+        expect(content).toContain("created_at: Date")
+        expect(content).toContain("is_verified: boolean")
         expect(content).toContain("bio: string") // text type
       })
     )

@@ -8,7 +8,7 @@ import { Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
-import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR } from "../ir/semantic-ir.js"
+import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation } from "../ir/semantic-ir.js"
 import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js"
 import { conjure, cast } from "../lib/conjure.js"
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js"
@@ -74,6 +74,52 @@ const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TS
   const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions)
   return resolved.enumDef ? ts.ref(resolved.enumDef.name) : tsTypeToAst(resolved.tsType)
 }
+
+// ============================================================================
+// FK Semantic Naming Helpers
+// ============================================================================
+
+/**
+ * Find a belongsTo relation that uses the given column as its local FK column.
+ * For single-column indexes only.
+ */
+const findRelationForColumn = (
+  entity: TableEntity,
+  columnName: string
+): Relation | undefined =>
+  entity.relations.find(
+    r => r.kind === "belongsTo" && r.columns.length === 1 && r.columns[0]?.local === columnName
+  )
+
+/**
+ * Derive semantic name for an FK-based lookup.
+ * Priority: @fieldName tag → column minus _id suffix → target entity name
+ */
+const deriveSemanticName = (relation: Relation, columnName: string): string => {
+  // 1. Check for @fieldName smart tag
+  if (relation.tags.fieldName && typeof relation.tags.fieldName === "string") {
+    return relation.tags.fieldName
+  }
+
+  // 2. Strip common FK suffixes from column name
+  const suffixes = ["_id", "_fk", "Id", "Fk"]
+  for (const suffix of suffixes) {
+    if (columnName.endsWith(suffix)) {
+      const stripped = columnName.slice(0, -suffix.length)
+      if (stripped.length > 0) return stripped
+    }
+  }
+
+  // 3. Fall back to target entity name (lowercased first char)
+  const target = relation.targetEntity
+  return target.charAt(0).toLowerCase() + target.slice(1)
+}
+
+/**
+ * Convert to PascalCase for use in method names.
+ * Handles snake_case (created_at → CreatedAt) and regular strings.
+ */
+const toPascalCase = (s: string): string => inflect.pascalCase(s)
 
 // ============================================================================
 // AST Building Helpers
@@ -426,28 +472,65 @@ const shouldGenerateLookup = (index: IndexDef): boolean =>
   index.method !== "gin" &&
   index.method !== "gist"
 
-/** Generate a method name for an index-based lookup */
-const generateLookupName = (index: IndexDef): string => {
-  const colName = index.columns[0]!
-  const capitalizedCol = colName.charAt(0).toUpperCase() + colName.slice(1)
-  return `findBy${capitalizedCol}`
+/**
+ * Generate a method name for an index-based lookup.
+ * Uses semantic naming when the column corresponds to an FK relation.
+ */
+const generateLookupName = (
+  entity: TableEntity,
+  index: IndexDef,
+  relation: Relation | undefined
+): string => {
+  const isUnique = index.isUnique || index.isPrimary
+  // Kysely uses "findBy" prefix consistently, with "One" or "Many" suffix
+  const prefix = isUnique ? "findOneBy" : "findManyBy"
+
+  // Use semantic name if FK relation exists, otherwise fall back to column name
+  const columnName = index.columnNames[0]!
+  const byName = relation
+    ? deriveSemanticName(relation, columnName)
+    : index.columns[0]!
+
+  return `${prefix}${toPascalCase(byName)}`
 }
 
-/** Generate a lookup method for a single-column index */
+/**
+ * Generate a lookup method for a single-column index.
+ * Uses semantic parameter naming when the column corresponds to an FK relation.
+ */
 const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.ObjectProperty => {
   const { entity, executeQueries } = ctx
   const tableRef = getTableRef(entity)
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
   const fieldName = field?.name ?? index.columns[0]!
-  const fieldType = getFieldTypeAst(field, ctx)
   const isUnique = index.isUnique || index.isPrimary
+
+  // Check if this index column corresponds to an FK relation
+  const relation = findRelationForColumn(entity, columnName)
+
+  // Use semantic param name if FK relation exists, otherwise use field name
+  const paramName = relation
+    ? deriveSemanticName(relation, columnName)
+    : fieldName
+
+  // For FK columns, use indexed access on Selectable<TableType> to get the unwrapped type
+  // (Kysely's Generated<T> types need Selectable to unwrap for use in where clauses)
+  // For regular columns, use the field's type directly
+  const useSemanticNaming = relation !== undefined && paramName !== fieldName
+  const tableTypeName = getTableTypeName(entity)
+  const paramType = useSemanticNaming
+    ? ts.indexedAccess(
+        ts.ref("Selectable", [ts.ref(tableTypeName)]),
+        ts.literal(fieldName)
+      )
+    : getFieldTypeAst(field, ctx)
 
   // db.selectFrom('table').selectAll().where('col', '=', value)
   let query: n.Expression = chain(
     chain(selectFrom(tableRef), "selectAll"),
     "where",
-    [str(columnName), str("="), id(fieldName)]
+    [str(columnName), str("="), id(paramName)]
   )
 
   if (executeQueries) {
@@ -455,11 +538,12 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Object
   }
 
   const fn = arrowFn(
-    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
+    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(paramName, paramType)],
     query
   )
 
-  return objProp(generateLookupName(index), fn)
+  const methodName = generateLookupName(entity, index, relation)
+  return objProp(methodName, fn)
 }
 
 /** Generate lookup methods for all eligible indexes, deduplicating by name */
@@ -469,7 +553,9 @@ const generateLookupMethods = (ctx: GenerationContext): readonly n.ObjectPropert
   return ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
     .filter(index => {
-      const name = generateLookupName(index)
+      const columnName = index.columnNames[0]!
+      const relation = findRelationForColumn(ctx.entity, columnName)
+      const name = generateLookupName(ctx.entity, index, relation)
       if (seen.has(name)) return false
       seen.add(name)
       return true
@@ -540,16 +626,35 @@ export const kyselyQueriesPlugin = definePlugin({
 
         // Import Insertable/Updateable helper types and table type if we generate create/update
         const tableTypeName = getTableTypeName(entity)
+        
+        // Check if any lookup methods use semantic naming (FK with Selectable indexed access)
+        const hasSemanticLookups = entity.indexes.some(index => {
+          if (!shouldGenerateLookup(index) || index.isPrimary) return false
+          const columnName = index.columnNames[0]!
+          const relation = findRelationForColumn(entity, columnName)
+          if (!relation) return false
+          const paramName = deriveSemanticName(relation, columnName)
+          const field = findRowField(entity, columnName)
+          const fieldName = field?.name ?? index.columns[0]!
+          return paramName !== fieldName
+        })
+        
+        // Import table type if needed for Insertable/Updateable or semantic lookups
+        const needsTableType = entity.permissions.canInsert || entity.permissions.canUpdate || hasSemanticLookups
+        if (needsTableType) {
+          file.import({ kind: "relative", types: [tableTypeName], from: dbTypesPath })
+        }
+        
+        // Import Selectable if we have semantic lookups (for unwrapping Generated<T>)
+        if (hasSemanticLookups) {
+          file.import({ kind: "package", types: ["Selectable"], from: "kysely" })
+        }
+        
         if (entity.permissions.canInsert) {
           file.import({ kind: "package", types: ["Insertable"], from: "kysely" })
-          file.import({ kind: "relative", types: [tableTypeName], from: dbTypesPath })
         }
         if (entity.permissions.canUpdate) {
           file.import({ kind: "package", types: ["Updateable"], from: "kysely" })
-          // Only import table type if not already imported by canInsert
-          if (!entity.permissions.canInsert) {
-            file.import({ kind: "relative", types: [tableTypeName], from: dbTypesPath })
-          }
         }
 
         file.ast(conjure.program(exportDecl)).emit()
