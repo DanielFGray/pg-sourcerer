@@ -48,6 +48,23 @@ interface GenerateArgs {
   readonly dryRun: boolean;
 }
 
+/** Run init then optionally generate based on user choice */
+const runInitThenGenerate = (originalError: GenerateError) =>
+  runInit.pipe(
+    Effect.flatMap(result =>
+      result.runGenerate
+        ? runGenerate({ configPath: result.configPath }).pipe(
+            Effect.tap(res => {
+              const written = res.writeResults.filter(r => r.written).length;
+              return Console.log(`\n✓ Generated ${written} files`);
+            }),
+            Effect.asVoid,
+          )
+        : Effect.void,
+    ),
+    Effect.catchAll(() => Effect.fail(originalError)),
+  );
+
 const runGenerateCommand = (args: GenerateArgs) => {
   const opts = {
     configPath: Option.getOrUndefined(args.configPath),
@@ -68,12 +85,7 @@ const runGenerateCommand = (args: GenerateArgs) => {
     Effect.catchTag("ConfigNotFound", error =>
       Console.error(`\n✗ No config file found`).pipe(
         Effect.andThen(Console.error(`  Searched: ${error.searchPaths.join(", ")}`)),
-        Effect.andThen(
-          runInit.pipe(
-            Effect.asVoid,
-            Effect.catchAll(() => Effect.fail(error)),
-          ),
-        ),
+        Effect.andThen(runInitThenGenerate(error)),
       ),
     ),
     // Handle errors with extra details
@@ -114,7 +126,9 @@ const generateCommand = Command.make("generate", { configPath, outputDir, dryRun
 const initCommand = Command.make("init", {}, () =>
   runInit.pipe(
     Effect.flatMap(result =>
-      result.runGenerate ? runGenerateCommand({ configPath: Option.none(), outputDir: Option.none(), dryRun: false }) : Effect.void,
+      result.runGenerate
+        ? runGenerateCommand({ configPath: Option.some(result.configPath), outputDir: Option.none(), dryRun: false })
+        : Effect.void,
     ),
   ),
 );

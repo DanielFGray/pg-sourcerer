@@ -18,53 +18,26 @@ import type { Introspection } from "@danielfgray/pg-introspection";
 // Plugin Registry
 // ============================================================================
 
-interface PluginChoice {
-  readonly title: string;
+interface PluginInfo {
   readonly value: string;
-  readonly description: string;
   readonly importName: string;
-  readonly selected?: boolean;
 }
 
-const availablePlugins: readonly PluginChoice[] = [
-  {
-    title: "types",
-    value: "types",
-    description: "TypeScript type definitions",
-    importName: "typesPlugin",
-    selected: true, // Default selected
-  },
-  {
-    title: "zod",
-    value: "zod",
-    description: "Zod validation schemas",
-    importName: "zodPlugin",
-  },
-  {
-    title: "arktype",
-    value: "arktype",
-    description: "ArkType schemas",
-    importName: "arktypePlugin",
-  },
-  {
-    title: "effect-model",
-    value: "effect-model",
-    description: "Effect Schema models",
-    importName: "effectModelPlugin",
-  },
-  {
-    title: "sql-queries",
-    value: "sql-queries",
-    description: "SQL query functions",
-    importName: "sqlQueriesPlugin",
-  },
-  {
-    title: "kysely-queries",
-    value: "kysely-queries",
-    description: "Kysely query builders",
-    importName: "kyselyQueriesPlugin",
-  },
-] as const;
+/** Maps plugin value to import name for config generation */
+const pluginImportNames: Record<string, string> = {
+  types: "typesPlugin",
+  zod: "zodPlugin",
+  arktype: "arktypePlugin",
+  "effect-model": "effectModelPlugin",
+  "sql-queries": "sqlQueriesPlugin",
+  "kysely-queries": "kyselyQueriesPlugin",
+};
+
+/** Get plugin info by value */
+const getPluginInfo = (value: string): PluginInfo | undefined => {
+  const importName = pluginImportNames[value];
+  return importName ? { value, importName } : undefined;
+};
 
 // ============================================================================
 // Environment Scanning
@@ -345,14 +318,38 @@ const makeOutputDirPrompt = () =>
     default: "./generated",
   });
 
+/**
+ * Staged plugin selection using radio groups per category.
+ * Schema libs (zod/arktype/effect-model) each generate their own types,
+ * so they conflict with the standalone types plugin.
+ */
 const makePluginsPrompt = () =>
-  Prompt.multiSelect({
-    message: "Select plugins to enable (space to toggle, enter to confirm)",
-    choices: availablePlugins.map(p => ({
-      title: `${p.title} - ${p.description}`,
-      value: p.value,
-      selected: p.selected,
-    })),
+  Effect.gen(function* () {
+    // Stage 1: Type/Schema generation (mutually exclusive)
+    const typePlugin = yield* Prompt.select({
+      message: "Type/Schema generation",
+      choices: [
+        { title: "types - Standalone TypeScript types", value: "types" },
+        { title: "zod - Zod schemas (includes types)", value: "zod" },
+        { title: "arktype - ArkType schemas (includes types)", value: "arktype" },
+        { title: "effect-model - Effect Schema (includes types)", value: "effect-model" },
+      ],
+    });
+
+    // Stage 2: Query generation (optional, mutually exclusive)
+    const queryPlugin = yield* Prompt.select({
+      message: "Query generation",
+      choices: [
+        { title: "None", value: "none" },
+        { title: "sql-queries - Raw SQL query functions", value: "sql-queries" },
+        { title: "kysely-queries - Kysely query builders", value: "kysely-queries" },
+      ],
+    });
+
+    const plugins: string[] = [typePlugin];
+    if (queryPlugin !== "none") plugins.push(queryPlugin);
+
+    return plugins as readonly string[];
   });
 
 const makeFormatterPrompt = () =>
@@ -399,7 +396,14 @@ interface InitAnswers {
 }
 
 const generateConfigContent = (answers: InitAnswers): string => {
-  const selectedPlugins = availablePlugins.filter(p => answers.plugins.includes(p.value));
+  // Look up import names for selected plugins
+  const selectedPlugins = pipe(
+    answers.plugins,
+    Array.filterMap(value => {
+      const info = getPluginInfo(value);
+      return info ? Option.some(info) : Option.none();
+    }),
+  );
 
   // Build import specifiers
   const coreImports = ["defineConfig"];
@@ -532,5 +536,5 @@ export const runInit = Effect.gen(function* () {
     initial: true,
   });
 
-  return { runGenerate };
+  return { runGenerate, configPath };
 });
