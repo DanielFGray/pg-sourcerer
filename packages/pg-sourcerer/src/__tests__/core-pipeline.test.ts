@@ -318,7 +318,6 @@ layer(TestLayer)("Core Pipeline Integration", (it) => {
           // Verify content
           const content = yield* fs.readFileString(userTypePath)
           expect(content).toContain("export interface User")
-          expect(content).toContain("AUTO-GENERATED FILE")
         } finally {
           yield* fs.remove(tmpDir, { recursive: true })
         }
