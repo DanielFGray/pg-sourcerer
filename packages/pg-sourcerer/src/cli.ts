@@ -111,7 +111,13 @@ const logErrorWithDetails = (error: GenerateError, details: readonly string[]) =
 
 const generateCommand = Command.make("generate", { configPath, outputDir, dryRun }, runGenerateCommand);
 
-const initCommand = Command.make("init", {}, () => runInit);
+const initCommand = Command.make("init", {}, () =>
+  runInit.pipe(
+    Effect.flatMap(result =>
+      result.runGenerate ? runGenerateCommand({ configPath: Option.none(), outputDir: Option.none(), dryRun: false }) : Effect.void,
+    ),
+  ),
+);
 
 // Root command runs generate by default (which triggers init if no config)
 const rootCommand = Command.make("pgsourcerer", { configPath, outputDir, dryRun }, runGenerateCommand).pipe(
