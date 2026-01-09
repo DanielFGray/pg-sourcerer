@@ -11,6 +11,8 @@ import postgres from "postgres";
 import { conjure, cast } from "./lib/conjure.js";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import recast from "recast";
+import { introspectDatabase } from "./services/introspection.js";
+import type { Introspection } from "@danielfgray/pg-introspection";
 
 // ============================================================================
 // Plugin Registry
@@ -294,18 +296,48 @@ const makeRolePrompt = () =>
     default: "",
   }).pipe(Prompt.map(s => s.trim() || undefined));
 
-const makeSchemasPrompt = () =>
-  Prompt.text({
-    message: "Schemas to introspect (comma-separated)",
-    default: "public",
-  }).pipe(
-    Prompt.map(s =>
-      s
-        .split(",")
-        .map(x => x.trim())
-        .filter(x => x.length > 0),
-    ),
-  );
+const makeSchemasPrompt = (introspection: Introspection) => {
+  // Group classes by schema and count tables/views
+  const schemaCounts = new Map<string, number>();
+  for (const c of introspection.classes) {
+    if (c.relkind !== "r" && c.relkind !== "v" && c.relkind !== "m") continue;
+    const schema = c.getNamespace()?.nspname;
+    if (!schema || schema.startsWith("pg_") || schema === "information_schema") continue;
+    schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1);
+  }
+
+  // Sort: public first, then by count desc
+  const schemas = [...schemaCounts.entries()].sort((a, b) => {
+    if (a[0] === "public") return -1;
+    if (b[0] === "public") return 1;
+    return b[1] - a[1];
+  });
+
+  if (schemas.length === 0) {
+    // Fallback to text prompt if no schemas found
+    return Prompt.text({
+      message: "Schemas to introspect (comma-separated)",
+      default: "public",
+    }).pipe(
+      Prompt.map(s =>
+        s
+          .split(",")
+          .map(x => x.trim())
+          .filter(x => x.length > 0),
+      ),
+    );
+  }
+
+  // Multi-select with table counts
+  return Prompt.multiSelect({
+    message: "Select schemas to introspect",
+    choices: schemas.map(([name, count]) => ({
+      title: `${name} (${count} table${count === 1 ? "" : "s"})`,
+      value: name,
+      selected: name === "public" || schemas.length === 1,
+    })),
+  });
+};
 
 const makeOutputDirPrompt = () =>
   Prompt.text({
@@ -416,12 +448,7 @@ const generateConfigContent = (answers: InitAnswers): string => {
   }
 
   // Plugins array - no config needed, all plugins have sensible defaults
-  const pluginCalls = selectedPlugins.map(plugin =>
-    conjure
-      .id(plugin.importName)
-      .call([])
-      .build(),
-  );
+  const pluginCalls = selectedPlugins.map(plugin => conjure.id(plugin.importName).call([]).build());
   const pluginsArr = conjure.arr(...pluginCalls);
   configObj = configObj.prop("plugins", pluginsArr.build());
 
@@ -458,8 +485,20 @@ export const runInit = Effect.gen(function* () {
 
   // Collect answers - connection string may be detected from env
   const { connectionString, configValue, isEnvRef } = yield* getConnectionString;
+
+  // Introspect to discover schemas
+  yield* Console.log("Introspecting database...");
+  const introspection = yield* introspectDatabase({ connectionString }).pipe(
+    Effect.catchAll(e => {
+      // Log error but continue with empty introspection for fallback text prompt
+      return Console.error(`Warning: ${e.message}`).pipe(
+        Effect.andThen(Effect.succeed({ classes: [] } as unknown as Introspection)),
+      );
+    }),
+  );
+
   const role = yield* makeRolePrompt();
-  const schemas = yield* makeSchemasPrompt();
+  const schemas = yield* makeSchemasPrompt(introspection);
   const outputDir = yield* makeOutputDirPrompt();
   const plugins = yield* makePluginsPrompt();
   const formatter = yield* makeFormatterPrompt();
@@ -486,7 +525,12 @@ export const runInit = Effect.gen(function* () {
   yield* fs.writeFileString(configPath, configContent);
 
   yield* Console.log(`\n✓ Created ${CONFIG_FILENAME}`);
-  yield* Console.log("\nNext steps:");
-  yield* Console.log("  1. Review the generated config file");
-  yield* Console.log("  2. Run: pgsourcerer generate");
+
+  // Ask if user wants to run generate now
+  const runGenerate = yield* Prompt.confirm({
+    message: "Run generate now?",
+    initial: true,
+  });
+
+  return { runGenerate };
 });
