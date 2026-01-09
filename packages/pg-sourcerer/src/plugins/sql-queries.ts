@@ -19,10 +19,10 @@ const { ts, b, param } = conjure;
 // ============================================================================
 
 const SqlQueriesPluginConfig = S.Struct({
-  outputDir: S.String,
+  outputDir: S.optionalWith(S.String, { default: () => "sql-queries" }),
   header: S.optional(S.String),
   /** SQL query style. Defaults to "tag" (tagged template literals) */
-  sqlStyle: S.optional(S.Union(S.Literal("tag"), S.Literal("string"))),
+  sqlStyle: S.optionalWith(S.Union(S.Literal("tag"), S.Literal("string")), { default: () => "tag" as const }),
 });
 
 type SqlQueriesPluginConfig = S.Schema.Type<typeof SqlQueriesPluginConfig>;
@@ -357,7 +357,7 @@ export const sqlQueriesPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enums = getEnumEntities(ctx.ir);
-    const sqlStyle: SqlStyle = config.sqlStyle ?? "tag";
+    const { sqlStyle } = config;
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)

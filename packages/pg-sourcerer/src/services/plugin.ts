@@ -4,7 +4,7 @@
  * Defines the Effect-native plugin interface where plugins are Effects
  * that yield the services they need from context.
  */
-import { Effect, Schema as S } from "effect"
+import { Effect, Schema as S, ParseResult } from "effect"
 import type { namedTypes as n } from "ast-types"
 import type { Artifact, CapabilityKey, SemanticIR, Entity } from "../ir/semantic-ir.js"
 import { PluginExecutionFailed } from "../errors.js"
@@ -111,7 +111,7 @@ export type PluginServices = IR | Inflection | Emissions | Symbols | TypeHints |
  * }
  * ```
  */
-export interface Plugin<TConfig = unknown> {
+export interface Plugin<TConfig = unknown, TEncoded = TConfig> {
   /** Unique plugin name */
   readonly name: string
 
@@ -121,8 +121,8 @@ export interface Plugin<TConfig = unknown> {
   /** Capabilities this plugin provides */
   readonly provides: readonly CapabilityKey[]
 
-  /** Configuration schema (Effect Schema) - Schema<TConfig> or Schema<TConfig, Encoded> */
-  readonly configSchema: S.Schema<TConfig>
+  /** Configuration schema (Effect Schema) - Schema<TConfig, Encoded> with TConfig as decoded type */
+  readonly configSchema: S.Schema<TConfig, TEncoded, never>
 
   /** Plugin-specific inflection for file and symbol naming */
   readonly inflection: PluginInflection
@@ -172,10 +172,10 @@ export interface Plugin<TConfig = unknown> {
  * The factory also exposes the underlying plugin for inspection:
  * - `factory.plugin` - The Plugin object with name, provides, requires, etc.
  */
-export interface PluginFactory<TConfig> {
-  (config: TConfig): ConfiguredPlugin
+export interface PluginFactory<TConfig, TEncoded = TConfig> {
+  (config?: TEncoded): ConfiguredPlugin
   /** The underlying plugin definition */
-  readonly plugin: Plugin<TConfig>
+  readonly plugin: Plugin<TConfig, TEncoded>
 }
 
 /**
@@ -270,7 +270,7 @@ export interface SimplePluginContext {
 /**
  * Definition for a simple plugin (no Effect knowledge required)
  */
-export interface SimplePluginDef<TConfig = unknown> {
+export interface SimplePluginDef<TConfig = unknown, TEncoded = TConfig> {
   /** Unique plugin name */
   readonly name: string
 
@@ -280,8 +280,8 @@ export interface SimplePluginDef<TConfig = unknown> {
   /** Capabilities this plugin provides */
   readonly provides: readonly CapabilityKey[]
 
-  /** Configuration schema */
-  readonly configSchema: S.Schema<TConfig>
+  /** Configuration schema - Type is the decoded config, Encoded can differ (e.g., with defaults) */
+  readonly configSchema: S.Schema<TConfig, TEncoded, never>
 
   /** Plugin-specific inflection for file and symbol naming */
   readonly inflection: PluginInflection
@@ -328,9 +328,9 @@ export interface SimplePluginDef<TConfig = unknown> {
  * ]
  * ```
  */
-export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFactory<TConfig> {
+export function definePlugin<TConfig, TEncoded = TConfig>(def: SimplePluginDef<TConfig, TEncoded>): PluginFactory<TConfig, TEncoded> {
   // Build the internal plugin object
-  const plugin: Plugin<TConfig> = {
+  const plugin: Plugin<TConfig, TEncoded> = {
     name: def.name,
     provides: def.provides,
     configSchema: def.configSchema,
@@ -338,6 +338,22 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFact
 
     run: (config: TConfig) =>
       Effect.gen(function* () {
+        // Apply schema defaults to config (supports direct run() calls in tests)
+        const validatedConfig = yield* S.decodeUnknown(def.configSchema)(config).pipe(
+          Effect.mapError(parseError => {
+            const formatted = ParseResult.ArrayFormatter.formatErrorSync(parseError)
+            const errors = formatted.map(e => {
+              const path = e.path.length > 0 ? `${e.path.join(".")}: ` : ""
+              return `${path}${e.message}`
+            })
+            return new PluginExecutionFailed({
+              message: `Invalid config for plugin "${def.name}": ${errors.join("; ")}`,
+              plugin: def.name,
+              cause: new Error(errors.join("; ")),
+            })
+          })
+        )
+        
         // Yield all services from context
         const ir = yield* IR
         const inflection = yield* Inflection
@@ -405,7 +421,7 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFact
 
         // Call the user's run function, handling sync/async errors
         const result = yield* Effect.try({
-          try: () => def.run(ctx, config),
+          try: () => def.run(ctx, validatedConfig),
           catch: (error) =>
             new PluginExecutionFailed({
               message: `Plugin ${def.name} failed`,
@@ -430,7 +446,7 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFact
   }
 
   // Add optional properties only if defined (exactOptionalPropertyTypes)
-  let finalPlugin: Plugin<TConfig> = plugin
+  let finalPlugin: Plugin<TConfig, TEncoded> = plugin
   if (def.requires !== undefined) {
     finalPlugin = { ...finalPlugin, requires: def.requires }
   }
@@ -440,9 +456,9 @@ export function definePlugin<TConfig>(def: SimplePluginDef<TConfig>): PluginFact
 
   // Return the curried factory function with plugin attached for inspection
   return Object.assign(
-    (config: TConfig): ConfiguredPlugin => ({
+    (config?: TEncoded): ConfiguredPlugin => ({
       plugin: finalPlugin as Plugin<unknown>,
-      config,
+      config: config ?? {},
     }),
     { plugin: finalPlugin }
   )

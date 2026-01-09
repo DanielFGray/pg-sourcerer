@@ -430,11 +430,11 @@ const generateConfigContent = (answers: InitAnswers): string => {
     configObj = configObj.prop("inflection", conjure.id("classicInflectionConfig").build());
   }
 
-  // Plugins array
+  // Plugins array - no config needed, all plugins have sensible defaults
   const pluginCalls = selectedPlugins.map(plugin =>
     conjure
       .id(plugin.importName)
-      .call([conjure.obj().prop("outputDir", conjure.str(plugin.value)).build()])
+      .call([])
       .build(),
   );
   const pluginsArr = conjure.arr(...pluginCalls);
