@@ -5,6 +5,7 @@
  * Users configure with simple string→string functions that compose naturally.
  */
 import { Context, Layer, String as Str } from "effect"
+import pluralize from "pluralize-esm"
 import type { PgAttribute, PgClass, PgProc, PgType } from "@danielfgray/pg-introspection"
 import type { SmartTags, ShapeKind } from "../ir/index.js"
 
@@ -30,48 +31,6 @@ const RESERVED_WORDS = new Set([
 // ============================================================================
 
 /**
- * Simple pluralization (naive, covers common cases)
- */
-const pluralize = (word: string): string => {
-  if (
-    word.endsWith("s") ||
-    word.endsWith("x") ||
-    word.endsWith("z") ||
-    word.endsWith("ch") ||
-    word.endsWith("sh")
-  ) {
-    return word + "es"
-  }
-  if (word.endsWith("y") && !/[aeiou]y$/i.test(word)) {
-    return word.slice(0, -1) + "ies"
-  }
-  return word + "s"
-}
-
-/**
- * Simple singularization (naive, covers common cases)
- */
-const singularize = (word: string): string => {
-  if (word.endsWith("ies") && word.length > 3) {
-    return word.slice(0, -3) + "y"
-  }
-  if (
-    word.endsWith("es") &&
-    (word.endsWith("sses") ||
-      word.endsWith("xes") ||
-      word.endsWith("zes") ||
-      word.endsWith("ches") ||
-      word.endsWith("shes"))
-  ) {
-    return word.slice(0, -2)
-  }
-  if (word.endsWith("s") && !word.endsWith("ss") && word.length > 1) {
-    return word.slice(0, -1)
-  }
-  return word
-}
-
-/**
  * Inflection helper functions for use in configuration.
  * 
  * Users can compose these in their config:
@@ -95,9 +54,9 @@ export const inflect = {
   /** Convert camelCase to snake_case */
   snakeCase: Str.camelToSnake,
   /** Singularize a word (users → user) */
-  singularize,
+  singularize: pluralize.singular,
   /** Pluralize a word (user → users) */
-  pluralize,
+  pluralize: pluralize.plural,
   /** Capitalize first letter */
   capitalize: Str.capitalize,
   /** Uncapitalize first letter */
@@ -170,8 +129,20 @@ export type TransformFn = (input: string) => string
  */
 export interface InflectionConfig {
   /**
+   * Singularize a word (users → user).
+   * Default: pluralize-esm library
+   */
+  readonly singularize?: TransformFn
+
+  /**
+   * Pluralize a word (user → users).
+   * Default: pluralize-esm library
+   */
+  readonly pluralize?: TransformFn
+
+  /**
    * Transform table/view name → entity name.
-   * Default: identity (preserve table name)
+   * Default: singularize + PascalCase
    */
   readonly entityName?: TransformFn
 
@@ -183,7 +154,7 @@ export interface InflectionConfig {
 
   /**
    * Transform PostgreSQL enum type name → TypeScript enum name.
-   * Default: identity (preserve type name)
+   * Default: PascalCase
    */
   readonly enumName?: TransformFn
 
@@ -195,13 +166,13 @@ export interface InflectionConfig {
 
   /**
    * Transform shape kind suffix.
-   * Default: identity ("row", "insert", etc.)
+   * Default: capitalize ("row", "insert", etc.)
    */
   readonly shapeSuffix?: TransformFn
 
   /**
    * Transform relation names.
-   * Default: identity (preserve name)
+   * Default: camelCase
    */
   readonly relationName?: TransformFn
 
@@ -304,8 +275,15 @@ const identity: TransformFn = (s) => s
 export function createInflection(config?: InflectionConfig): CoreInflection {
   if (!config) return defaultInflection
 
+  // Primitive transforms (user can override singularize/pluralize)
+  const singularizeFn = config.singularize ?? inflect.singularize
+  const pluralizeFn = config.pluralize ?? inflect.pluralize
+
+  // Build entityName default using the configured singularize
+  const defaultEntityName = (name: string) => inflect.pascalCase(singularizeFn(name))
+
   // Merge user config on top of defaults
-  const entityFn = config.entityName ?? defaultTransforms.entityName ?? identity
+  const entityFn = config.entityName ?? defaultEntityName
   const fieldFn = config.fieldName ?? defaultTransforms.fieldName ?? identity
   const enumNameFn = config.enumName ?? defaultTransforms.enumName ?? identity
   const enumValueFn = config.enumValue ?? defaultTransforms.enumValue ?? identity
@@ -314,11 +292,11 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
   const functionFn = config.functionName ?? defaultTransforms.functionName ?? identity
 
   return {
-    // Primitive transforms unchanged
+    // Primitive transforms (configurable)
     camelCase: defaultInflection.camelCase,
     pascalCase: defaultInflection.pascalCase,
-    pluralize: defaultInflection.pluralize,
-    singularize: defaultInflection.singularize,
+    pluralize: pluralizeFn,
+    singularize: singularizeFn,
     safeIdentifier: defaultInflection.safeIdentifier,
 
     // Configurable transforms (smart tags take precedence)
@@ -421,6 +399,8 @@ export function composeInflectionConfigs(
 
   return Object.fromEntries(
     Object.entries({
+      singularize: composeFns(pluginDefaults.singularize, userConfig.singularize),
+      pluralize: composeFns(pluginDefaults.pluralize, userConfig.pluralize),
       entityName: composeFns(pluginDefaults.entityName, userConfig.entityName),
       fieldName: composeFns(pluginDefaults.fieldName, userConfig.fieldName),
       enumName: composeFns(pluginDefaults.enumName, userConfig.enumName),
@@ -448,6 +428,8 @@ export function composeInflection(
 ): CoreInflection {
   if (!pluginDefaults) return baseInflection
 
+  const singularizeFn = pluginDefaults.singularize
+  const pluralizeFn = pluginDefaults.pluralize
   const entityFn = pluginDefaults.entityName
   const fieldFn = pluginDefaults.fieldName
   const enumNameFn = pluginDefaults.enumName
@@ -457,16 +439,24 @@ export function composeInflection(
   const functionFn = pluginDefaults.functionName
 
   // If no transforms defined, return base unchanged
-  if (!entityFn && !fieldFn && !enumNameFn && !enumValueFn && !shapeSuffixFn && !relationFn && !functionFn) {
+  if (!singularizeFn && !pluralizeFn && !entityFn && !fieldFn && !enumNameFn && !enumValueFn && !shapeSuffixFn && !relationFn && !functionFn) {
     return baseInflection
   }
 
+  // Compose primitives: plugin first, then base
+  const composedSingularize = singularizeFn
+    ? (word: string) => baseInflection.singularize(singularizeFn(word))
+    : baseInflection.singularize
+  const composedPluralize = pluralizeFn
+    ? (word: string) => baseInflection.pluralize(pluralizeFn(word))
+    : baseInflection.pluralize
+
   return {
-    // Primitive transforms unchanged
+    // Primitive transforms (composed if plugin provides them)
     camelCase: baseInflection.camelCase,
     pascalCase: baseInflection.pascalCase,
-    pluralize: baseInflection.pluralize,
-    singularize: baseInflection.singularize,
+    pluralize: composedPluralize,
+    singularize: composedSingularize,
     safeIdentifier: baseInflection.safeIdentifier,
 
     // Compose: plugin transforms first, then base transforms

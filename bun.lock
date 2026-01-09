@@ -51,7 +51,7 @@
     },
     "packages/pg-sourcerer": {
       "name": "@danielfgray/pg-sourcerer",
-      "version": "0.1.1",
+      "version": "0.1.8",
       "bin": {
         "pgsourcerer": "dist/cli.js",
       },
@@ -63,6 +63,7 @@
         "effect": "catalog:",
         "lilconfig": "^3.1.3",
         "pg": "catalog:",
+        "pluralize-esm": "^9.0.5",
         "postgres": "catalog:",
         "recast": "^0.23.11",
       },
@@ -899,6 +900,8 @@
     "pify": ["pify@3.0.0", "", {}, "sha512-C3FsVNH1udSEX48gGX1xfvwTWfsYWj5U+8/uK15BGzIGrKoUpghX8hWZwa/OFnakBiiVNmBvemTJR5mcy7iPcg=="],
 
     "pluralize": ["pluralize@8.0.0", "", {}, "sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA=="],
+
+    "pluralize-esm": ["pluralize-esm@9.0.5", "", {}, "sha512-Kb2dcpMsIutFw2hYrN0EhsAXOUJTd6FVMIxvNAkZCMQLVt9NGZqQczvGpYDxNWCZeCWLHUPxQIBudWzt1h7VVA=="],
 
     "possible-typed-array-names": ["possible-typed-array-names@1.1.0", "", {}, "sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg=="],
 
