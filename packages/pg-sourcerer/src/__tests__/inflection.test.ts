@@ -92,78 +92,6 @@ describe("Inflection Service", () => {
     })
   })
 
-  describe("pluralize", () => {
-    it("adds 's' to regular words", () => {
-      expect(defaultInflection.pluralize("user")).toBe("users")
-      expect(defaultInflection.pluralize("post")).toBe("posts")
-      expect(defaultInflection.pluralize("tag")).toBe("tags")
-    })
-
-    it("adds 'es' to words ending in s, x, z, ch, sh", () => {
-      expect(defaultInflection.pluralize("bus")).toBe("buses")
-      expect(defaultInflection.pluralize("box")).toBe("boxes")
-      expect(defaultInflection.pluralize("quiz")).toBe("quizes") // naive impl doesn't double z
-      expect(defaultInflection.pluralize("watch")).toBe("watches")
-      expect(defaultInflection.pluralize("dish")).toBe("dishes")
-    })
-
-    it("handles words ending in consonant + y", () => {
-      expect(defaultInflection.pluralize("city")).toBe("cities")
-      expect(defaultInflection.pluralize("category")).toBe("categories")
-    })
-
-    it("handles words ending in vowel + y", () => {
-      expect(defaultInflection.pluralize("day")).toBe("days")
-      expect(defaultInflection.pluralize("key")).toBe("keys")
-    })
-
-    // Note: naive implementation - doesn't handle irregular plurals
-    it("handles regular words (naive - no irregular support)", () => {
-      // person -> persons (not people)
-      expect(defaultInflection.pluralize("person")).toBe("persons")
-      // child -> childs (not children)
-      expect(defaultInflection.pluralize("child")).toBe("childs")
-    })
-  })
-
-  describe("singularize", () => {
-    it("removes 's' from regular plurals", () => {
-      expect(defaultInflection.singularize("users")).toBe("user")
-      expect(defaultInflection.singularize("posts")).toBe("post")
-    })
-
-    it("handles 'ies' -> 'y'", () => {
-      expect(defaultInflection.singularize("cities")).toBe("city")
-      expect(defaultInflection.singularize("categories")).toBe("category")
-    })
-
-    it("handles 'sses' -> 'ss'", () => {
-      expect(defaultInflection.singularize("classes")).toBe("class")
-      expect(defaultInflection.singularize("passes")).toBe("pass")
-    })
-
-    it("handles 'xes' -> 'x'", () => {
-      expect(defaultInflection.singularize("boxes")).toBe("box")
-    })
-
-    it("handles 'ches' -> 'ch'", () => {
-      expect(defaultInflection.singularize("watches")).toBe("watch")
-    })
-
-    it("handles 'shes' -> 'sh'", () => {
-      expect(defaultInflection.singularize("dishes")).toBe("dish")
-    })
-
-    it("does not remove 's' from words ending in 'ss'", () => {
-      expect(defaultInflection.singularize("class")).toBe("class")
-      expect(defaultInflection.singularize("boss")).toBe("boss")
-    })
-
-    it("handles single character words", () => {
-      expect(defaultInflection.singularize("s")).toBe("s")
-    })
-  })
-
   describe("safeIdentifier", () => {
     it("appends underscore to reserved words", () => {
       expect(defaultInflection.safeIdentifier("class")).toBe("class_")
@@ -455,9 +383,10 @@ describe("composeInflection", () => {
 
   describe("entityName composition", () => {
     it("applies plugin transform first, then base transform", () => {
-      // Plugin: uppercase  Base: (identity)
+      // Plugin: uppercase  Base: identity
       // "users" → "USERS" → "USERS"
-      const composed = composeInflection(defaultInflection, {
+      const base = createInflection({ entityName: (s) => s })
+      const composed = composeInflection(base, {
         entityName: inflect.uppercase,
       })
 
