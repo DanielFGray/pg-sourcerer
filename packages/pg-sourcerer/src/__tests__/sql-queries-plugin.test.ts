@@ -735,4 +735,110 @@ describe("SQL Queries Plugin", () => {
       }),
     );
   });
+
+  describe("namespace export style", () => {
+    it.effect("generates single object export with entity name", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should export single object with entity name
+        expect(userFile?.content).toContain("export const User = {");
+        // Should NOT have flat exports
+        expect(userFile?.content).not.toMatch(/export async function find/);
+      }),
+    );
+
+    it.effect("includes methods as object properties with function expressions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Methods should be object properties with async function expressions
+        expect(userFile?.content).toMatch(/findUserById:\s*async function/);
+        expect(userFile?.content).toMatch(/insertUser:\s*async function/);
+      }),
+    );
+
+    it.effect("flat style (default) generates individual export functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", exportStyle: "flat" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should have individual exported functions
+        expect(userFile?.content).toMatch(/export async function findUserById/);
+        expect(userFile?.content).toMatch(/export async function insertUser/);
+        // Should NOT have namespace object
+        expect(userFile?.content).not.toContain("export const User = {");
+      }),
+    );
+  });
+
+  describe("custom exportName function", () => {
+    it.effect("uses custom exportName function to generate method names", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        // Custom export name that uses snake_case style
+        const customExportName = (entityName: string, methodName: string) =>
+          `${entityName.toLowerCase()}_${methodName.toLowerCase()}`;
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", exportName: customExportName })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use custom naming
+        expect(userFile?.content).toMatch(/export async function user_findbyid/);
+        expect(userFile?.content).toMatch(/export async function user_insert/);
+      }),
+    );
+
+    it.effect("custom exportName works with namespace export style", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        // Custom export name that keeps entity separate
+        const customExportName = (_entityName: string, methodName: string) =>
+          methodName.toLowerCase();
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", exportStyle: "namespace", exportName: customExportName })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use custom naming as property names in namespace object
+        expect(userFile?.content).toContain("export const User = {");
+        expect(userFile?.content).toMatch(/findbyid:\s*async function/);
+        expect(userFile?.content).toMatch(/insert:\s*async function/);
+      }),
+    );
+  });
 });

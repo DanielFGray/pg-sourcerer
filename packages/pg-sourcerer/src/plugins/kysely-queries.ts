@@ -30,8 +30,9 @@ const { toExpr } = cast
  */
 export type ExportNameFn = (entityName: string, methodName: string) => string
 
-/** Default export name: entityName + methodName (e.g., "UserFindById") */
-const defaultExportName: ExportNameFn = (entityName, methodName) => `${entityName}${methodName}`
+/** Default export name: camelCase method name (e.g., "findById") */
+const defaultExportName: ExportNameFn = (_entityName, methodName) => 
+  methodName.charAt(0).toLowerCase() + methodName.slice(1)
 
 /**
  * Schema for serializable config options (JSON/YAML compatible).
@@ -70,6 +71,12 @@ const KyselyQueriesPluginConfigSchema = S.Struct({
    * Export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
    */
   exportName: S.optional(S.Any),
+  /**
+   * Export style for generated query functions.
+   * - "flat": Individual exports (e.g., `export const findById = ...`)
+   * - "namespace": Single object export (e.g., `export const User = { findById: ... }`)
+   */
+  exportStyle: S.optionalWith(S.Literal("flat", "namespace"), { default: () => "flat" as const }),
 })
 
 type KyselyQueriesPluginConfigSchema = S.Schema.Type<typeof KyselyQueriesPluginConfigSchema>
@@ -86,15 +93,22 @@ export interface KyselyQueriesConfigInput {
   readonly functionsFile?: string
   /**
    * Custom export name function for CRUD/lookup methods.
-   * @default (entityName, methodName) => entityName + methodName
+   * @default (_entityName, methodName) => camelCase(methodName)
    * @example
-   * // Unprefixed: "FindById", "Create"
-   * exportName: (_entity, method) => method
+   * // PascalCase prefix: "UserFindById", "UserCreate"
+   * exportName: (entity, method) => entity + method
    * 
    * // camelCase prefix: "userFindById", "userCreate"  
    * exportName: (entity, method) => entity.toLowerCase() + method
    */
   readonly exportName?: ExportNameFn
+  /**
+   * Export style for generated query functions.
+   * - "flat": Individual exports (e.g., `export const findById = ...`)
+   * - "namespace": Single object export (e.g., `export const User = { findById: ... }`)
+   * @default "flat"
+   */
+  readonly exportStyle?: "flat" | "namespace"
 }
 
 /**
@@ -120,6 +134,15 @@ interface GenerationContext {
   readonly entityName: string
   /** Function to generate export names */
   readonly exportName: ExportNameFn
+}
+
+/**
+ * A generated method definition (name + arrow function).
+ * Used to support both flat exports and namespace object exports.
+ */
+interface MethodDef {
+  readonly name: string
+  readonly fn: n.ArrowFunctionExpression
 }
 
 /**
@@ -665,7 +688,7 @@ const getFunctionQualifiedName = (fn: FunctionEntity): string =>
   `${fn.schemaName}.${fn.pgName}`
 
 /**
- * Generate a function wrapper method as an object property.
+ * Generate a function wrapper method.
  * 
  * Patterns:
  * - SETOF/table return: db.selectFrom(eb => eb.fn<Type>(...).as('f')).selectAll().execute()
@@ -676,7 +699,7 @@ const generateFunctionWrapper = (
   fn: FunctionEntity,
   ir: SemanticIR,
   executeQueries: boolean,
-): n.Statement => {
+): MethodDef => {
   const resolvedReturn = resolveReturnType(fn, ir)
   const resolvedArgs = resolveArgs(fn, ir)
   const qualifiedName = getFunctionQualifiedName(fn)
@@ -748,10 +771,7 @@ const generateFunctionWrapper = (
 
   const wrapperFn = arrowFn(params, query)
 
-  const constDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(id(fn.name), wrapperFn)
-  ])
-  return b.exportNamedDeclaration(constDecl, []) as n.Statement
+  return { name: fn.name, fn: wrapperFn }
 }
 
 /**
@@ -785,9 +805,9 @@ const collectFunctionTypeImports = (
 
 /**
  * Generate findById method:
- * export const UserFindById = (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
+ * export const findById = (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
  */
-const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
+const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
 
@@ -815,7 +835,7 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return conjure.export.const(exportName(entityName, "FindById"), fn)
+  return { name: exportName(entityName, "FindById"), fn }
 }
 
 /** Default limit for findMany queries */
@@ -833,10 +853,10 @@ const paramWithDefault = (name: string, defaultValue: n.Expression): n.Assignmen
 
 /**
  * Generate listMany method with pagination defaults:
- * export const UserListMany = (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
+ * export const listMany = (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
  *   .limit(limit).offset(offset).execute()
  */
-const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
+const generateListMany = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.permissions.canSelect) return undefined
 
@@ -867,14 +887,14 @@ const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return conjure.export.const(exportName(entityName, "ListMany"), fn)
+  return { name: exportName(entityName, "ListMany"), fn }
 }
 
 /**
  * Generate create method:
- * export const UserCreate = (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
+ * export const create = (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
  */
-const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
+const generateCreate = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.permissions.canInsert) return undefined
 
@@ -900,14 +920,14 @@ const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return conjure.export.const(exportName(entityName, "Create"), fn)
+  return { name: exportName(entityName, "Create"), fn }
 }
 
 /**
  * Generate update method:
- * export const UserUpdate = (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
+ * export const update = (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
  */
-const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
+const generateUpdate = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canUpdate) return undefined
 
@@ -944,14 +964,14 @@ const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return conjure.export.const(exportName(entityName, "Update"), fn)
+  return { name: exportName(entityName, "Update"), fn }
 }
 
 /**
  * Generate delete method:
- * export const UserRemove = (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
+ * export const remove = (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
  */
-const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
+const generateDelete = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canDelete) return undefined
 
@@ -979,18 +999,18 @@ const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return conjure.export.const(exportName(entityName, "Remove"), fn)
+  return { name: exportName(entityName, "Remove"), fn }
 }
 
 /** Generate all CRUD methods for an entity */
-const generateCrudMethods = (ctx: GenerationContext): readonly n.Statement[] =>
+const generateCrudMethods = (ctx: GenerationContext): readonly MethodDef[] =>
   [
     generateFindById(ctx),
     ctx.generateListMany ? generateListMany(ctx) : undefined,
     generateCreate(ctx),
     generateUpdate(ctx),
     generateDelete(ctx),
-  ].filter((p): p is n.Statement => p != null)
+  ].filter((p): p is MethodDef => p != null)
 
 // ============================================================================
 // Index-based Lookup Functions
@@ -1030,7 +1050,7 @@ const generateLookupMethodName = (
  * Generate a lookup method for a single-column index.
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
-const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statement => {
+const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDef => {
   const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   const tableRef = getTableRef(entity, defaultSchemas)
   const columnName = index.columnNames[0]!
@@ -1075,7 +1095,7 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statem
   )
 
   const methodName = generateLookupMethodName(entity, index, relation)
-  return conjure.export.const(exportName(entityName, methodName), fn)
+  return { name: exportName(entityName, methodName), fn }
 }
 
 /**
@@ -1110,7 +1130,7 @@ const isUniqueLookup = (entity: TableEntity, index: IndexDef): boolean => {
 }
 
 /** Generate lookup methods for all eligible indexes, deduplicating by column */
-const generateLookupMethods = (ctx: GenerationContext): readonly n.Statement[] => {
+const generateLookupMethods = (ctx: GenerationContext): readonly MethodDef[] => {
   const eligibleIndexes = ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
 
@@ -1131,6 +1151,43 @@ const generateLookupMethods = (ctx: GenerationContext): readonly n.Statement[] =
   }
 
   return Array.from(byColumn.values()).map(index => generateLookupMethod(index, ctx))
+}
+
+// ============================================================================
+// Export Style Helpers
+// ============================================================================
+
+/**
+ * Convert MethodDef array to flat export statements.
+ * Each method becomes: export const methodName = (db, ...) => ...
+ */
+const toFlatExports = (methods: readonly MethodDef[]): n.Statement[] =>
+  methods.map(m => conjure.export.const(m.name, m.fn))
+
+/**
+ * Convert MethodDef array to a single namespace object export.
+ * All methods become: export const EntityName = { methodName: (db, ...) => ..., ... }
+ */
+const toNamespaceExport = (entityName: string, methods: readonly MethodDef[]): n.Statement => {
+  const properties = methods.map(m =>
+    b.objectProperty(id(m.name), m.fn)
+  )
+  const obj = b.objectExpression(properties)
+  return conjure.export.const(entityName, obj)
+}
+
+/**
+ * Convert MethodDef array to statements based on export style.
+ */
+const toStatements = (
+  methods: readonly MethodDef[],
+  exportStyle: "flat" | "namespace",
+  entityName: string
+): n.Statement[] => {
+  if (methods.length === 0) return []
+  return exportStyle === "namespace"
+    ? [toNamespaceExport(entityName, methods)]
+    : toFlatExports(methods)
 }
 
 // ============================================================================
@@ -1185,12 +1242,19 @@ export const kyselyQueriesPlugin = definePlugin({
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
         const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName }
         
-        const crudStatements = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
+        // Collect all methods for this entity
+        const methods: MethodDef[] = [
+          ...generateCrudMethods(genCtx),
+          ...generateLookupMethods(genCtx),
+        ]
 
         // Get functions that return this entity
         const entityFunctions = functionsByEntity.get(entity.name) ?? []
+        for (const fn of entityFunctions) {
+          methods.push(generateFunctionWrapper(fn, ctx.ir, executeQueries))
+        }
 
-        if (crudStatements.length === 0 && entityFunctions.length === 0) return
+        if (methods.length === 0) return
 
         const fileNameCtx: FileNameContext = {
           entityName,
@@ -1201,13 +1265,8 @@ export const kyselyQueriesPlugin = definePlugin({
         }
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
 
-        // All statements for the file: CRUD methods + function wrappers
-        const statements: n.Statement[] = [...crudStatements]
-
-        // Add function wrappers as flat exports
-        for (const fn of entityFunctions) {
-          statements.push(generateFunctionWrapper(fn, ctx.ir, executeQueries))
-        }
+        // Convert methods to statements based on export style
+        const statements = toStatements(methods, config.exportStyle, entityName)
 
         const file = ctx
           .file(filePath)
@@ -1270,9 +1329,10 @@ export const kyselyQueriesPlugin = definePlugin({
         if (compositeFunctions.length === 0) continue
 
         const filePath = `${config.outputDir}/${composite.name}.ts`
-        const statements = compositeFunctions.map(fn =>
+        const methods = compositeFunctions.map(fn =>
           generateFunctionWrapper(fn, ctx.ir, executeQueries)
         )
+        const statements = toStatements(methods, config.exportStyle, composite.name)
 
         const file = ctx.file(filePath)
         file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
@@ -1291,9 +1351,11 @@ export const kyselyQueriesPlugin = definePlugin({
     if (config.generateFunctions && scalarFunctions.length > 0) {
       const filePath = `${config.outputDir}/${config.functionsFile}`
 
-      const statements = scalarFunctions.map(fn =>
+      const methods = scalarFunctions.map(fn =>
         generateFunctionWrapper(fn, ctx.ir, executeQueries)
       )
+      // For scalar functions, use "functions" as the namespace name
+      const statements = toStatements(methods, config.exportStyle, "functions")
 
       const file = ctx.file(filePath)
 
