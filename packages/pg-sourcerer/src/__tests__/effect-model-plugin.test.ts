@@ -28,11 +28,9 @@ const introspection = loadIntrospectionFixture()
 /**
  * Build IR from fixture introspection data
  */
-async function buildTestIR(schemas: readonly string[]): Promise<SemanticIR> {
+function buildTestIR(schemas: readonly string[]) {
   const builder = createIRBuilderService()
-  return Effect.runPromise(
-    builder.build(introspection, { schemas }).pipe(Effect.provide(InflectionLive))
-  )
+  return builder.build(introspection, { schemas }).pipe(Effect.provide(InflectionLive))
 }
 
 /**
@@ -86,7 +84,7 @@ describe("Effect Model Plugin", () => {
   describe("entity generation", () => {
     it.effect("generates Model class for User entity", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -104,7 +102,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("generates Model and Schema imports", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -121,7 +119,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("generates auto-generated file header", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -139,7 +137,7 @@ describe("Effect Model Plugin", () => {
   describe("field type mapping", () => {
     it.effect("maps UUID fields to S.UUID", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -156,7 +154,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("maps text fields to S.String", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -173,7 +171,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("maps boolean fields to S.Boolean", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -190,7 +188,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("maps timestamp fields to S.Date", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -207,7 +205,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("maps bigint fields to S.BigInt", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -228,7 +226,7 @@ describe("Effect Model Plugin", () => {
   describe("nullable fields", () => {
     it.effect("wraps nullable fields with S.NullOr", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -247,7 +245,7 @@ describe("Effect Model Plugin", () => {
   describe("generated fields", () => {
     it.effect("uses Model.Generated for identity columns", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -264,7 +262,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("uses Model.Generated for GENERATED columns", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -281,7 +279,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("treats non-insertable/updateable fields with defaults as Generated", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         
         // Find a view entity
         const viewEntity = Array.from(ir.entities.values()).find(
@@ -318,7 +316,7 @@ describe("Effect Model Plugin", () => {
   describe("fields with defaults", () => {
     it.effect("makes fields with DB defaults optional in insert", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -344,7 +342,7 @@ describe("Effect Model Plugin", () => {
   describe("enum fields", () => {
     it.effect("generates inline enum as S.Union of S.Literal when typeReferences is inline", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -364,7 +362,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("generates separate enum file by default (typeReferences: separate)", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -390,7 +388,7 @@ describe("Effect Model Plugin", () => {
   describe("array fields", () => {
     it.effect("wraps array fields with S.Array", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -409,7 +407,7 @@ describe("Effect Model Plugin", () => {
   describe("views", () => {
     it.effect("generates Model for views (select-only)", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -427,7 +425,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("excludes view fields from insert/update variants", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -455,7 +453,7 @@ describe("Effect Model Plugin", () => {
   describe("symbol registration", () => {
     it.effect("registers symbols for generated models", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -478,7 +476,7 @@ describe("Effect Model Plugin", () => {
   describe("configuration", () => {
     it.effect("uses outputDir from config", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -498,7 +496,7 @@ describe("Effect Model Plugin", () => {
   describe("entity filtering", () => {
     it.effect("skips entities with @omit tag", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -540,7 +538,7 @@ describe("Effect Model Plugin", () => {
     describe("sensitive fields", () => {
       it.effect("marks field with sensitive tag and outputs FieldExcept with json variants", () =>
         Effect.gen(function* () {
-          const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+          const ir = yield* buildTestIR(["app_public"])
           
           // Add sensitive tag to User.name field
           addSmartTagToField(ir, "User", "name", { "effect:model": { sensitive: true } })
@@ -563,7 +561,7 @@ describe("Effect Model Plugin", () => {
 
       it.effect("sensitive field uses Model.Sensitive wrapper", () =>
         Effect.gen(function* () {
-          const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+          const ir = yield* buildTestIR(["app_public"])
           
           // Mark only name as sensitive
           addSmartTagToField(ir, "User", "name", { "effect:model": { sensitive: true } })
@@ -586,7 +584,7 @@ describe("Effect Model Plugin", () => {
     describe("insert optionality override", () => {
       it.effect("insert: optional wraps field with Model.FieldOption", () =>
         Effect.gen(function* () {
-          const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+          const ir = yield* buildTestIR(["app_public"])
           
           // Add insert:optional tag to a non-defaulted field (User.name is text, no default)
           addSmartTagToField(ir, "User", "name", { "effect:model": { insert: "optional" } })
@@ -609,7 +607,7 @@ describe("Effect Model Plugin", () => {
 
       it.effect("insert: required overrides default generated behavior", () =>
         Effect.gen(function* () {
-          const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+          const ir = yield* buildTestIR(["app_public"])
           
           // Find an entity with a defaulted primary key (User.id has default gen_random_uuid())
           // By default it would be Model.Generated, but insert:required should prevent that
@@ -658,7 +656,7 @@ describe("Effect Model Plugin", () => {
     describe("combined smart tags", () => {
       it.effect("field can have both sensitive and insert:optional tags", () =>
         Effect.gen(function* () {
-          const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+          const ir = yield* buildTestIR(["app_public"])
           
           // Add both tags to User.name
           addSmartTagToField(ir, "User", "name", { 
@@ -686,7 +684,7 @@ describe("Effect Model Plugin", () => {
   describe("composite type generation", () => {
     it.effect("generates S.Struct schemas for composite types", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -706,7 +704,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("composite schemas do not use Model.Class", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -726,7 +724,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("composite schemas only import Schema, not Model", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -747,7 +745,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("registers symbols for composite schemas", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -768,7 +766,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("exports inferred types for composites by default", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
@@ -788,7 +786,7 @@ describe("Effect Model Plugin", () => {
 
     it.effect("does not export inferred types when exportTypes is false", () =>
       Effect.gen(function* () {
-        const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
+        const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
 
         yield* effectModelPlugin
