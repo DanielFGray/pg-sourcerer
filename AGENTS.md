@@ -256,6 +256,15 @@ import { Array as A } from "effect"  // NO
 6. **Query Context7** - For Effect-ts API questions
 7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
 
+## ⚠️ CRITICAL: Git Safety
+
+**NEVER commit git submodules** without explicit user direction. The `vendor/` directory may contain local submodule checkouts for development - these should not be committed.
+
+Before committing, verify no submodules are staged:
+```bash
+git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
+```
+
 ## ⚠️ CRITICAL: Decision Making
 
 **ALWAYS defer to the user on design decisions.**
