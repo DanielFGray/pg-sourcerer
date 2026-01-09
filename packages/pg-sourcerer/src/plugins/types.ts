@@ -36,7 +36,7 @@ const { ts, exp } = conjure
 // ============================================================================
 
 const TypesPluginConfig = S.Struct({
-  outputDir: S.String,
+  outputDir: S.optionalWith(S.String, { default: () => "types" }),
 })
 
 // ============================================================================

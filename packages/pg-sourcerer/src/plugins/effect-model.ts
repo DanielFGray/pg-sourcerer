@@ -28,13 +28,13 @@ const { ts, exp, obj } = conjure;
 
 const EffectModelPluginConfig = S.Struct({
   /** Output directory relative to main outputDir */
-  outputDir: S.String,
+  outputDir: S.optionalWith(S.String, { default: () => "effect-model" }),
   /** How to represent enum values: 'strings' uses S.Union(S.Literal(...)), 'enum' uses S.Enums(TsEnum) */
-  enumStyle: S.optional(S.Union(S.Literal("strings"), S.Literal("enum"))),
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
   /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  typeReferences: S.optional(S.Union(S.Literal("inline"), S.Literal("separate"))),
+  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
   /** Export inferred types for composite schemas (default: true) */
-  exportTypes: S.optional(S.Boolean),
+  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
 });
 
 type EffectModelPluginConfig = S.Schema.Type<typeof EffectModelPluginConfig>;
@@ -486,8 +486,7 @@ export const effectModelPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enumEntities = getEnumEntities(ctx.ir);
-    const enumStyle = config.enumStyle ?? "strings";
-    const typeReferences = config.typeReferences ?? "separate";
+    const { enumStyle, typeReferences } = config;
 
     // Generate separate enum files if configured
     if (typeReferences === "separate") {
@@ -573,7 +572,6 @@ export const effectModelPlugin = definePlugin({
           composite,
         );
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-        const exportTypes = config.exportTypes ?? true;
 
         // Collect enum usage for imports
         const usedEnums = typeReferences === "separate"
@@ -587,7 +585,7 @@ export const effectModelPlugin = definePlugin({
         buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
 
         fileBuilder
-          .ast(conjure.symbolProgram(...generateCompositeStatements(composite, compositeFieldCtx, exportTypes)))
+          .ast(conjure.symbolProgram(...generateCompositeStatements(composite, compositeFieldCtx, config.exportTypes)))
           .emit();
       });
   },

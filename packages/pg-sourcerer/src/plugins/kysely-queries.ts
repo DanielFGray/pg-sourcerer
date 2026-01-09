@@ -22,26 +22,26 @@ const { toExpr } = cast
 // ============================================================================
 
 const KyselyQueriesPluginConfig = S.Struct({
-  outputDir: S.String,
+  outputDir: S.optionalWith(S.String, { default: () => "kysely-queries" }),
   header: S.optional(S.String),
   /** 
    * Path to import DB type from (relative to outputDir). 
    * Defaults to "../DB.js" which works with kysely-codegen's DB.d.ts output.
    * For node16/nodenext module resolution, use ".js" extension even for .d.ts files.
    */
-  dbTypesPath: S.optional(S.String),
+  dbTypesPath: S.optionalWith(S.String, { default: () => "../DB.js" }),
   /**
    * Whether to call .execute() / .executeTakeFirst() on queries.
    * When true (default), methods return Promise<Row> or Promise<Row[]>.
    * When false, methods return the query builder for further customization.
    */
-  executeQueries: S.optional(S.Boolean),
+  executeQueries: S.optionalWith(S.Boolean, { default: () => true }),
   /**
    * Whether to generate listMany() method for unfiltered table scans.
    * Disabled by default since unfiltered scans don't use indexes.
    * When enabled, generates: listMany(db, limit = 50, offset = 0)
    */
-  generateListMany: S.optional(S.Boolean),
+  generateListMany: S.optionalWith(S.Boolean, { default: () => false }),
 })
 
 type KyselyQueriesPluginConfig = S.Schema.Type<typeof KyselyQueriesPluginConfig>
@@ -586,9 +586,7 @@ export const kyselyQueriesPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enums = getEnumEntities(ctx.ir)
-    const dbTypesPath = config.dbTypesPath ?? "../DB.js"
-    const executeQueries = config.executeQueries ?? true
-    const generateListMany = config.generateListMany ?? false
+    const { dbTypesPath, executeQueries, generateListMany } = config
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)
