@@ -572,4 +572,167 @@ describe("SQL Queries Plugin", () => {
       }),
     );
   });
+
+  describe("function wrappers", () => {
+    it.effect("generates functions.ts for scalar-returning functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const functionsFile = all.find(e => e.path.includes("functions.ts"));
+
+        expect(functionsFile).toBeDefined();
+        // Scalar functions should be in functions.ts
+        expect(functionsFile?.content).toContain("currentSessionId");
+        expect(functionsFile?.content).toContain("currentUserId");
+        expect(functionsFile?.content).toContain("verifyEmail");
+        // Table-returning functions should NOT be in functions.ts
+        expect(functionsFile?.content).not.toMatch(/\bcurrentUser\b/);
+      }),
+    );
+
+    it.effect("generates table-returning function wrappers in entity file", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        // current_user returns app_public.users (table) - should be in User.ts
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        expect(userFile?.content).toContain("currentUser");
+        expect(userFile?.content).toContain("select * from app_public.current_user");
+      }),
+    );
+
+    it.effect("generates composite-returning function wrappers in separate file", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        // username_search returns app_public.username_search composite type
+        const usernameSearchFile = all.find(e => e.path.includes("UsernameSearch.ts"));
+
+        expect(usernameSearchFile).toBeDefined();
+        expect(usernameSearchFile?.content).toContain("usernameSearch");
+      }),
+    );
+
+    it.effect("filters out computed field functions (row-type arguments)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const allContent = all.map(e => e.content).join("\n");
+
+        // posts_short_body takes a posts row - should be filtered out
+        expect(allContent).not.toContain("postsShortBody");
+        expect(allContent).not.toContain("postsScore");
+        expect(allContent).not.toContain("postsPopularity");
+      }),
+    );
+
+    it.effect("can disable function generation via config", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries", generateFunctions: false })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const functionsFile = all.find(e => e.path.includes("functions.ts"));
+
+        expect(functionsFile).toBeUndefined();
+      }),
+    );
+
+    it.effect("generates function wrapper with correct SQL syntax", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const functionsFile = all.find(e => e.path.includes("functions.ts"));
+
+        // Scalar function should use SELECT schema.function_name(args)
+        expect(functionsFile?.content).toMatch(/select\s+app_public\.current_session_id\(\)/i);
+      }),
+    );
+
+    it.effect("generates function wrapper with parameters", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const functionsFile = all.find(e => e.path.includes("functions.ts"));
+
+        // verify_email has user_email_id: uuid and token: text parameters
+        expect(functionsFile?.content).toMatch(/verifyEmail.*user_email_id.*token/);
+      }),
+    );
+
+    it.effect("uses SETOF syntax for set-returning functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        // username_search returns SETOF - should use SELECT * FROM function()
+        const usernameSearchFile = all.find(e => e.path.includes("UsernameSearch.ts"));
+
+        expect(usernameSearchFile?.content).toMatch(/select \* from app_public\.username_search/i);
+      }),
+    );
+
+    it.effect("imports Row type from types plugin for table-returning functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should import User type for currentUser return type
+        expect(userFile?.content).toMatch(/import.*User.*from/);
+      }),
+    );
+  });
 });

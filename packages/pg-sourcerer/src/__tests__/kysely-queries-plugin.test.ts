@@ -349,7 +349,7 @@ describe("Kysely Queries Plugin", () => {
   })
 
   describe("function wrappers", () => {
-    it.effect("generates functions.ts with flat exports", () =>
+    it.effect("generates functions.ts for scalar-returning functions", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR(["app_public", "app_private"])
         const testLayer = createTestLayer(ir)
@@ -361,9 +361,12 @@ describe("Kysely Queries Plugin", () => {
         const functionsFile = all.find((e) => e.path.includes("functions.ts"))
 
         expect(functionsFile).toBeDefined()
-        // Should have flat exports, not namespaced
-        expect(functionsFile?.content).toContain("export const currentUser")
+        // Scalar functions should be in functions.ts
+        expect(functionsFile?.content).toContain("export const currentSessionId")
+        expect(functionsFile?.content).toContain("export const currentUserId")
         expect(functionsFile?.content).toContain("export const verifyEmail")
+        // Table-returning functions should NOT be in functions.ts
+        expect(functionsFile?.content).not.toContain("currentUser =")
       })
     )
 
@@ -449,6 +452,108 @@ describe("Kysely Queries Plugin", () => {
         const functionsFile = all.find((e) => e.path.includes("functions.ts"))
 
         expect(functionsFile).toBeUndefined()
+      })
+    )
+
+    it.effect("generates composite-returning function wrappers in separate file", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        // username_search returns app_public.username_search composite type
+        const usernameSearchFile = all.find((e) => e.path.includes("UsernameSearch.ts"))
+
+        expect(usernameSearchFile).toBeDefined()
+        expect(usernameSearchFile?.content).toContain("export const usernameSearch")
+        // Should have args: substr and match_type
+        expect(usernameSearchFile?.content).toContain("substr")
+        expect(usernameSearchFile?.content).toContain("match_type")
+      })
+    )
+
+    it.effect("uses eb.fn with qualified function name", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+
+        // Should use fully qualified function name in eb.fn call
+        expect(functionsFile?.content).toContain('"app_public.current_session_id"')
+        expect(functionsFile?.content).toContain('"app_public.verify_email"')
+      })
+    )
+
+    it.effect("generates function wrappers with correct parameter types", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+
+        // verify_email has user_email_id: uuid and token: text
+        expect(functionsFile?.content).toMatch(/verifyEmail.*user_email_id:\s*string.*token:\s*string/)
+      })
+    )
+
+    it.effect("uses selectFrom with SETOF-returning functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        // username_search returns SETOF - should use selectFrom and execute()
+        const usernameSearchFile = all.find((e) => e.path.includes("UsernameSearch.ts"))
+
+        expect(usernameSearchFile?.content).toContain("selectFrom")
+        expect(usernameSearchFile?.content).toContain(".execute()")
+      })
+    )
+
+    it.effect("uses executeTakeFirst for single-row returning functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        // current_user returns single row - should use executeTakeFirst
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        expect(userFile?.content).toMatch(/currentUser[\s\S]*?executeTakeFirst\(\)/)
+      })
+    )
+
+    it.effect("imports DB type for all function files", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+
+        expect(functionsFile?.content).toMatch(/import.*\bDB\b.*from/)
+        expect(functionsFile?.content).toMatch(/import.*\bKysely\b.*from.*["']kysely["']/)
       })
     )
   })

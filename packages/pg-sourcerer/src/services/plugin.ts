@@ -149,6 +149,9 @@ export interface Plugin<TConfig = unknown, TEncoded = TConfig> {
   /**
    * Plugin execution - returns Effect that yields services from context.
    *
+   * Accepts the encoded/partial config type. The run function decodes through
+   * the schema, applying defaults to produce the full TConfig.
+   *
    * Services available:
    * - IR: SemanticIR (read-only)
    * - Inflection: CoreInflection (composed: plugin defaults + user config)
@@ -158,7 +161,7 @@ export interface Plugin<TConfig = unknown, TEncoded = TConfig> {
    * - ArtifactStore: plugin-to-plugin data
    * - PluginMeta: current plugin name
    */
-  readonly run: (config: TConfig) => Effect.Effect<
+  readonly run: (config: TEncoded) => Effect.Effect<
     void,
     PluginExecutionFailed,
     // Service requirements via Context.Tag types
@@ -336,7 +339,7 @@ export function definePlugin<TConfig, TEncoded = TConfig>(def: SimplePluginDef<T
     configSchema: def.configSchema,
     inflection: def.inflection,
 
-    run: (config: TConfig) =>
+    run: (config: TEncoded) =>
       Effect.gen(function* () {
         // Apply schema defaults to config (supports direct run() calls in tests)
         const validatedConfig = yield* S.decodeUnknown(def.configSchema)(config).pipe(
