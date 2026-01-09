@@ -257,13 +257,6 @@ export function asyncFn(
   return fn
 }
 
-/**
- * Export a function declaration.
- */
-export function exportFn(fn: n.FunctionDeclaration): n.Statement {
-  return b.exportNamedDeclaration(fn, []) as n.Statement
-}
-
 // =============================================================================
 // Main API
 // =============================================================================
@@ -293,7 +286,6 @@ export const hex = {
 
   // Function builders
   asyncFn,
-  exportFn,
 } as const
 
 export default hex
