@@ -5,8 +5,8 @@ import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import { definePlugin } from "../services/plugin.js";
 import type { FileNameContext } from "../services/plugin.js";
-import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation } from "../ir/semantic-ir.js";
-import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js";
+import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation, FunctionEntity, FunctionArg, CompositeEntity } from "../ir/semantic-ir.js";
+import { getTableEntities, getEnumEntities, getFunctionEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../lib/conjure.js";
 import { hex, type SqlStyle, type QueryParts } from "../lib/hex.js";
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js";
@@ -22,6 +22,10 @@ const SqlQueriesPluginConfig = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "sql-queries" }),
   /** SQL query style. Defaults to "tag" (tagged template literals) */
   sqlStyle: S.optionalWith(S.Union(S.Literal("tag"), S.Literal("string")), { default: () => "tag" as const }),
+  /** Generate wrappers for PostgreSQL functions. Defaults to true. */
+  generateFunctions: S.optionalWith(S.Boolean, { default: () => true }),
+  /** Output file for scalar-returning functions. Defaults to "functions.ts". */
+  functionsFile: S.optionalWith(S.String, { default: () => "functions.ts" }),
 });
 
 type SqlQueriesPluginConfig = S.Schema.Type<typeof SqlQueriesPluginConfig>;
@@ -122,7 +126,7 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
   const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
   const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-  return hex.exportFn(
+  return conjure.export.fn(
     hex.asyncFn(`find${entity.name}ById`, [param.pick([fieldName], rowType)], [
       varDecl,
       b.returnStatement(b.identifier("result")),
@@ -142,7 +146,7 @@ const generateFindMany = (ctx: GenerationContext): n.Statement | undefined => {
     params: [b.identifier("limit"), b.identifier("offset")],
   };
 
-  return hex.exportFn(
+  return conjure.export.fn(
     hex.asyncFn(
       `findMany${entity.name}s`,
       [
@@ -175,7 +179,7 @@ const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
 
   // Delete returns void, no type parameter needed
   const queryExpr = hex.query(sqlStyle, parts);
-  return hex.exportFn(
+  return conjure.export.fn(
     hex.asyncFn(`delete${entity.name}`, [param.pick([fieldName], rowType)], [
       b.expressionStatement(queryExpr),
     ]),
@@ -219,7 +223,7 @@ const generateInsert = (ctx: GenerationContext): n.Statement | undefined => {
   // Simple typed parameter: data: InsertType
   const dataParam = param.typed("data", ts.ref(insertType));
 
-  return hex.exportFn(
+  return conjure.export.fn(
     hex.asyncFn(`insert${entity.name}`, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]),
   );
 };
@@ -309,7 +313,7 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
     const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
     const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-    return hex.exportFn(
+    return conjure.export.fn(
       hex.asyncFn(fnName, [paramNode], [
         varDecl,
         b.returnStatement(b.identifier("result")),
@@ -318,7 +322,7 @@ const generateLookupFunction = (index: IndexDef, ctx: GenerationContext): n.Stat
   }
 
   // Non-unique: return all matching rows
-  return hex.exportFn(
+  return conjure.export.fn(
     hex.asyncFn(fnName, [paramNode], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType)))),
   );
 };
@@ -341,6 +345,369 @@ const generateLookupFunctions = (ctx: GenerationContext): readonly n.Statement[]
 };
 
 // ============================================================================
+// Function Wrapper Generation
+// ============================================================================
+
+/**
+ * Map PostgreSQL type names to TypeScript types.
+ * Simplified version - covers common scalar types.
+ */
+const pgTypeNameToTs = (typeName: string): string => {
+  const typeMap: Record<string, string> = {
+    // Numeric
+    int2: "number",
+    int4: "number",
+    int8: "string", // bigint as string
+    float4: "number",
+    float8: "number",
+    numeric: "string",
+    decimal: "string",
+    // Text
+    text: "string",
+    varchar: "string",
+    char: "string",
+    citext: "string",
+    name: "string",
+    // Boolean
+    bool: "boolean",
+    // Date/time
+    date: "Date",
+    timestamp: "Date",
+    timestamptz: "Date",
+    time: "string",
+    timetz: "string",
+    interval: "string",
+    // UUID
+    uuid: "string",
+    // JSON
+    json: "unknown",
+    jsonb: "unknown",
+    // Binary
+    bytea: "Buffer",
+    // Other
+    void: "void",
+  };
+  return typeMap[typeName] ?? "unknown";
+};
+
+/**
+ * Check if a function argument has a row type (composite type matching a table).
+ * Functions with row-type arguments are computed fields, not standalone functions.
+ */
+const hasRowTypeArg = (arg: FunctionArg, ir: SemanticIR): boolean => {
+  const tables = getTableEntities(ir);
+  return tables.some(t => {
+    const qualifiedName = `${t.schemaName}.${t.pgName}`;
+    return arg.typeName === qualifiedName || arg.typeName === t.pgName;
+  });
+};
+
+/**
+ * Check if a function can be wrapped (not a trigger, computed field, etc.)
+ */
+const isGeneratableFunction = (fn: FunctionEntity, ir: SemanticIR): boolean => {
+  if (!fn.canExecute) return false;
+  if (fn.returnTypeName === "trigger") return false;
+  if (fn.isFromExtension) return false;
+  if (fn.tags.omit === true) return false;
+  // Filter out computed field functions (have row-type args)
+  if (fn.args.some(arg => hasRowTypeArg(arg, ir))) return false;
+  return true;
+};
+
+/**
+ * Categorize functions by volatility.
+ * Volatile functions go in mutations namespace, stable/immutable in queries.
+ */
+const categorizeFunction = (fn: FunctionEntity): "queries" | "mutations" =>
+  fn.volatility === "volatile" ? "mutations" : "queries";
+
+/**
+ * Get all generatable functions from the IR, categorized by volatility.
+ */
+const getGeneratableFunctions = (ir: SemanticIR): {
+  queries: FunctionEntity[];
+  mutations: FunctionEntity[];
+} => {
+  const all = getFunctionEntities(ir).filter(fn => isGeneratableFunction(fn, ir));
+  return {
+    queries: all.filter(fn => categorizeFunction(fn) === "queries"),
+    mutations: all.filter(fn => categorizeFunction(fn) === "mutations"),
+  };
+};
+
+/**
+ * Resolved return type information for function wrappers.
+ */
+interface ResolvedReturnType {
+  readonly tsType: string;
+  readonly isArray: boolean;
+  readonly isScalar: boolean;
+  readonly needsImport?: string;
+  readonly returnEntity?: TableEntity | CompositeEntity;
+}
+
+/**
+ * Resolve a function's return type to TypeScript type information.
+ */
+const resolveReturnType = (fn: FunctionEntity, ir: SemanticIR): ResolvedReturnType => {
+  const returnTypeName = fn.returnTypeName;
+  const isArray = fn.returnsSet;
+
+  // 1. Check if it's a table return type
+  const tableEntities = getTableEntities(ir);
+  const tableMatch = tableEntities.find(entity => {
+    const qualifiedName = `${entity.schemaName}.${entity.pgName}`;
+    return returnTypeName === qualifiedName || returnTypeName === entity.pgName;
+  });
+  if (tableMatch) {
+    return {
+      tsType: tableMatch.name,
+      isArray,
+      isScalar: false,
+      needsImport: tableMatch.name,
+      returnEntity: tableMatch,
+    };
+  }
+
+  // 2. Check if it's a composite type return
+  const compositeEntities = getCompositeEntities(ir);
+  const compositeMatch = compositeEntities.find(entity => {
+    const qualifiedName = `${entity.schemaName}.${entity.pgName}`;
+    return returnTypeName === qualifiedName || returnTypeName === entity.pgName;
+  });
+  if (compositeMatch) {
+    return {
+      tsType: compositeMatch.name,
+      isArray,
+      isScalar: false,
+      needsImport: compositeMatch.name,
+      returnEntity: compositeMatch,
+    };
+  }
+
+  // 3. It's a scalar type - map via type name
+  const baseTypeName = returnTypeName.includes(".")
+    ? returnTypeName.split(".").pop()!
+    : returnTypeName;
+  const tsType = pgTypeNameToTs(baseTypeName);
+
+  return {
+    tsType,
+    isArray,
+    isScalar: true,
+  };
+};
+
+/**
+ * Resolved argument information for function wrappers.
+ */
+interface ResolvedArg {
+  readonly name: string;
+  readonly tsType: string;
+  readonly isOptional: boolean;
+  readonly needsImport?: string;
+}
+
+/**
+ * Resolve a function argument to TypeScript type information.
+ */
+const resolveArg = (arg: FunctionArg, ir: SemanticIR): ResolvedArg => {
+  const typeName = arg.typeName;
+
+  // Check if it's an array type (ends with [])
+  const isArrayType = typeName.endsWith("[]");
+  const baseTypeName = isArrayType ? typeName.slice(0, -2) : typeName;
+
+  // Check enums
+  const enums = getEnumEntities(ir);
+  const enumMatch = enums.find(e => {
+    const qualifiedName = `${e.schemaName}.${e.pgName}`;
+    return baseTypeName === qualifiedName || baseTypeName === e.pgName;
+  });
+  if (enumMatch) {
+    const tsType = isArrayType ? `${enumMatch.name}[]` : enumMatch.name;
+    return {
+      name: arg.name || "arg",
+      tsType,
+      isOptional: arg.hasDefault,
+      needsImport: enumMatch.name,
+    };
+  }
+
+  // Check composites
+  const composites = getCompositeEntities(ir);
+  const compositeMatch = composites.find(e => {
+    const qualifiedName = `${e.schemaName}.${e.pgName}`;
+    return baseTypeName === qualifiedName || baseTypeName === e.pgName;
+  });
+  if (compositeMatch) {
+    const tsType = isArrayType ? `${compositeMatch.name}[]` : compositeMatch.name;
+    return {
+      name: arg.name || "arg",
+      tsType,
+      isOptional: arg.hasDefault,
+      needsImport: compositeMatch.name,
+    };
+  }
+
+  // Scalar type - map via type name
+  const scalarBase = baseTypeName.includes(".")
+    ? baseTypeName.split(".").pop()!
+    : baseTypeName;
+  const scalarTs = pgTypeNameToTs(scalarBase);
+  const tsType = isArrayType ? `${scalarTs}[]` : scalarTs;
+
+  return {
+    name: arg.name || "arg",
+    tsType,
+    isOptional: arg.hasDefault,
+  };
+};
+
+/**
+ * Resolve all arguments for a function.
+ */
+const resolveArgs = (fn: FunctionEntity, ir: SemanticIR): ResolvedArg[] =>
+  fn.args.map(arg => resolveArg(arg, ir));
+
+/**
+ * Get the fully qualified function name for SQL.
+ */
+const getFunctionQualifiedName = (fn: FunctionEntity): string =>
+  `${fn.schemaName}.${fn.pgName}`;
+
+/**
+ * Generate a function wrapper for a PostgreSQL function.
+ *
+ * Patterns:
+ * - SETOF/table return: select * from schema.fn(args)
+ * - Single row return: select * from schema.fn(args) (same SQL, single result)
+ * - Scalar return: select schema.fn(args)
+ */
+const generateFunctionWrapper = (
+  fn: FunctionEntity,
+  ir: SemanticIR,
+  sqlStyle: SqlStyle,
+): n.Statement => {
+  const resolvedReturn = resolveReturnType(fn, ir);
+  const resolvedArgs = resolveArgs(fn, ir);
+  const qualifiedName = getFunctionQualifiedName(fn);
+
+  // Build camelCase function name
+  const exportName = inflect.camelCase(fn.pgName);
+
+  // Helper to convert resolved type string to AST
+  const typeStrToAst = (typeStr: string): n.TSType => {
+    if (typeStr.endsWith("[]")) {
+      const elemType = typeStr.slice(0, -2);
+      return ts.array(typeStrToAst(elemType));
+    }
+    switch (typeStr) {
+      case "string": return ts.string();
+      case "number": return ts.number();
+      case "boolean": return ts.boolean();
+      case "void": return ts.void();
+      case "unknown": return ts.unknown();
+      case "Date": return ts.ref("Date");
+      case "Buffer": return ts.ref("Buffer");
+      default: return ts.ref(typeStr);
+    }
+  };
+
+  // Build parameter list for the generated function
+  const params: n.Identifier[] = resolvedArgs.map(arg => {
+    const p = b.identifier(arg.name);
+    p.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(typeStrToAst(arg.tsType)));
+    if (arg.isOptional) p.optional = true;
+    return p;
+  });
+
+  // Build SQL based on return type
+  let sql: string;
+  let resultType: n.TSType;
+
+  if (resolvedReturn.isScalar) {
+    // Scalar: select schema.fn(args)
+    const argPlaceholders = resolvedArgs.map((_, i) => `$${i + 1}`).join(", ");
+    sql = `select ${qualifiedName}(${argPlaceholders})`;
+    // Return type is a record with the function name as key
+    resultType = ts.array(ts.ref("Record", [ts.string(), typeStrToAst(resolvedReturn.tsType)]));
+  } else {
+    // Table/composite: select * from schema.fn(args)
+    const argPlaceholders = resolvedArgs.map((_, i) => `$${i + 1}`).join(", ");
+    sql = `select * from ${qualifiedName}(${argPlaceholders})`;
+    resultType = ts.array(ts.ref(resolvedReturn.tsType));
+  }
+
+  const paramExprs = resolvedArgs.map(arg => b.identifier(arg.name));
+
+  // Build template parts by splitting on $N placeholders
+  let templateParts = sql.split(/\$\d+/);
+  // For zero-arg functions, template is just the SQL string
+  if (resolvedArgs.length === 0) {
+    templateParts = [sql];
+  }
+
+  const parts: QueryParts = {
+    templateParts,
+    params: paramExprs,
+  };
+
+  // Build the function body
+  let body: n.Statement[];
+
+  if (resolvedReturn.isScalar) {
+    // Scalar: extract the result from the first row's first column
+    const queryExpr = hex.query(sqlStyle, parts, resultType);
+    const varDecl = hex.firstRowDecl(sqlStyle, "row", queryExpr);
+    // Use optional chaining: row?.[fn.pgName]
+    const optionalReturn = b.optionalMemberExpression(
+      b.identifier("row"),
+      b.identifier(fn.pgName),
+      false,
+      true
+    );
+    body = [varDecl, b.returnStatement(optionalReturn)];
+  } else if (resolvedReturn.isArray) {
+    // SETOF: return all rows
+    body = hex.returnQuery(sqlStyle, parts, resultType);
+  } else {
+    // Single row: extract first row
+    const queryExpr = hex.query(sqlStyle, parts, resultType);
+    const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
+    body = [varDecl, b.returnStatement(b.identifier("result"))];
+  }
+
+  return conjure.export.fn(hex.asyncFn(exportName, params, body));
+};
+
+/**
+ * Collect type imports needed for function wrappers.
+ */
+const collectFunctionTypeImports = (
+  functions: readonly FunctionEntity[],
+  ir: SemanticIR
+): Set<string> => {
+  const imports = new Set<string>();
+
+  for (const fn of functions) {
+    const resolvedReturn = resolveReturnType(fn, ir);
+    if (resolvedReturn.needsImport) {
+      imports.add(resolvedReturn.needsImport);
+    }
+
+    for (const arg of resolveArgs(fn, ir)) {
+      if (arg.needsImport) {
+        imports.add(arg.needsImport);
+      }
+    }
+  }
+
+  return imports;
+};
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -356,15 +723,39 @@ export const sqlQueriesPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enums = getEnumEntities(ctx.ir);
-    const { sqlStyle } = config;
+    const { sqlStyle, generateFunctions } = config;
+
+    // Pre-compute function groupings by return entity name
+    // Functions returning entities go in that entity's file; scalars go in functions.ts
+    const functionsByEntity = new Map<string, FunctionEntity[]>();
+    const scalarFunctions: FunctionEntity[] = [];
+
+    if (generateFunctions) {
+      const { queries, mutations } = getGeneratableFunctions(ctx.ir);
+      const allFunctions = [...queries, ...mutations];
+
+      for (const fn of allFunctions) {
+        const resolved = resolveReturnType(fn, ctx.ir);
+        if (resolved.returnEntity) {
+          const entityName = resolved.returnEntity.name;
+          const existing = functionsByEntity.get(entityName) ?? [];
+          functionsByEntity.set(entityName, [...existing, fn]);
+        } else {
+          scalarFunctions.push(fn);
+        }
+      }
+    }
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
         const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, sqlStyle };
-        const statements = [...generateCrudFunctions(genCtx), ...generateLookupFunctions(genCtx)];
+        const crudStatements = [...generateCrudFunctions(genCtx), ...generateLookupFunctions(genCtx)];
 
-        if (statements.length === 0) return;
+        // Get functions that return this entity
+        const entityFunctions = functionsByEntity.get(entity.name) ?? [];
+
+        if (crudStatements.length === 0 && entityFunctions.length === 0) return;
 
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
         const fileNameCtx: FileNameContext = {
@@ -375,6 +766,14 @@ export const sqlQueriesPlugin = definePlugin({
           entity,
         };
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
+
+        // All statements for the file: CRUD methods + function wrappers
+        const statements: n.Statement[] = [...crudStatements];
+
+        // Add function wrappers
+        for (const fn of entityFunctions) {
+          statements.push(generateFunctionWrapper(fn, ctx.ir, sqlStyle));
+        }
 
         const file = ctx.file(filePath);
 
@@ -402,7 +801,69 @@ export const sqlQueriesPlugin = definePlugin({
           }
         }
 
+        // Import types needed by function args (for functions grouped into this file)
+        if (entityFunctions.length > 0) {
+          const fnTypeImports = collectFunctionTypeImports(entityFunctions, ctx.ir);
+          // Remove the entity's own type (already in scope)
+          fnTypeImports.delete(entity.name);
+          // TODO: Import these types when symbol registry supports it
+        }
+
         file.ast(conjure.program(...statements)).emit();
       });
+
+    // Generate files for composite types that have functions returning them
+    if (generateFunctions) {
+      const composites = getCompositeEntities(ctx.ir);
+      for (const composite of composites) {
+        const compositeFunctions = functionsByEntity.get(composite.name) ?? [];
+        if (compositeFunctions.length === 0) continue;
+
+        const filePath = `${config.outputDir}/${composite.name}.ts`;
+        const statements = compositeFunctions.map(fn =>
+          generateFunctionWrapper(fn, ctx.ir, sqlStyle)
+        );
+
+        const file = ctx.file(filePath);
+
+        // Import the appropriate SQL client based on style
+        if (sqlStyle === "tag") {
+          file.import({ kind: "relative", names: ["sql"], from: "../db" });
+        } else {
+          file.import({ kind: "relative", names: ["pool"], from: "../db" });
+        }
+
+        // Import the composite type and any types needed by function args
+        const fnTypeImports = collectFunctionTypeImports(compositeFunctions, ctx.ir);
+        fnTypeImports.add(composite.name); // Always import the composite type
+        // TODO: Import these types when symbol registry supports it
+
+        file.ast(conjure.program(...statements)).emit();
+      }
+    }
+
+    // Generate functions.ts for scalar-returning functions only
+    if (generateFunctions && scalarFunctions.length > 0) {
+      const filePath = `${config.outputDir}/${config.functionsFile}`;
+
+      const statements = scalarFunctions.map(fn =>
+        generateFunctionWrapper(fn, ctx.ir, sqlStyle)
+      );
+
+      const file = ctx.file(filePath);
+
+      // Import the appropriate SQL client based on style
+      if (sqlStyle === "tag") {
+        file.import({ kind: "relative", names: ["sql"], from: "../db" });
+      } else {
+        file.import({ kind: "relative", names: ["pool"], from: "../db" });
+      }
+
+      // Import types needed by function args
+      const fnTypeImports = collectFunctionTypeImports(scalarFunctions, ctx.ir);
+      // TODO: Import these types when symbol registry supports it
+
+      file.ast(conjure.program(...statements)).emit();
+    }
   },
 });
