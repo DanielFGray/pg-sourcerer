@@ -7,7 +7,7 @@
  *
  * This service is stateful - created once per run and shared across plugins.
  */
-import { Array as Arr, Context, Layer, MutableHashMap, pipe } from "effect"
+import { Array as Arr, Context, Layer, MutableHashMap, Option, pipe } from "effect"
 import type { Artifact, CapabilityKey } from "../ir/semantic-ir.js"
 
 /**
@@ -43,7 +43,7 @@ export function createArtifactStore(): ArtifactStoreImpl {
   return {
     get: (capability: CapabilityKey) => {
       const result = MutableHashMap.get(artifacts, capability)
-      return result._tag === "Some" ? result.value : undefined
+      return Option.getOrUndefined(result)
     },
 
     set: (capability: CapabilityKey, plugin: string, data: unknown) => {
