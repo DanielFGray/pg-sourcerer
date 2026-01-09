@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.2.0...v0.2.1) (2026-01-09)
+
+
+### Features
+
+* **conjure:** add export.* helpers for cleaner export generation ([0853b94](https://github.com/DanielFGray/pg-sourcerer/commit/0853b94ddd39b530d5d4e8059bcbb70fbe51b6aa))
+* **sql-queries:** add stored function wrappers ([8bb97e4](https://github.com/DanielFGray/pg-sourcerer/commit/8bb97e404c471364c10d823e1e74067b8a64a370))
+
+
+### Bug Fixes
+
+* **cli:** refactor config loading to use Effect DI pattern ([e756bc2](https://github.com/DanielFGray/pg-sourcerer/commit/e756bc233651af88cbb6239b8c009e4a9c7c2663))
+
 ## [0.2.0](https://github.com/DanielFGray/pg-sourcerer/compare/v0.1.10...v0.2.0) (2026-01-09)
 
 
