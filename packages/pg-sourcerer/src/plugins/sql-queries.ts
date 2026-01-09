@@ -20,7 +20,6 @@ const { ts, b, param } = conjure;
 
 const SqlQueriesPluginConfig = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "sql-queries" }),
-  header: S.optional(S.String),
   /** SQL query style. Defaults to "tag" (tagged template literals) */
   sqlStyle: S.optionalWith(S.Union(S.Literal("tag"), S.Literal("string")), { default: () => "tag" as const }),
 });
@@ -377,11 +376,7 @@ export const sqlQueriesPlugin = definePlugin({
         };
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
 
-        const file = ctx
-          .file(filePath)
-          .header(
-            config.header ? `${config.header}\n` : "// This file is auto-generated. Do not edit.\n",
-          );
+        const file = ctx.file(filePath);
 
         // Import the appropriate SQL client based on style
         if (sqlStyle === "tag") {
