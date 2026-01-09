@@ -16,6 +16,15 @@ export {
   defineConfig,
 } from "./services/config-loader.js"
 
+// Config Service (Effect DI)
+export {
+  ConfigService,
+  ConfigFromFile,
+  ConfigWithInit,
+  ConfigTest,
+  getConfigSearchPaths,
+} from "./services/config.js"
+
 // Errors
 export * from "./errors.js"
 

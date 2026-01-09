@@ -14,6 +14,7 @@ import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Console, Effect, Option } from "effect";
 import { runGenerate, type GenerateError } from "./generate.js";
 import { runInit } from "./init.js";
+import { ConfigWithInit, ConfigFromFile } from "./services/config.js";
 import packageJson from "../package.json" with { type: "json" };
 
 // ============================================================================
@@ -39,7 +40,7 @@ const dryRun = Options.boolean("dry-run").pipe(
 );
 
 // ============================================================================
-// Shared Generate Logic
+// Generate Command Logic
 // ============================================================================
 
 interface GenerateArgs {
@@ -48,26 +49,8 @@ interface GenerateArgs {
   readonly dryRun: boolean;
 }
 
-/** Run init then optionally generate based on user choice */
-const runInitThenGenerate = (originalError: GenerateError) =>
-  runInit.pipe(
-    Effect.flatMap(result =>
-      result.runGenerate
-        ? runGenerate({ configPath: result.configPath }).pipe(
-            Effect.tap(res => {
-              const written = res.writeResults.filter(r => r.written).length;
-              return Console.log(`\n✓ Generated ${written} files`);
-            }),
-            Effect.asVoid,
-          )
-        : Effect.void,
-    ),
-    Effect.catchAll(() => Effect.fail(originalError)),
-  );
-
 const runGenerateCommand = (args: GenerateArgs) => {
   const opts = {
-    configPath: Option.getOrUndefined(args.configPath),
     outputDir: Option.getOrUndefined(args.outputDir),
     dryRun: args.dryRun,
   };
@@ -79,15 +62,17 @@ const runGenerateCommand = (args: GenerateArgs) => {
     return Console.log(`\n✓ Generated ${args.dryRun ? total : written} files${suffix}`);
   };
 
+  // Build config layer based on whether explicit path was provided
+  const configOpts = {
+    configPath: Option.getOrUndefined(args.configPath),
+  };
+
+  // Use ConfigWithInit - if no config found, it runs interactive prompts
+  const configLayer = ConfigWithInit(configOpts);
+
   return runGenerate(opts).pipe(
+    Effect.provide(configLayer),
     Effect.tap(logSuccess),
-    // Handle ConfigNotFound specially - offer to run init
-    Effect.catchTag("ConfigNotFound", error =>
-      Console.error(`\n✗ No config file found`).pipe(
-        Effect.andThen(Console.error(`  Searched: ${error.searchPaths.join(", ")}`)),
-        Effect.andThen(runInitThenGenerate(error)),
-      ),
-    ),
     // Handle errors with extra details
     Effect.catchTags({
       ConfigInvalid: error => logErrorWithDetails(error, error.errors),
@@ -99,13 +84,21 @@ const runGenerateCommand = (args: GenerateArgs) => {
           Effect.andThen(Effect.fail(error)),
         ),
     }),
-    // Generic fallback for remaining errors
-    Effect.catchAll((error: GenerateError) =>
-      Console.error(`\n✗ Error: ${error._tag}`).pipe(
-        Effect.andThen(Console.error(`  ${error.message}`)),
+    // Generic fallback for remaining tagged errors (GenerateError types)
+    Effect.catchAll(error => {
+      // Handle tagged errors with _tag property
+      if (error && typeof error === "object" && "_tag" in error) {
+        const taggedError = error as { _tag: string; message?: string };
+        return Console.error(`\n✗ Error: ${taggedError._tag}`).pipe(
+          Effect.andThen(Console.error(`  ${taggedError.message ?? String(error)}`)),
+          Effect.andThen(Effect.fail(error)),
+        );
+      }
+      // Plain errors (e.g., from init prompts)
+      return Console.error(`\n✗ Error: ${error instanceof Error ? error.message : String(error)}`).pipe(
         Effect.andThen(Effect.fail(error)),
-      ),
-    ),
+      );
+    }),
   );
 };
 
@@ -123,13 +116,14 @@ const logErrorWithDetails = (error: GenerateError, details: readonly string[]) =
 
 const generateCommand = Command.make("generate", { configPath, outputDir, dryRun }, runGenerateCommand);
 
+/**
+ * Init command - just runs prompts and writes config file.
+ * Does NOT run generate afterwards (user runs that separately).
+ */
 const initCommand = Command.make("init", {}, () =>
   runInit.pipe(
-    Effect.flatMap(result =>
-      result.runGenerate
-        ? runGenerateCommand({ configPath: Option.some(result.configPath), outputDir: Option.none(), dryRun: false })
-        : Effect.void,
-    ),
+    Effect.tap(() => Console.log("\nRun 'pgsourcerer' to generate code.")),
+    Effect.asVoid,
   ),
 );
 

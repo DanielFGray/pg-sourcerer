@@ -30,6 +30,7 @@ const pluginImportNames: Record<string, string> = {
   arktype: "arktypePlugin",
   "effect-model": "effectModelPlugin",
   "sql-queries": "sqlQueriesPlugin",
+  "kysely-types": "kyselyTypesPlugin",
   "kysely-queries": "kyselyQueriesPlugin",
 };
 
@@ -319,37 +320,66 @@ const makeOutputDirPrompt = () =>
   });
 
 /**
- * Staged plugin selection using radio groups per category.
- * Schema libs (zod/arktype/effect-model) each generate their own types,
- * so they conflict with the standalone types plugin.
+ * Plugin selection with Kysely-aware branching.
+ *
+ * Flow:
+ * 1. Kysely? → yes: checkboxes for types + kysely-queries → exit
+ * 2. No Kysely → raw types or schema-driven?
+ * 3. If schema-driven → select schema lib (zod/arktype/effect-model)
+ * 4. Query plugins (optional multiselect, currently just sql-queries)
  */
 const makePluginsPrompt = () =>
   Effect.gen(function* () {
-    // Stage 1: Type/Schema generation (mutually exclusive)
-    const typePlugin = yield* Prompt.select({
-      message: "Type/Schema generation",
+    // Step 1: Kysely gateway
+    const usesKysely = yield* Prompt.confirm({
+      message: "Do you use Kysely?",
+      initial: false,
+    });
+
+    if (usesKysely) {
+      // Kysely path: checkboxes, both pre-selected
+      return yield* Prompt.multiSelect({
+        message: "Select Kysely plugins",
+        choices: [
+          { title: "kysely-types - Kysely-compatible types", value: "kysely-types", selected: true },
+          { title: "kysely-queries - Query builders", value: "kysely-queries", selected: true },
+        ],
+      });
+    }
+
+    // Step 2: Raw vs schema-driven
+    const typeApproach = yield* Prompt.select({
+      message: "How do you want your types generated?",
       choices: [
-        { title: "types - Standalone TypeScript types", value: "types" },
-        { title: "zod - Zod schemas (includes types)", value: "zod" },
-        { title: "arktype - ArkType schemas (includes types)", value: "arktype" },
-        { title: "effect-model - Effect Schema (includes types)", value: "effect-model" },
+        { title: "Raw TypeScript types", value: "raw" },
+        { title: "Schema-driven (with validation library)", value: "schema" },
       ],
     });
 
-    // Stage 2: Query generation (optional, mutually exclusive)
-    const queryPlugin = yield* Prompt.select({
-      message: "Query generation",
+    let typePlugin: string;
+    if (typeApproach === "raw") {
+      typePlugin = "types";
+    } else {
+      // Step 3: Schema library selection
+      typePlugin = yield* Prompt.select({
+        message: "Select schema library",
+        choices: [
+          { title: "Zod", value: "zod" },
+          { title: "ArkType", value: "arktype" },
+          { title: "Effect Schema", value: "effect-model" },
+        ],
+      });
+    }
+
+    // Step 4: Query plugins (optional multiselect, future-proof)
+    const queryPlugins = yield* Prompt.multiSelect({
+      message: "Query generation (optional)",
       choices: [
-        { title: "None", value: "none" },
-        { title: "sql-queries - Raw SQL query functions", value: "sql-queries" },
-        { title: "kysely-queries - Kysely query builders", value: "kysely-queries" },
+        { title: "sql-queries - Raw SQL query functions", value: "sql-queries", selected: false },
       ],
     });
 
-    const plugins: string[] = [typePlugin];
-    if (queryPlugin !== "none") plugins.push(queryPlugin);
-
-    return plugins as readonly string[];
+    return [typePlugin, ...queryPlugins] as readonly string[];
   });
 
 const makeFormatterPrompt = () =>
@@ -419,13 +449,15 @@ const generateConfigContent = (answers: InitAnswers): string => {
   let configObj = conjure.obj();
 
   if (answers.isEnvRef) {
-    // Generate: connectionString: process.env.DATABASE_URL
+    // Generate: connectionString: process.env.DATABASE_URL!
     const envKey = answers.connectionConfigValue.replace("process.env.", "");
     const envAccess = conjure.b.memberExpression(
       conjure.b.memberExpression(conjure.b.identifier("process"), conjure.b.identifier("env")),
       conjure.b.identifier(envKey),
     );
-    configObj = configObj.prop("connectionString", envAccess);
+    // Add non-null assertion (!)
+    const envAccessWithAssertion = conjure.b.tsNonNullExpression(envAccess);
+    configObj = configObj.prop("connectionString", envAccessWithAssertion);
   } else {
     configObj = configObj.prop("connectionString", conjure.str(answers.connectionConfigValue));
   }
@@ -530,11 +562,5 @@ export const runInit = Effect.gen(function* () {
 
   yield* Console.log(`\n✓ Created ${CONFIG_FILENAME}`);
 
-  // Ask if user wants to run generate now
-  const runGenerate = yield* Prompt.confirm({
-    message: "Run generate now?",
-    initial: true,
-  });
-
-  return { runGenerate, configPath };
+  return { configPath };
 });
