@@ -1,0 +1,7 @@
+{
+  "last_failure": "2026-01-08T17:41:10.64985554-06:00",
+  "failure_count": 10,
+  "backoff_until": "2026-01-08T18:11:10.649855707-06:00",
+  "needs_manual_sync": true,
+  "failure_reason": "failed to create worktree: failed to configure sparse checkout: failed to init sparse checkout: exit status 128\nOutput: fatal: .git/index: index file open failed: Not a directory\n"
+}
