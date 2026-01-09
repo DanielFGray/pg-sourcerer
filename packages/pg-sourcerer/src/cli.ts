@@ -9,9 +9,9 @@
  *   --log-level info    Default - show progress messages
  *   --log-level none    Suppress all output except errors
  */
-import { Command, Options, Prompt } from "@effect/cli";
+import { Command, Options } from "@effect/cli";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
-import { Console, Effect } from "effect";
+import { Console, Effect, Option } from "effect";
 import { runGenerate, type GenerateError } from "./generate.js";
 import { runInit } from "./init.js";
 import packageJson from "../package.json" with { type: "json" };
@@ -39,24 +39,21 @@ const dryRun = Options.boolean("dry-run").pipe(
 );
 
 // ============================================================================
-// Generate Command
+// Shared Generate Logic
 // ============================================================================
 
-const generateCommand = Command.make("generate", { configPath, outputDir, dryRun }, args => {
-  // Build options object, only including defined values
-  const opts: {
-    configPath?: string;
-    outputDir?: string;
-    dryRun?: boolean;
-  } = {
+interface GenerateArgs {
+  readonly configPath: Option.Option<string>;
+  readonly outputDir: Option.Option<string>;
+  readonly dryRun: boolean;
+}
+
+const runGenerateCommand = (args: GenerateArgs) => {
+  const opts = {
+    configPath: Option.getOrUndefined(args.configPath),
+    outputDir: Option.getOrUndefined(args.outputDir),
     dryRun: args.dryRun,
   };
-  if (args.configPath._tag === "Some") {
-    opts.configPath = args.configPath.value;
-  }
-  if (args.outputDir._tag === "Some") {
-    opts.outputDir = args.outputDir.value;
-  }
 
   const logSuccess = (result: { writeResults: readonly { written: boolean }[] }) => {
     const written = result.writeResults.filter(r => r.written).length;
@@ -65,132 +62,61 @@ const generateCommand = Command.make("generate", { configPath, outputDir, dryRun
     return Console.log(`\n✓ Generated ${args.dryRun ? total : written} files${suffix}`);
   };
 
-  return Effect.gen(function* () {
-    const result = yield* runGenerate(opts);
-    yield* logSuccess(result);
-  }).pipe(
+  return runGenerate(opts).pipe(
+    Effect.tap(logSuccess),
     // Handle ConfigNotFound specially - offer to run init
     Effect.catchTag("ConfigNotFound", error =>
-      Effect.gen(function* () {
-        yield* Console.error(`\n✗ No config file found`);
-        yield* Console.error(`  Searched: ${error.searchPaths.join(", ")}`);
-
-        // // Ask if user wants to create config - if they quit (Ctrl+C), just fail
-        // const shouldInit = yield* Prompt.confirm({
-        //   message: "Would you like to create one now?",
-        //   initial: true,
-        // }).pipe(Effect.catchTag("QuitException", () => Effect.succeed(false)))
-        //
-        // if (!shouldInit) {
-        //   yield* Console.log("\nRun 'pgsourcerer init' to create a config file.")
-        //   return yield* Effect.fail(error)
-        // }
-
-        // Run init, catching any errors (user quit, validation, etc.)
-        const initResult = yield* runInit.pipe(
-          Effect.map(() => true),
-          Effect.catchAll(() => Effect.succeed(false)),
-        );
-
-        if (!initResult) {
-          return yield* Effect.fail(error);
-        }
-      }),
+      Console.error(`\n✗ No config file found`).pipe(
+        Effect.andThen(Console.error(`  Searched: ${error.searchPaths.join(", ")}`)),
+        Effect.andThen(
+          runInit.pipe(
+            Effect.asVoid,
+            Effect.catchAll(() => Effect.fail(error)),
+          ),
+        ),
+      ),
     ),
-    // Handle other errors
+    // Handle errors with extra details
+    Effect.catchTags({
+      ConfigInvalid: error => logErrorWithDetails(error, error.errors),
+      PluginConfigInvalid: error => logErrorWithDetails(error, error.errors),
+      CapabilityCycle: error =>
+        Console.error(`\n✗ Error: ${error._tag}`).pipe(
+          Effect.andThen(Console.error(`  ${error.message}`)),
+          Effect.andThen(Console.error(`  Cycle: ${error.cycle.join(" → ")}`)),
+          Effect.andThen(Effect.fail(error)),
+        ),
+    }),
+    // Generic fallback for remaining errors
     Effect.catchAll((error: GenerateError) =>
-      Effect.gen(function* () {
-        yield* Console.error(`\n✗ Error: ${error._tag}`);
-        yield* Console.error(`  ${error.message}`);
-
-        if (error._tag === "ConfigInvalid") {
-          for (const e of error.errors) {
-            yield* Console.error(`    - ${e}`);
-          }
-        } else if (error._tag === "PluginConfigInvalid") {
-          for (const e of error.errors) {
-            yield* Console.error(`    - ${e}`);
-          }
-        } else if (error._tag === "CapabilityCycle") {
-          yield* Console.error(`  Cycle: ${error.cycle.join(" → ")}`);
-        }
-
-        yield* Effect.fail(error);
-      }),
+      Console.error(`\n✗ Error: ${error._tag}`).pipe(
+        Effect.andThen(Console.error(`  ${error.message}`)),
+        Effect.andThen(Effect.fail(error)),
+      ),
     ),
   );
-});
+};
+
+/** Log an error with a list of detail messages */
+const logErrorWithDetails = (error: GenerateError, details: readonly string[]) =>
+  Console.error(`\n✗ Error: ${error._tag}`).pipe(
+    Effect.andThen(Console.error(`  ${error.message}`)),
+    Effect.andThen(Effect.forEach(details, e => Console.error(`    - ${e}`))),
+    Effect.andThen(Effect.fail(error)),
+  );
 
 // ============================================================================
-// Init Command
+// Commands
 // ============================================================================
+
+const generateCommand = Command.make("generate", { configPath, outputDir, dryRun }, runGenerateCommand);
 
 const initCommand = Command.make("init", {}, () => runInit);
 
-// ============================================================================
-// Root Command
-// ============================================================================
-
 // Root command runs generate by default (which triggers init if no config)
-const rootCommand = Command.make("pgsourcerer", { configPath, outputDir, dryRun }, args => {
-  const opts: {
-    configPath?: string;
-    outputDir?: string;
-    dryRun?: boolean;
-  } = {
-    dryRun: args.dryRun,
-  };
-  if (args.configPath._tag === "Some") {
-    opts.configPath = args.configPath.value;
-  }
-  if (args.outputDir._tag === "Some") {
-    opts.outputDir = args.outputDir.value;
-  }
-
-  const logSuccess = (result: { writeResults: readonly { written: boolean }[] }) => {
-    const written = result.writeResults.filter(r => r.written).length;
-    const total = result.writeResults.length;
-    const suffix = args.dryRun ? " (dry run)" : "";
-    return Console.log(`\n✓ Generated ${args.dryRun ? total : written} files${suffix}`);
-  };
-
-  return Effect.gen(function* () {
-    const result = yield* runGenerate(opts);
-    yield* logSuccess(result);
-  }).pipe(
-    Effect.catchTag("ConfigNotFound", error =>
-      Effect.gen(function* () {
-        yield* Console.error(`\n✗ No config file found`);
-        yield* Console.error(`  Searched: ${error.searchPaths.join(", ")}`);
-        const initResult = yield* runInit.pipe(
-          Effect.map(() => true),
-          Effect.catchAll(() => Effect.succeed(false)),
-        );
-        if (!initResult) {
-          return yield* Effect.fail(error);
-        }
-      }),
-    ),
-    Effect.catchAll((error: GenerateError) =>
-      Effect.gen(function* () {
-        yield* Console.error(`\n✗ Error: ${error._tag}`);
-        yield* Console.error(`  ${error.message}`);
-        if (error._tag === "ConfigInvalid") {
-          for (const e of error.errors) {
-            yield* Console.error(`    - ${e}`);
-          }
-        } else if (error._tag === "PluginConfigInvalid") {
-          for (const e of error.errors) {
-            yield* Console.error(`    - ${e}`);
-          }
-        } else if (error._tag === "CapabilityCycle") {
-          yield* Console.error(`  Cycle: ${error.cycle.join(" → ")}`);
-        }
-        yield* Effect.fail(error);
-      }),
-    ),
-  );
-}).pipe(Command.withSubcommands([generateCommand, initCommand]));
+const rootCommand = Command.make("pgsourcerer", { configPath, outputDir, dryRun }, runGenerateCommand).pipe(
+  Command.withSubcommands([generateCommand, initCommand]),
+);
 
 // ============================================================================
 // CLI App

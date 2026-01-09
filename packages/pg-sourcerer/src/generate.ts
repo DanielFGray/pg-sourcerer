@@ -276,14 +276,14 @@ export const generate = (
     }
 
     // Log each file at debug level
-    for (const result of writeResults) {
+    yield* Effect.forEach(writeResults, (result) => {
       const status = options.dryRun
         ? "(dry run)"
         : result.written
           ? "✓"
           : "–"
-      yield* Effect.logDebug(`${status} ${result.path}`)
-    }
+      return Effect.logDebug(`${status} ${result.path}`)
+    })
 
     const written = writeResults.filter((r) => r.written).length
     const dryRunSuffix = options.dryRun ? " (dry run)" : ""

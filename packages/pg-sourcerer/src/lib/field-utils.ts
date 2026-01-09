@@ -192,23 +192,23 @@ export function resolveFieldType(
     Option.orElse(() =>
       pipe(
         Option.liftPredicate(field, (f) => f.isArray && !!f.elementTypeName),
-        Option.flatMap((f) => {
-          // Check if element is an enum
-          const enumOpt = pipe(
+        Option.flatMap((f) =>
+          pipe(
+            // Check if element is an enum
             findEnumByPgName(enums, f.elementTypeName!),
-            Option.map((enumDef): ResolvedType => ({ tsType: TsType.Unknown, enumDef }))
+            Option.map((enumDef): ResolvedType => ({ tsType: TsType.Unknown, enumDef })),
+            // Try extension-based mapping for array element type
+            Option.orElse(() =>
+              pipe(
+                Option.fromNullable(pgType?.typnamespace),
+                Option.flatMap((ns) =>
+                  getExtensionTypeMapping(f.elementTypeName!, String(ns), extensions)
+                ),
+                Option.map(fromTsType)
+              )
+            )
           )
-          if (Option.isSome(enumOpt)) return enumOpt
-
-          // Try extension-based mapping for array element type
-          return pipe(
-            Option.fromNullable(pgType?.typnamespace),
-            Option.flatMap((ns) =>
-              getExtensionTypeMapping(f.elementTypeName!, String(ns), extensions)
-            ),
-            Option.map(fromTsType)
-          )
-        })
+        )
       )
     ),
 
