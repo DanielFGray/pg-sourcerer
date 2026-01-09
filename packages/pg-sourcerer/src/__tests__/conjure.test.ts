@@ -1066,6 +1066,83 @@ describe("Conjure", () => {
     })
   })
 
+  describe("export helpers (conjure.export.*)", () => {
+    it("creates export const", () => {
+      const result = conjure.export.const("config", conjure.obj().build())
+      const code = printStmt(result)
+      expect(code).toContain("export const config = {}")
+    })
+
+    it("creates export const with type annotation", () => {
+      const result = conjure.export.const(
+        "config",
+        conjure.obj().build(),
+        conjure.ts.ref("AppConfig")
+      )
+      const code = printStmt(result)
+      expect(code).toContain("export const config: AppConfig = {}")
+    })
+
+    it("creates export function", () => {
+      const fn = conjure
+        .fn()
+        .async()
+        .param("id", conjure.ts.string())
+        .body(conjure.stmt.return(conjure.id("id").build()))
+        .toDeclaration("getUser")
+      const result = conjure.export.fn(fn)
+      const code = printStmt(result)
+      expect(code).toContain("export async function getUser(id: string)")
+    })
+
+    it("creates export default", () => {
+      const result = conjure.export.default(
+        conjure.id("defineConfig").call([conjure.obj().build()]).build()
+      )
+      const code = printStmt(result)
+      expect(code).toContain("export default defineConfig({})")
+    })
+
+    it("creates export named with simple names", () => {
+      const result = conjure.export.named("foo", "bar", "baz")
+      const code = printStmt(result)
+      expect(code).toContain("export { foo, bar, baz }")
+    })
+
+    it("creates export named with renames", () => {
+      const result = conjure.export.named(
+        "internalName",
+        { local: "foo", exported: "Foo" }
+      )
+      const code = printStmt(result)
+      expect(code).toContain("export { internalName, foo as Foo }")
+    })
+
+    it("creates export type", () => {
+      const result = conjure.export.type(
+        "UserId",
+        conjure.ts.ref("Brand", [conjure.ts.string(), conjure.ts.literal("UserId")])
+      )
+      const code = printStmt(result)
+      expect(code).toContain("export type UserId = Brand<string, \"UserId\">")
+    })
+
+    it("creates export interface", () => {
+      const result = conjure.export.interface("User", [
+        { name: "id", type: conjure.ts.string() },
+        { name: "name", type: conjure.ts.string() },
+        { name: "age", type: conjure.ts.number(), optional: true },
+        { name: "email", type: conjure.ts.string(), readonly: true },
+      ])
+      const code = printStmt(result)
+      expect(code).toContain("export interface User")
+      expect(code).toContain("id: string")
+      expect(code).toContain("name: string")
+      expect(code).toContain("age?: number")
+      expect(code).toContain("readonly email: string")
+    })
+  })
+
   describe("symbolProgram", () => {
     it("extracts symbols from SymbolStatements", () => {
       const prog = conjure.symbolProgram(

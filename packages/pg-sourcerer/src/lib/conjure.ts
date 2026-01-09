@@ -1005,7 +1005,98 @@ const param = {
 } as const
 
 // =============================================================================
-// Export Helpers (exp.*)
+// Export Statement Helpers (conjure.export.*)
+// =============================================================================
+
+/**
+ * Export statement builders for generating export declarations.
+ * These produce plain statements without symbol metadata tracking.
+ * For exports that need symbol tracking, use `exp.*` helpers instead.
+ */
+const exportHelpers = {
+  /**
+   * Export const declaration: `export const name = init`
+   */
+  const: (name: string, init: n.Expression, type?: n.TSType): n.ExportNamedDeclaration => {
+    const id = b.identifier(name)
+    if (type) {
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+    }
+    const decl = b.variableDeclaration("const", [
+      b.variableDeclarator(id, toExpr(init)),
+    ])
+    return b.exportNamedDeclaration(decl, [])
+  },
+
+  /**
+   * Export function declaration: `export function name(...) { ... }`
+   */
+  fn: (fn: n.FunctionDeclaration): n.ExportNamedDeclaration => {
+    return b.exportNamedDeclaration(fn, [])
+  },
+
+  /**
+   * Export default: `export default expr`
+   */
+  default: (expr: n.Expression): n.ExportDefaultDeclaration => {
+    return b.exportDefaultDeclaration(toExpr(expr) as ExpressionKind)
+  },
+
+  /**
+   * Export named bindings: `export { a, b, c }`
+   * Also supports renaming: `export { a as b }`
+   */
+  named: (...names: (string | { local: string; exported: string })[]): n.ExportNamedDeclaration => {
+    const specifiers = names.map((n) => {
+      if (typeof n === "string") {
+        return b.exportSpecifier.from({
+          local: b.identifier(n),
+          exported: b.identifier(n),
+        })
+      } else {
+        return b.exportSpecifier.from({
+          local: b.identifier(n.local),
+          exported: b.identifier(n.exported),
+        })
+      }
+    })
+    return b.exportNamedDeclaration(null, specifiers)
+  },
+
+  /**
+   * Export type alias: `export type Name = Type`
+   */
+  type: (name: string, type: n.TSType): n.ExportNamedDeclaration => {
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
+    return b.exportNamedDeclaration(decl, [])
+  },
+
+  /**
+   * Export interface: `export interface Name { ... }`
+   */
+  interface: (
+    name: string,
+    properties: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[]
+  ): n.ExportNamedDeclaration => {
+    const members = properties.map((p): InterfaceBodyMember => {
+      const sig = b.tsPropertySignature(
+        b.identifier(p.name),
+        b.tsTypeAnnotation(toTSType(p.type))
+      )
+      if (p.optional) sig.optional = true
+      if (p.readonly) sig.readonly = true
+      return sig
+    })
+    const decl = b.tsInterfaceDeclaration(
+      b.identifier(name),
+      b.tsInterfaceBody(members)
+    )
+    return b.exportNamedDeclaration(decl, [])
+  },
+} as const
+
+// =============================================================================
+// Export Helpers with Symbol Tracking (exp.*)
 // =============================================================================
 
 /**
@@ -1240,6 +1331,9 @@ export const conjure = {
 
   // === Statements ===
   stmt,
+
+  // === Export statements ===
+  export: exportHelpers,
 
   // === TypeScript types ===
   ts,
