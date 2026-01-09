@@ -287,16 +287,6 @@ const chain = (expr: n.Expression, method: string, args: n.Expression[] = []): n
 type ArrowParam = n.Identifier | n.AssignmentPattern
 
 /**
- * Create an exported const declaration: export const name = value
- */
-const exportConst = (name: string, value: n.Expression): n.Statement => {
-  const constDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(id(name), toExpr(value))
-  ])
-  return b.exportNamedDeclaration(constDecl, []) as n.Statement
-}
-
-/**
  * Build arrow function expression: (params) => body
  */
 const arrowFn = (
@@ -853,7 +843,7 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return exportConst(exportName(entityName, "FindById"), fn)
+  return conjure.export.const(exportName(entityName, "FindById"), fn)
 }
 
 /** Default limit for findMany queries */
@@ -905,7 +895,7 @@ const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return exportConst(exportName(entityName, "ListMany"), fn)
+  return conjure.export.const(exportName(entityName, "ListMany"), fn)
 }
 
 /**
@@ -938,7 +928,7 @@ const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return exportConst(exportName(entityName, "Create"), fn)
+  return conjure.export.const(exportName(entityName, "Create"), fn)
 }
 
 /**
@@ -982,7 +972,7 @@ const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return exportConst(exportName(entityName, "Update"), fn)
+  return conjure.export.const(exportName(entityName, "Update"), fn)
 }
 
 /**
@@ -1017,7 +1007,7 @@ const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
     query
   )
 
-  return exportConst(exportName(entityName, "Remove"), fn)
+  return conjure.export.const(exportName(entityName, "Remove"), fn)
 }
 
 /** Generate all CRUD methods for an entity */
@@ -1113,7 +1103,7 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statem
   )
 
   const methodName = generateLookupMethodName(entity, index, relation)
-  return exportConst(exportName(entityName, methodName), fn)
+  return conjure.export.const(exportName(entityName, methodName), fn)
 }
 
 /**

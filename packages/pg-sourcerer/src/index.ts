@@ -221,7 +221,6 @@ export {
   buildAllRowsDecl,
   buildReturnQuery,
   asyncFn,
-  exportFn,
 } from "./lib/hex.js"
 
 // Plugins

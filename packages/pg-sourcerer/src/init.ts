@@ -8,8 +8,7 @@ import { Prompt } from "@effect/cli";
 import { FileSystem, Terminal } from "@effect/platform";
 import { Array, Console, Effect, HashMap, HashSet, Option, pipe } from "effect";
 import postgres from "postgres";
-import { conjure, cast } from "./lib/conjure.js";
-import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
+import { conjure } from "./lib/conjure.js";
 import recast from "recast";
 import { introspectDatabase } from "./services/introspection.js";
 import type { Introspection } from "@danielfgray/pg-introspection";
@@ -490,9 +489,7 @@ const generateConfigContent = (answers: InitAnswers): string => {
 
   // Build the export default statement
   const defineConfigCall = conjure.id("defineConfig").call([configObj.build()]).build();
-  const exportDefault = conjure.b.exportDefaultDeclaration(
-    cast.toExpr(defineConfigCall) as ExpressionKind,
-  );
+  const exportDefault = conjure.export.default(defineConfigCall);
 
   // Build the program and print with 2-space indentation
   const program = conjure.program(importDecl, exportDefault);
