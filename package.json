@@ -7,6 +7,7 @@
     "generate": " cd packages/example && bun run generate",
     "test": " cd packages/pg-sourcerer && bun run test",
     "dev": "mprocs 'bun run build:watch' 'bun run generate'",
+    "build": "cd packages/pg-sourcerer && bun run build",
     "build:watch": "cd packages/pg-sourcerer && bun run build:watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"

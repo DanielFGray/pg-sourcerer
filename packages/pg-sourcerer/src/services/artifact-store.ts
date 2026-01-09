@@ -41,10 +41,8 @@ export function createArtifactStore(): ArtifactStoreImpl {
   const artifacts = MutableHashMap.empty<CapabilityKey, Artifact>()
 
   return {
-    get: (capability: CapabilityKey) => {
-      const result = MutableHashMap.get(artifacts, capability)
-      return Option.getOrUndefined(result)
-    },
+    get: (capability: CapabilityKey) =>
+      Option.getOrUndefined(MutableHashMap.get(artifacts, capability)),
 
     set: (capability: CapabilityKey, plugin: string, data: unknown) => {
       MutableHashMap.set(artifacts, capability, {
