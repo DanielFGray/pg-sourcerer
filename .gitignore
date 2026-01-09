@@ -5,6 +5,6 @@ generated
 dist
 packages/pg-sourcerer/coverage
 
-# bv (beads viewer) local config and caches
-.bv/
+# Local/temp files
 .worktrees/
+.prog-id-mapping.json

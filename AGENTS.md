@@ -17,10 +17,11 @@ cd packages/pg-sourcerer && npm version patch  # or minor/major
 # 2. Commit and push to develop
 git add -A && git commit -m "chore: bump version" && git push
 
-# 3. Merge to main (use worktree to avoid branch switching issues with beads)
-git worktree add .worktrees/main main 2>/dev/null || true
-git -C .worktrees/main merge develop -m "Release $(npm pkg get version -w packages/pg-sourcerer | tr -d '\"')"
-git -C .worktrees/main push
+# 3. Merge to main
+git checkout main
+git merge develop -m "Release $(npm pkg get version -w packages/pg-sourcerer | tr -d '\"')"
+git push
+git checkout develop
 ```
 
 ### Syncing main→develop
@@ -28,24 +29,10 @@ git -C .worktrees/main push
 When changes are made directly to main (hotfixes, CI updates, etc.):
 
 ```bash
-# Use the main worktree to merge back to develop
-git worktree add .worktrees/main main 2>/dev/null || true
-git -C .worktrees/main checkout develop
-git -C .worktrees/main merge main -m "Merge main into develop"
-git -C .worktrees/main push
-git -C .worktrees/main checkout main
-```
-
-Or simpler - merge from main worktree if beads cooperates:
-```bash
+git checkout develop
 git merge origin/main -m "Merge main into develop"
+git push
 ```
-
-### Why worktrees?
-
-Beads daemon conflicts with branch switching - it modifies `.beads/issues.jsonl` continuously, causing checkout failures. Using worktrees avoids this by keeping each branch in a separate directory.
-
-**Note:** Beads also creates its own worktree at `.git/beads-worktrees/develop` for syncing. Don't remove it - beads will recreate it.
 
 ## Tooling
 
@@ -287,103 +274,71 @@ Do NOT make assumptions about user preferences. Ask first.
 
 **NEVER use TodoWrite/TodoRead** - These are disabled for this project.
 
-**Use beads MCP tools ONLY** for all task tracking:
-- `beads_ready()` - Find available work
-- `beads_list()` - List issues with filters
-- `beads_show()` - View task details  
-- `beads_update()` - Update status/fields
-- `beads_close()` - Complete a task
-- `beads_create()` - Create new tasks
+**Use prog CLI** for all task tracking. All commands require `-p pg-sourcerer`.
 
-Do NOT use bash `bd` CLI commands. Use the MCP tools directly.
+## Prog Workflow
 
-## Beads Workflow
-
-Tasks are tracked in beads. **Always use beads MCP tools directly** - e.g., `beads_ready()`, `beads_update()`, `beads_close()` (do not use bash for beads)
-
-```bash
-# Check what's ready to work on
-beads_ready()
-
-# See all rewrite tasks
-beads_list(labels=["rewrite"])
-
-# Show task details
-beads_show(issue_id="pg-sourcerer-xxx")
-
-# Start working on a task
-beads_update(issue_id="pg-sourcerer-xxx", status="in_progress")
-
-# Complete a task
-beads_close(issue_id="pg-sourcerer-xxx", reason="Description of what was done")
-```
-
-<!-- bv-agent-instructions-v1 -->
-
----
-
-## Beads Workflow Integration
-
-This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+Tasks are tracked in [prog](https://github.com/baiirun/prog). Use CLI via bash.
 
 ### Essential Commands
 
 ```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
+# Find ready tasks (no blockers)
+prog ready -p pg-sourcerer
 
-# CLI commands for agents (use these instead)
-bd ready              # Show issues ready to work (no blockers)
-bd list --status=open # All open issues
-bd show <id>          # Full issue details with dependencies
-bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id> --reason="Completed"
-bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
+# Project overview
+prog status -p pg-sourcerer
+
+# List all open tasks
+prog list -p pg-sourcerer --status=open
+
+# Show task details
+prog show ts-XXXXXX
+
+# Start working on a task
+prog start ts-XXXXXX
+
+# Log progress (timestamped)
+prog log ts-XXXXXX "Implemented feature X"
+
+# Complete a task
+prog done ts-XXXXXX
+
+# Create a new task
+prog add "Task title" -p pg-sourcerer --priority 2
+
+# Create an epic
+prog add "Epic title" -p pg-sourcerer -e
+
+# Add dependency (blocker blocks blocked)
+prog blocks ts-blocker ts-blocked
+
+# Set parent epic
+prog parent ts-task ep-epic
 ```
 
 ### Workflow Pattern
 
-1. **Start**: Run `bd ready` to find actionable work
-2. **Claim**: Use `bd update <id> --status=in_progress`
+1. **Start**: Run `prog ready -p pg-sourcerer` to find actionable work
+2. **Claim**: Use `prog start ts-XXXXXX`
 3. **Work**: Implement the task
-4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
+4. **Progress**: Use `prog log ts-XXXXXX "what I did"` to track progress
+5. **Complete**: Use `prog done ts-XXXXXX`
 
 ### Key Concepts
 
-- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
+- **Dependencies**: Issues can block other issues. `prog ready` shows only unblocked work.
+- **Priority**: 1=high, 2=medium (default), 3=low
+- **Types**: task (default), epic (`-e` flag)
+- **Project scope**: Always use `-p pg-sourcerer`
 
-### Session Protocol
+### TUI Mode
 
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
-git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
-git push                # Push to remote
-```
-
-### Best Practices
-
-- Check `bd ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `bd create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
+For interactive browsing: `prog tui` (or `prog ui`)
 
 ## Priority Rules: Core > Plugins
 
 **Core issues take priority over plugin issues at every priority level.**
-
-### Priority Definitions
 
 | Priority | Core Examples | Plugin Examples |
 |----------|---------------|-----------------|
@@ -392,10 +347,4 @@ git push                # Push to remote
 | **P3** | Documentation, polish | Advanced features, non-blocking |
 | **P4** | Nice-to-have cleanup | Experimental plugins |
 
-### Rule Application
-
-- When choosing between P1 core vs P1 plugin → Pick core
-- Core P2 issues may take priority over plugin P1 bugs if core blocks others
-- Plugin issues should rarely be P1 unless they block core development
-
-<!-- end-bv-agent-instructions -->
+When choosing between same-priority core vs plugin → Pick core.
