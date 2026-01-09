@@ -266,6 +266,21 @@ const mergeAstEntries = (
   );
 
 // =============================================================================
+// Output Formatting (Pure Functions)
+// =============================================================================
+
+/** Ensure exactly one blank line before each export statement */
+const ensureBlankLinesBeforeExports = (code: string): string =>
+  code.split("\n").reduce<string[]>((acc, line) => {
+    const prevLine = acc[acc.length - 1];
+    const needsBlankLine =
+      line.startsWith("export ") &&
+      prevLine !== undefined &&
+      prevLine !== "";
+    return needsBlankLine ? [...acc, "", line] : [...acc, line];
+  }, []).join("\n");
+
+// =============================================================================
 // Emission Buffer Implementation
 // =============================================================================
 
@@ -360,11 +375,12 @@ export function createEmissionBuffer(): EmissionBuffer {
               ) + "\n\n"
             : "";
 
-        // Serialize the main AST body
+        // Serialize the main AST body and ensure blank lines before exports
         const bodyCode = serialize(entry.ast);
+        const formattedBody = ensureBlankLinesBeforeExports(bodyCode);
 
         // Order: imports → header → body
-        const content = importCode + (entry.header ? entry.header + bodyCode : bodyCode);
+        const content = importCode + (entry.header ? entry.header + formattedBody : formattedBody);
         MutableHashMap.set(emissions, entry.path, {
           path: entry.path,
           content,

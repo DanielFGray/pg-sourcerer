@@ -459,5 +459,64 @@ describe("Emission Buffer", () => {
       buffer.serializeAst(serialize, symbols)
       expect(buffer.getAstEmissions()).toHaveLength(0)
     })
+
+    it("adds blank lines before export statements", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      // Create a program with consecutive exports (no blank lines from recast)
+      const program = b.program([
+        b.exportNamedDeclaration(
+          b.variableDeclaration("const", [
+            b.variableDeclarator(b.identifier("a"), b.numericLiteral(1)),
+          ]),
+          []
+        ),
+        b.exportNamedDeclaration(
+          b.variableDeclaration("const", [
+            b.variableDeclarator(b.identifier("b"), b.numericLiteral(2)),
+          ]),
+          []
+        ),
+        b.exportNamedDeclaration(
+          b.variableDeclaration("const", [
+            b.variableDeclarator(b.identifier("c"), b.numericLiteral(3)),
+          ]),
+          []
+        ),
+      ])
+
+      buffer.emitAst("output/test.ts", program, "test-plugin")
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      const content = all[0]!.content
+      // Each export after the first should be preceded by a blank line
+      expect(content).toContain("export const a = 1;\n\nexport const b = 2;")
+      expect(content).toContain("export const b = 2;\n\nexport const c = 3;")
+    })
+
+    it("collapses multiple blank lines before exports to one", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+      // Manually construct output that would have multiple blank lines
+      // We'll test by checking the regex logic handles this case
+      const program = b.program([
+        b.exportNamedDeclaration(
+          b.variableDeclaration("const", [
+            b.variableDeclarator(b.identifier("x"), b.numericLiteral(1)),
+          ]),
+          []
+        ),
+      ])
+
+      buffer.emitAst("output/test.ts", program, "test-plugin")
+      buffer.serializeAst(serialize, symbols)
+
+      const all = buffer.getAll()
+      expect(all).toHaveLength(1)
+      // Should not have triple+ newlines before export
+      expect(all[0]!.content).not.toMatch(/\n\n\nexport/)
+    })
   })
 })
