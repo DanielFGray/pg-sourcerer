@@ -9,7 +9,6 @@ import { FileSystem, Path } from "@effect/platform"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import {
   createFileWriter,
-  defaultHeader,
 } from "../services/file-writer.js"
 import type { EmissionEntry } from "../services/emissions.js"
 
@@ -18,7 +17,7 @@ const TestLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
 describe("FileWriter", () => {
   describe("writeAll", () => {
-    it.effect("writes files to disk with header", () =>
+    it.effect("writes files to disk", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const pathSvc = yield* Path.Path
@@ -38,10 +37,9 @@ describe("FileWriter", () => {
           expect(results[0]?.written).toBe(true)
           expect(results[0]?.path).toBe(pathSvc.join(tmpDir, "types.ts"))
 
-          // Verify file was actually written
+          // Verify file was actually written with exact content (no global header)
           const content = yield* fs.readFileString(pathSvc.join(tmpDir, "types.ts"))
-          expect(content).toContain("AUTO-GENERATED FILE")
-          expect(content).toContain("export type Foo = string;")
+          expect(content).toBe("export type Foo = string;")
         } finally {
           // Clean up
           yield* fs.remove(tmpDir, { recursive: true })
@@ -142,33 +140,6 @@ describe("FileWriter", () => {
       }).pipe(Effect.provide(TestLayer))
     )
 
-    it.effect("uses custom header when provided", () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const pathSvc = yield* Path.Path
-        const writer = createFileWriter()
-
-        const tmpDir = yield* fs.makeTempDirectory({ prefix: "file-writer-test-" })
-        const customHeader = "/* Custom Header */\n\n"
-
-        const emissions: EmissionEntry[] = [
-          { path: "custom.ts", content: "export const x = 1;", plugin: "test" },
-        ]
-
-        try {
-          yield* writer.writeAll(emissions, {
-            outputDir: tmpDir,
-            header: customHeader,
-          })
-
-          const content = yield* fs.readFileString(pathSvc.join(tmpDir, "custom.ts"))
-          expect(content).toBe("/* Custom Header */\n\nexport const x = 1;")
-        } finally {
-          yield* fs.remove(tmpDir, { recursive: true })
-        }
-      }).pipe(Effect.provide(TestLayer))
-    )
-
     it.effect("handles empty emissions list", () =>
       Effect.gen(function* () {
         const writer = createFileWriter()
@@ -209,16 +180,5 @@ describe("FileWriter", () => {
         }
       }).pipe(Effect.provide(TestLayer))
     )
-  })
-
-  describe("defaultHeader", () => {
-    it("includes timestamp", () => {
-      const fixedDate = new Date("2026-01-05T12:00:00Z")
-      const header = defaultHeader(fixedDate)
-
-      expect(header).toContain("AUTO-GENERATED FILE")
-      expect(header).toContain("DO NOT EDIT")
-      expect(header).toContain("2026-01-05T12:00:00.000Z")
-    })
   })
 })

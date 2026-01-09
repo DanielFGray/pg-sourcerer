@@ -89,9 +89,6 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
 
           const userContent = yield* fs.readFileString(userWrite!.path)
 
-          // Header comment
-          expect(userContent).toContain("AUTO-GENERATED")
-
           // Shape interfaces (patch no longer generated - identical to update)
           expect(userContent).toContain("export interface User")
           expect(userContent).toContain("export interface UserInsert")
