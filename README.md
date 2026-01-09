@@ -179,26 +179,31 @@ export class User extends Model.Class<User>("User")({
 
 ### `sqlQueriesPlugin` — Raw SQL Query Functions
 
+with `sqlQueriesPlugin({ sqlStyle: "tag" })`
 ```typescript
 import { sql } from "./sql-tag.js";
 import type { User, UserInsert, UserUpdate } from "../types/User.js";
 
-export async function getUserById({ id }: Pick<User, "id">) {
-  const [result] = await sql<User[]>`
-    select * from app_public.users where id = ${id}
-  `;
+export async function findUserById({ id }: Pick<User, "id">) {
+  const [result] = await sql<User[]>`select * from app_public.users where id = ${id}`;
   return result;
 }
 
-export async function insertUser(data: UserInsert): Promise<User> {
-  const result = await sql<User[]>`
-    insert into app_public.users (username, name, bio)
-    values (${data.username}, ${data.name}, ${data.bio})
-    returning *
-  `;
-  return result[0]!;
+export async function findManyUsers({ limit = 50, offset = 0 }: { limit?: number; offset?: number; }) {
+  return await sql<User[]>`select * from app_public.users limit ${limit} offset ${offset}`;
+}
+
+export async function getUserByUsername({ username }: Pick<User, "username">) {
+  const [result] = await sql<User[]>`select * from app_public.users where username = ${username}`;
+  return result;
+}
+
+export async function getUsersByUsername({ username }: Pick<User, "username">) {
+  return await sql<User[]>`select * from app_public.users where username = ${username}`;
 }
 ```
+
+not using tagged templates? got you covered with `sqlQueriesPlugin({ sqlStyle: "string" })`
 
 ### `kyselyQueriesPlugin` — Kysely Query Builders
 
