@@ -95,13 +95,12 @@ export {
   Inflection,
   inflect,
   defaultInflection,
+  defaultTransforms,
   createInflection,
   makeInflectionLayer,
   composeInflectionConfigs,
   composeInflection,
   InflectionLive,
-  classicInflectionConfig,
-  ClassicInflectionLive,
 } from "./services/inflection.js"
 
 // Services - Type Hints

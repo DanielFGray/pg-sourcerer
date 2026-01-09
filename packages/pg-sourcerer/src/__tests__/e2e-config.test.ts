@@ -129,10 +129,17 @@ layer(BaseTestLayer)("E2E Config Integration", (it) => {
       })
     )
 
-    it.effect("identity inflection preserves snake_case names", () =>
+    it.effect("explicit identity inflection preserves snake_case names", () =>
       Effect.gen(function* () {
         const result = yield* runScenario({
-          // No inflection config = identity (preserve names)
+          // Explicit identity functions to opt-out of default transforms
+          inflection: {
+            entityName: (name) => name,
+            fieldName: (name) => name,
+            enumName: (name) => name,
+            shapeSuffix: (name) => name,
+            relationName: (name) => name,
+          },
           plugins: [typesPlugin({ outputDir: "types" })],
         })
 

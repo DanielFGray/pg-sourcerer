@@ -1,6 +1,5 @@
 import {
   defineConfig,
-  classicInflectionConfig,
   typesPlugin,
   arktypePlugin,
   sqlQueriesPlugin,
@@ -11,7 +10,6 @@ export default defineConfig({
   schemas: ["app_public"],
   outputDir: "./generated",
   formatter: "prettier --write",
-  inflection: classicInflectionConfig,
 
   plugins: [typesPlugin(), arktypePlugin(), sqlQueriesPlugin()]
 });

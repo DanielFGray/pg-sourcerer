@@ -19,7 +19,7 @@ import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { PluginRunner, type ConfiguredPlugin } from "../services/plugin-runner.js"
 import { definePlugin } from "../services/plugin.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive } from "../services/inflection.js"
+import { InflectionLive } from "../services/inflection.js"
 import { createFileWriter } from "../services/file-writer.js"
 import { TypeHintsLive } from "../services/type-hints.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
@@ -34,7 +34,7 @@ const PlatformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 
 // Combined layer for tests that need PluginRunner with ClassicInflection
 const TestLayer = Layer.mergeAll(
-  Layer.provide(PluginRunner.DefaultWithoutDependencies, ClassicInflectionLive),
+  Layer.provide(PluginRunner.DefaultWithoutDependencies, InflectionLive),
   PlatformLayer,
   TypeHintsLive([]) // Empty type hints for tests
 )
@@ -194,7 +194,7 @@ const indexPlugin = definePlugin({
 const buildTestIR = Effect.gen(function* () {
   const builder = createIRBuilderService()
   return yield* builder.build(introspection, { schemas: ["app_public"] })
-}).pipe(Effect.provide(ClassicInflectionLive))
+}).pipe(Effect.provide(InflectionLive))
 
 // ============================================================================
 // Tests

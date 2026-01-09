@@ -323,12 +323,6 @@ const makePluginsPrompt = () =>
     })),
   });
 
-const makeClassicInflectionPrompt = () =>
-  Prompt.confirm({
-    message: "Use classic inflection? (PascalCase entities, camelCase fields)",
-    initial: true,
-  });
-
 const makeFormatterPrompt = () =>
   Prompt.text({
     message: "Formatter command (optional, leave empty to skip)",
@@ -369,7 +363,6 @@ interface InitAnswers {
   schemas: readonly string[];
   outputDir: string;
   plugins: readonly string[];
-  classicInflection: boolean;
   formatter: string;
 }
 
@@ -378,9 +371,6 @@ const generateConfigContent = (answers: InitAnswers): string => {
 
   // Build import specifiers
   const coreImports = ["defineConfig"];
-  if (answers.classicInflection) {
-    coreImports.push("classicInflectionConfig");
-  }
   const allImports = [...coreImports, ...selectedPlugins.map(p => p.importName)];
 
   // Build the import statement
@@ -423,11 +413,6 @@ const generateConfigContent = (answers: InitAnswers): string => {
   // Formatter (only if set)
   if (answers.formatter.trim()) {
     configObj = configObj.prop("formatter", conjure.str(answers.formatter.trim()));
-  }
-
-  // Inflection (only if classic)
-  if (answers.classicInflection) {
-    configObj = configObj.prop("inflection", conjure.id("classicInflectionConfig").build());
   }
 
   // Plugins array - no config needed, all plugins have sensible defaults
@@ -477,7 +462,6 @@ export const runInit = Effect.gen(function* () {
   const schemas = yield* makeSchemasPrompt();
   const outputDir = yield* makeOutputDirPrompt();
   const plugins = yield* makePluginsPrompt();
-  const classicInflection = yield* makeClassicInflectionPrompt();
   const formatter = yield* makeFormatterPrompt();
 
   // Validate at least one plugin selected
@@ -494,7 +478,6 @@ export const runInit = Effect.gen(function* () {
     schemas: schemas.length > 0 ? schemas : ["public"],
     outputDir: outputDir.trim() || "src/generated",
     plugins,
-    classicInflection,
     formatter,
   };
 

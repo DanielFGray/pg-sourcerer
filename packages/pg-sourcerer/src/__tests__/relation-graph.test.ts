@@ -7,7 +7,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Option } from "effect"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive } from "../services/inflection.js"
+import { InflectionLive } from "../services/inflection.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
 import type { SemanticIR } from "../ir/semantic-ir.js"
 import {
@@ -28,7 +28,7 @@ const introspection = loadIntrospectionFixture()
 async function buildTestIR(schemas: readonly string[]): Promise<SemanticIR> {
   const builder = createIRBuilderService()
   return Effect.runPromise(
-    builder.build(introspection, { schemas }).pipe(Effect.provide(ClassicInflectionLive))
+    builder.build(introspection, { schemas }).pipe(Effect.provide(InflectionLive))
   )
 }
 

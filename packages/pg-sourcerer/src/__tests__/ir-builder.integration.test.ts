@@ -8,7 +8,7 @@ import { it, describe, expect } from "@effect/vitest"
 import { Effect } from "effect"
 import type { Introspection } from "@danielfgray/pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive } from "../services/inflection.js"
+import { InflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
 import { isTableEntity, getEnumEntities, getDomainEntities, getCompositeEntities, isDomainEntity, isCompositeEntity, getReverseRelations, getAllRelations, type TableEntity, type DomainEntity, type CompositeEntity } from "../ir/semantic-ir.js"
 import { beforeAll } from "vitest"
@@ -43,7 +43,7 @@ const buildIR = (schemas: readonly string[]) =>
   Effect.gen(function* () {
     const builder = createIRBuilderService()
     return yield* builder.build(introspection, { schemas })
-  }).pipe(Effect.provide(ClassicInflectionLive))
+  }).pipe(Effect.provide(InflectionLive))
 
 /**
  * Helper to get a table entity with type narrowing
@@ -90,12 +90,12 @@ describe("IR Builder Integration", () => {
         expect(fieldNames).toContain("id")
         expect(fieldNames).toContain("username")
         expect(fieldNames).toContain("name")
-        expect(fieldNames).toContain("avatarUrl") // camelCase from avatar_url
+        expect(fieldNames).toContain("avatar_url") // snake_case preserved by default
         expect(fieldNames).toContain("role")
         expect(fieldNames).toContain("bio")
-        expect(fieldNames).toContain("isVerified") // camelCase from is_verified
-        expect(fieldNames).toContain("createdAt")
-        expect(fieldNames).toContain("updatedAt")
+        expect(fieldNames).toContain("is_verified") // snake_case preserved by default
+        expect(fieldNames).toContain("created_at")
+        expect(fieldNames).toContain("updated_at")
 
         // Insert shape is undefined because visitor has no INSERT permission on users table
         expect(users?.shapes.insert).toBeUndefined()
@@ -107,7 +107,7 @@ describe("IR Builder Integration", () => {
         const updateFieldNames = updateFields.map((f) => f.name)
         expect(updateFieldNames).toContain("username")
         expect(updateFieldNames).toContain("name")
-        expect(updateFieldNames).toContain("avatarUrl")
+        expect(updateFieldNames).toContain("avatar_url")
         expect(updateFieldNames).toContain("bio")
         expect(updateFieldNames).not.toContain("id") // no UPDATE permission
         expect(updateFieldNames).not.toContain("role") // no UPDATE permission
@@ -318,17 +318,19 @@ describe("IR Builder Integration", () => {
       })
     )
 
-    it.effect("preserves original column names alongside camelCase field names", () =>
+    it.effect("preserves original column names on fields", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"])
 
         const users = getTable(result, "User")
         const rowFields = users?.shapes.row.fields ?? []
 
-        const avatarUrl = rowFields.find((f) => f.name === "avatarUrl")
+        // Default inflection preserves field names as snake_case
+        // columnName should match the field name (both are original DB names)
+        const avatarUrl = rowFields.find((f) => f.name === "avatar_url")
         expect(avatarUrl?.columnName).toBe("avatar_url")
 
-        const createdAt = rowFields.find((f) => f.name === "createdAt")
+        const createdAt = rowFields.find((f) => f.name === "created_at")
         expect(createdAt?.columnName).toBe("created_at")
       })
     )
@@ -380,8 +382,8 @@ describe("IR Builder Integration", () => {
         const id = rowFields.find((f) => f.name === "id")
         expect(id?.hasDefault).toBe(true)
 
-        // created_at has default (now())
-        const createdAt = rowFields.find((f) => f.name === "createdAt")
+        // created_at has default (now()) - field name is snake_case by default
+        const createdAt = rowFields.find((f) => f.name === "created_at")
         expect(createdAt?.hasDefault).toBe(true)
 
         // username has no default
@@ -477,7 +479,7 @@ describe("IR Builder Integration", () => {
         // app_public has 2 domains: url and username
         expect(domains.length).toBeGreaterThanOrEqual(2)
 
-        // With ClassicInflectionLive, names are PascalCase
+        // With InflectionLive, names are PascalCase
         const domainNames = domains.map(d => d.name)
         expect(domainNames).toContain("Url")
         expect(domainNames).toContain("Username")
