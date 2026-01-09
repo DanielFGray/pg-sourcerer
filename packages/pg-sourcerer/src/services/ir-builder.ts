@@ -5,7 +5,7 @@
  * Builds entities (tables, views, composites), shapes, fields,
  * relations, and enums.
  */
-import { Context, Effect, Layer, pipe, Array as Arr, Option } from "effect"
+import { Context, Effect, Layer, pipe, Array as Arr, Option, Console } from "effect"
 import type {
   Introspection,
   PgAttribute,
@@ -1204,9 +1204,28 @@ function createIRBuilderImpl(): IRBuilder {
         )
 
         // Build functions
-        const functions = yield* Effect.forEach(functionProcs, ({ pgProc, isFromExtension }) =>
+        const allFunctions = yield* Effect.forEach(functionProcs, ({ pgProc, isFromExtension }) =>
           buildFunction(pgProc, introspection, role, isFromExtension)
         )
+
+        // Dedupe functions by inflected name, warning about overloads
+        const uniqueFunctions = yield* Effect.reduce(
+          allFunctions,
+          new Map<string, FunctionEntity>(),
+          (seen, fn) =>
+            pipe(
+              Option.fromNullable(seen.get(fn.name)),
+              Option.match({
+                onNone: () => Effect.succeed(seen.set(fn.name, fn)),
+                onSome: (existing) =>
+                  Console.warn(
+                    `Skipping overloaded function ${fn.schemaName}.${fn.pgName}(${fn.argCount} args) - ` +
+                    `conflicts with ${existing.schemaName}.${existing.pgName}(${existing.argCount} args). ` +
+                    `Both resolve to "${fn.name}". Use @name tag to disambiguate.`
+                  ).pipe(Effect.as(seen))
+              })
+            )
+        ).pipe(Effect.map(m => [...m.values()]))
 
         // Extract extensions for type mapping
         const extensions = extractExtensions(introspection)
@@ -1218,7 +1237,7 @@ function createIRBuilderImpl(): IRBuilder {
           ...enums,
           ...domains,
           ...composites,
-          ...functions,
+          ...uniqueFunctions,
         ]
         Arr.forEach(allEntities, (entity) => {
           builder.entities.set(entity.name, entity)

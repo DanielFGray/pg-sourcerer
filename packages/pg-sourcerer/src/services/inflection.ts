@@ -177,8 +177,8 @@ export interface InflectionConfig {
   readonly relationName?: TransformFn
 
   /**
-   * Transform function name.
-   * Default: "{name}_{argCount}" for overload disambiguation
+   * Transform function name for IR identification.
+   * Default: camelCase (overloads are warned and skipped)
    */
   readonly functionName?: TransformFn
 }
@@ -206,6 +206,7 @@ export const defaultTransforms: InflectionConfig = {
   enumName: inflect.pascalCase,
   shapeSuffix: inflect.capitalize,
   relationName: inflect.camelCase,
+  functionName: inflect.camelCase,
 }
 
 /**
@@ -233,7 +234,7 @@ export const defaultInflection: CoreInflection = {
   relationName: (name) => 
     (defaultTransforms.relationName ?? identity)(name),
   functionName: (pgProc, tags) => 
-    tags.name ?? (defaultTransforms.functionName ?? identity)(`${pgProc.proname}_${pgProc.pronargs}`),
+    tags.name ?? (defaultTransforms.functionName ?? identity)(pgProc.proname),
 }
 
 // ============================================================================
@@ -317,7 +318,7 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
     relationName: (name) => relationFn(name),
 
     functionName: (pgProc, tags) =>
-      tags.name ?? functionFn(`${pgProc.proname}_${pgProc.pronargs}`),
+      tags.name ?? functionFn(pgProc.proname),
   }
 }
 
@@ -500,8 +501,7 @@ export function composeInflection(
 
     functionName: (pgProc, tags) => {
       if (tags.name) return tags.name
-      const baseName = `${pgProc.proname}_${pgProc.pronargs}`
-      const afterPlugin = functionFn ? functionFn(baseName) : baseName
+      const afterPlugin = functionFn ? functionFn(pgProc.proname) : pgProc.proname
       return baseInflection.functionName({ ...pgProc, proname: afterPlugin }, {})
     },
   }

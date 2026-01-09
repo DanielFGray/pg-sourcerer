@@ -594,8 +594,8 @@ const generateFunctionWrapper = (
   const resolvedArgs = resolveArgs(fn, ir);
   const qualifiedName = getFunctionQualifiedName(fn);
 
-  // Build camelCase function name
-  const exportName = inflect.camelCase(fn.pgName);
+  // Use fn.name which is already inflected by the IR builder
+  const exportName = fn.name;
 
   // Helper to convert resolved type string to AST
   const typeStrToAst = (typeStr: string): n.TSType => {

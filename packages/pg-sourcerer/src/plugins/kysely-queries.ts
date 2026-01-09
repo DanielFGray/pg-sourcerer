@@ -30,18 +30,8 @@ const { toExpr } = cast
  */
 export type ExportNameFn = (entityName: string, methodName: string) => string
 
-/**
- * Function to generate export names for stored function wrappers.
- * @param pgFunctionName - PostgreSQL function name in snake_case (e.g., "current_user", "verify_email")
- * @returns The export name (e.g., "currentUser", "verifyEmail")
- */
-export type FunctionExportNameFn = (pgFunctionName: string) => string
-
 /** Default export name: entityName + methodName (e.g., "UserFindById") */
 const defaultExportName: ExportNameFn = (entityName, methodName) => `${entityName}${methodName}`
-
-/** Default function export name: camelCase of pg function name */
-const defaultFunctionExportName: FunctionExportNameFn = (pgFunctionName) => inflect.camelCase(pgFunctionName)
 
 /**
  * Schema for serializable config options (JSON/YAML compatible).
@@ -80,10 +70,6 @@ const KyselyQueriesPluginConfigSchema = S.Struct({
    * Export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
    */
   exportName: S.optional(S.Any),
-  /**
-   * Function export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
-   */
-  functionExportName: S.optional(S.Any),
 })
 
 type KyselyQueriesPluginConfigSchema = S.Schema.Type<typeof KyselyQueriesPluginConfigSchema>
@@ -109,17 +95,6 @@ export interface KyselyQueriesConfigInput {
    * exportName: (entity, method) => entity.toLowerCase() + method
    */
   readonly exportName?: ExportNameFn
-  /**
-   * Custom export name function for stored function wrappers.
-   * @default (pgFunctionName) => camelCase(pgFunctionName)
-   * @example
-   * // PascalCase: "CurrentUser", "VerifyEmail"
-   * functionExportName: (fn) => pascalCase(fn)
-   * 
-   * // Prefixed: "fnCurrentUser", "fnVerifyEmail"
-   * functionExportName: (fn) => "fn" + pascalCase(fn)
-   */
-  readonly functionExportName?: FunctionExportNameFn
 }
 
 /**
@@ -127,7 +102,6 @@ export interface KyselyQueriesConfigInput {
  */
 interface KyselyQueriesPluginConfig extends KyselyQueriesPluginConfigSchema {
   readonly exportName: ExportNameFn
-  readonly functionExportName: FunctionExportNameFn
 }
 
 // ============================================================================
@@ -702,7 +676,6 @@ const generateFunctionWrapper = (
   fn: FunctionEntity,
   ir: SemanticIR,
   executeQueries: boolean,
-  functionExportName: FunctionExportNameFn
 ): n.Statement => {
   const resolvedReturn = resolveReturnType(fn, ir)
   const resolvedArgs = resolveArgs(fn, ir)
@@ -775,9 +748,8 @@ const generateFunctionWrapper = (
 
   const wrapperFn = arrowFn(params, query)
 
-  const exportName = functionExportName(fn.pgName)
   const constDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(id(exportName), wrapperFn)
+    b.variableDeclarator(id(fn.name), wrapperFn)
   ])
   return b.exportNamedDeclaration(constDecl, []) as n.Statement
 }
@@ -1180,12 +1152,11 @@ export const kyselyQueriesPlugin = definePlugin({
     const config: KyselyQueriesPluginConfig = {
       ...rawConfig,
       exportName: rawConfig.exportName ?? defaultExportName,
-      functionExportName: rawConfig.functionExportName ?? defaultFunctionExportName,
     }
 
     const enums = getEnumEntities(ctx.ir)
     const defaultSchemas = ctx.ir.schemas
-    const { dbTypesPath, executeQueries, generateListMany, exportName, functionExportName } = config
+    const { dbTypesPath, executeQueries, generateListMany, exportName } = config
 
     // Pre-compute function groupings by return entity name
     // Functions returning entities go in that entity's file; scalars go in functions.ts
@@ -1235,7 +1206,7 @@ export const kyselyQueriesPlugin = definePlugin({
 
         // Add function wrappers as flat exports
         for (const fn of entityFunctions) {
-          statements.push(generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName))
+          statements.push(generateFunctionWrapper(fn, ctx.ir, executeQueries))
         }
 
         const file = ctx
@@ -1300,7 +1271,7 @@ export const kyselyQueriesPlugin = definePlugin({
 
         const filePath = `${config.outputDir}/${composite.name}.ts`
         const statements = compositeFunctions.map(fn =>
-          generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+          generateFunctionWrapper(fn, ctx.ir, executeQueries)
         )
 
         const file = ctx.file(filePath)
@@ -1321,7 +1292,7 @@ export const kyselyQueriesPlugin = definePlugin({
       const filePath = `${config.outputDir}/${config.functionsFile}`
 
       const statements = scalarFunctions.map(fn =>
-        generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+        generateFunctionWrapper(fn, ctx.ir, executeQueries)
       )
 
       const file = ctx.file(filePath)
