@@ -10,7 +10,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import { arktypePlugin } from "../plugins/arktype.js"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive } from "../services/inflection.js"
+import { InflectionLive } from "../services/inflection.js"
 import { Emissions, createEmissionBuffer } from "../services/emissions.js"
 import { Symbols, createSymbolRegistry } from "../services/symbols.js"
 import { TypeHintsLive } from "../services/type-hints.js"
@@ -31,7 +31,7 @@ const introspection = loadIntrospectionFixture()
 async function buildTestIR(schemas: readonly string[]): Promise<SemanticIR> {
   const builder = createIRBuilderService()
   return Effect.runPromise(
-    builder.build(introspection, { schemas }).pipe(Effect.provide(ClassicInflectionLive))
+    builder.build(introspection, { schemas }).pipe(Effect.provide(InflectionLive))
   )
 }
 
@@ -47,7 +47,7 @@ function createTestLayer(ir: SemanticIR) {
     Layer.succeed(Emissions, emissions),
     Layer.succeed(Symbols, symbols),
     Layer.succeed(PluginMeta, { name: "arktype" }),
-    ClassicInflectionLive,
+    InflectionLive,
     TypeHintsLive([]),
     ArtifactStoreLive
   )

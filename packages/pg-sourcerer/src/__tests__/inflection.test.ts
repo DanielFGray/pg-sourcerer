@@ -10,6 +10,7 @@ import {
 } from "../services/inflection.js"
 import type { PgAttribute, PgClass, PgType } from "@danielfgray/pg-introspection"
 import type { SmartTags } from "../ir/index.js"
+import type { CoreInflection } from "../services/inflection.js"
 
 // Helper to create minimal mock objects
 const mockPgClass = (relname: string): PgClass =>
@@ -22,6 +23,22 @@ const mockPgType = (typname: string): PgType =>
   ({ typname }) as unknown as PgType
 
 const emptyTags: SmartTags = {}
+
+// Identity inflection for testing composition in isolation
+const identityInflection: CoreInflection = {
+  camelCase: inflect.camelCase,
+  pascalCase: inflect.pascalCase,
+  pluralize: inflect.pluralize,
+  singularize: inflect.singularize,
+  safeIdentifier: (text) => text,
+  entityName: (pgClass, tags) => tags.name ?? pgClass.relname,
+  shapeName: (entityName, kind) => kind === "row" ? entityName : entityName + kind,
+  fieldName: (pgAttribute, tags) => tags.name ?? pgAttribute.attname,
+  enumName: (pgType, tags) => tags.name ?? pgType.typname,
+  enumValueName: (value) => value,
+  relationName: (name) => name,
+  functionName: (pgProc, tags) => tags.name ?? `${pgProc.proname}_${pgProc.pronargs}`,
+}
 
 describe("Inflection Service", () => {
   describe("camelCase", () => {
@@ -184,21 +201,21 @@ describe("Inflection Service", () => {
       expect(defaultInflection.entityName(mockPgClass("users"), tags)).toBe("CustomName")
     })
 
-    it("returns table name unchanged (identity - no transforms)", () => {
-      // defaultInflection applies no transforms - use createInflection for transforms
-      expect(defaultInflection.entityName(mockPgClass("users"), emptyTags)).toBe("users")
-      expect(defaultInflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("blog_posts")
-      expect(defaultInflection.entityName(mockPgClass("user"), emptyTags)).toBe("user")
-      expect(defaultInflection.entityName(mockPgClass("categories"), emptyTags)).toBe("categories")
+    it("applies default transforms (singularize + PascalCase)", () => {
+      // defaultInflection now applies standard JS/TS conventions
+      expect(defaultInflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
+      expect(defaultInflection.entityName(mockPgClass("blog_posts"), emptyTags)).toBe("BlogPost")
+      expect(defaultInflection.entityName(mockPgClass("user"), emptyTags)).toBe("User")
+      expect(defaultInflection.entityName(mockPgClass("categories"), emptyTags)).toBe("Category")
     })
   })
 
   describe("shapeName", () => {
-    it("returns entity name for row, appends kind for others", () => {
-      // row shape has no suffix, insert/update have suffix appended
+    it("returns entity name for row, appends capitalized kind for others", () => {
+      // row shape has no suffix, insert/update have Capitalized suffix
       expect(defaultInflection.shapeName("User", "row")).toBe("User")
-      expect(defaultInflection.shapeName("User", "insert")).toBe("Userinsert")
-      expect(defaultInflection.shapeName("User", "update")).toBe("Userupdate")
+      expect(defaultInflection.shapeName("User", "insert")).toBe("UserInsert")
+      expect(defaultInflection.shapeName("User", "update")).toBe("UserUpdate")
     })
   })
 
@@ -223,10 +240,10 @@ describe("Inflection Service", () => {
       expect(defaultInflection.enumName(mockPgType("user_status"), tags)).toBe("CustomEnum")
     })
 
-    it("returns type name unchanged (identity - no transforms)", () => {
-      // defaultInflection applies no transforms - use createInflection for transforms
-      expect(defaultInflection.enumName(mockPgType("user_status"), emptyTags)).toBe("user_status")
-      expect(defaultInflection.enumName(mockPgType("order_type"), emptyTags)).toBe("order_type")
+    it("applies default transforms (PascalCase)", () => {
+      // defaultInflection now applies standard JS/TS conventions
+      expect(defaultInflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
+      expect(defaultInflection.enumName(mockPgType("order_type"), emptyTags)).toBe("OrderType")
     })
   })
 
@@ -239,10 +256,10 @@ describe("Inflection Service", () => {
   })
 
   describe("relationName", () => {
-    it("returns name unchanged (identity - no transforms)", () => {
-      // relationName is now a simple string transform, no constraint parsing
+    it("applies default transforms (camelCase)", () => {
+      // defaultInflection now applies camelCase to relation names
       expect(defaultInflection.relationName("author")).toBe("author")
-      expect(defaultInflection.relationName("user_info")).toBe("user_info")
+      expect(defaultInflection.relationName("user_info")).toBe("userInfo")
     })
   })
 })
@@ -259,10 +276,10 @@ describe("createInflection", () => {
     it("behaves like defaultInflection when config is empty object", () => {
       const inflection = createInflection({})
       
-      // Should have same behavior as defaultInflection (identity transforms)
-      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("users")
+      // Empty config now merges with defaults (PascalCase entities, identity fields, PascalCase enums)
+      expect(inflection.entityName(mockPgClass("users"), emptyTags)).toBe("User")
       expect(inflection.fieldName(mockPgAttribute("user_id"), emptyTags)).toBe("user_id")
-      expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("user_status")
+      expect(inflection.enumName(mockPgType("user_status"), emptyTags)).toBe("UserStatus")
     })
   })
 
@@ -501,7 +518,8 @@ describe("composeInflection", () => {
 
   describe("enumName composition", () => {
     it("applies plugin transform first, then base transform", () => {
-      const composed = composeInflection(defaultInflection, {
+      // Use identity base to test plugin transform in isolation
+      const composed = composeInflection(identityInflection, {
         enumName: inflect.uppercase,
       })
 
@@ -574,7 +592,8 @@ describe("composeInflection", () => {
 
   describe("relationName composition", () => {
     it("applies plugin transform first, then base transform", () => {
-      const composed = composeInflection(defaultInflection, {
+      // Use identity base to test plugin transform in isolation
+      const composed = composeInflection(identityInflection, {
         relationName: inflect.uppercase,
       })
 

@@ -8,7 +8,7 @@ import { it, describe, expect } from "@effect/vitest"
 import { Effect } from "effect"
 import type { Introspection } from "@danielfgray/pg-introspection"
 import { createIRBuilderService } from "../services/ir-builder.js"
-import { ClassicInflectionLive } from "../services/inflection.js"
+import { InflectionLive } from "../services/inflection.js"
 import { introspectDatabase } from "../services/introspection.js"
 import { beforeAll } from "vitest"
 
@@ -42,7 +42,7 @@ const buildIR = (schemas: readonly string[]) =>
   Effect.gen(function* () {
     const builder = createIRBuilderService()
     return yield* builder.build(introspection, { schemas })
-  }).pipe(Effect.provide(ClassicInflectionLive))
+  }).pipe(Effect.provide(InflectionLive))
 
 describe("IR Builder Indexes", () => {
   describe("with real database", () => {
@@ -129,8 +129,8 @@ describe("IR Builder Indexes", () => {
         const primaryIndex = userEmails?.indexes.find((idx) => idx.name === "idx_user_emails_primary")
         expect(primaryIndex).toBeDefined()
         expect(primaryIndex?.columns).toHaveLength(2)
-        expect(primaryIndex?.columns[0]).toBe("isPrimary")
-        expect(primaryIndex?.columns[1]).toBe("userId")
+        expect(primaryIndex?.columns[0]).toBe("is_primary")
+        expect(primaryIndex?.columns[1]).toBe("user_id")
         expect(primaryIndex?.columnNames).toEqual(["is_primary", "user_id"])
       })
     )
@@ -187,8 +187,8 @@ describe("IR Builder Indexes", () => {
         const posts = result.entities.get("Post")
         expect(posts).toBeDefined()
 
-        // Index on user_id (FK)
-        const userIdIndex = posts?.indexes.find((idx) => idx.columns.includes("userId"))
+        // Index on user_id (FK) - field names are snake_case by default
+        const userIdIndex = posts?.indexes.find((idx) => idx.columns.includes("user_id"))
         expect(userIdIndex).toBeDefined()
         expect(userIdIndex?.method).toBe("btree")
       })

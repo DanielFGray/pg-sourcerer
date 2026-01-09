@@ -16,7 +16,7 @@ import { ConfigLoaderService } from "../services/config-loader.js"
 import { DatabaseIntrospectionLive, DatabaseIntrospectionService } from "../services/introspection.js"
 import { typesPlugin } from "../plugins/types.js"
 import { zodPlugin } from "../plugins/zod.js"
-import { inflect, classicInflectionConfig } from "../services/inflection.js"
+import { inflect } from "../services/inflection.js"
 import type { ResolvedConfig } from "../config.js"
 
 // Connection string from environment (set via --env-file in package.json)
@@ -63,7 +63,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
             schemas: ["app_public"],
             outputDir: tmpDir,
             typeHints: [],
-            inflection: classicInflectionConfig,
+            inflection: undefined,
             plugins: [typesPlugin({ outputDir: "types" })],
           }
 
@@ -76,7 +76,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           expect(result.ir.entities.size).toBeGreaterThan(0)
           expect(result.writeResults.length).toBeGreaterThan(0)
 
-          // With classicInflectionConfig, "users" → "User"
+          // With undefined, "users" → "User"
           const entityNames = [...result.ir.entities.keys()]
           expect(entityNames).toContain("User")
 
@@ -97,24 +97,21 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           expect(userContent).toContain("export interface UserInsert")
           expect(userContent).toContain("export interface UserUpdate")
 
-          // Fields should be camelCase (from classicInflectionConfig)
-          expect(userContent).toContain("avatarUrl")
-          expect(userContent).toContain("isVerified")
-          expect(userContent).toContain("createdAt")
-          expect(userContent).toContain("updatedAt")
-          expect(userContent).not.toContain("avatar_url")
-          expect(userContent).not.toContain("is_verified")
-          expect(userContent).not.toContain("created_at")
+          // Fields are snake_case by default (fieldName not transformed)
+          expect(userContent).toContain("avatar_url")
+          expect(userContent).toContain("is_verified")
+          expect(userContent).toContain("created_at")
+          expect(userContent).toContain("updated_at")
 
           // TypeScript types
           expect(userContent).toContain("id: string")       // uuid → string
           expect(userContent).toContain("username: string") // domain → string
-          expect(userContent).toContain("isVerified: boolean")
-          expect(userContent).toContain("createdAt: Date")  // timestamptz → Date
+          expect(userContent).toContain("is_verified: boolean")
+          expect(userContent).toContain("created_at: Date")  // timestamptz → Date
 
           // Nullable fields should have null union
           expect(userContent).toMatch(/name\??: string \| null/)
-          expect(userContent).toMatch(/avatarUrl\??: string \| null/)
+          expect(userContent).toMatch(/avatar_url\??: string \| null/)
 
           // Enum reference import - now imports from individual enum file
           expect(userContent).toContain('import type { UserRole } from "./UserRole.js"')
@@ -194,7 +191,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
             schemas: ["app_public"],
             outputDir: tmpDir,
             typeHints: [],
-            inflection: classicInflectionConfig,
+            inflection: undefined,
             plugins: [
               typesPlugin({ outputDir: "types" }),
               zodPlugin({ outputDir: "zod", exportTypes: false }),

@@ -213,12 +213,32 @@ export interface InflectionConfig {
 }
 
 // ============================================================================
-// Default Inflection (identity - no transforms)
+// Default Inflection Transforms
 // ============================================================================
 
 /**
- * Default inflection implementation.
- * Preserves PostgreSQL names as-is (identity transforms).
+ * Default inflection transforms - applies common JS/TS naming conventions:
+ * - Entity names: singularize + PascalCase (users → User)
+ * - Field names: identity (preserved as snake_case to match DB)
+ * - Enum names: PascalCase (user_status → UserStatus)
+ * - Shape suffixes: capitalize (row → Row)
+ * - Relation names: camelCase
+ * 
+ * Note: Field names are NOT transformed to camelCase by default because
+ * the generated types would not match what the database actually returns.
+ * If you use a Kysely plugin that transforms column names, you can override
+ * fieldName in your config.
+ */
+export const defaultTransforms: InflectionConfig = {
+  entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
+  // fieldName: identity (default) - preserves snake_case from database
+  enumName: inflect.pascalCase,
+  shapeSuffix: inflect.capitalize,
+  relationName: inflect.camelCase,
+}
+
+/**
+ * Default inflection implementation using standard JS/TS naming conventions.
  */
 export const defaultInflection: CoreInflection = {
   // Primitive transforms (always available)
@@ -228,14 +248,21 @@ export const defaultInflection: CoreInflection = {
   singularize: inflect.singularize,
   safeIdentifier: (text) => (RESERVED_WORDS.has(text) ? text + "_" : text),
 
-  // Configurable transforms (default to identity)
-  entityName: (pgClass, tags) => tags.name ?? pgClass.relname,
-  shapeName: (entityName, kind) => kind === "row" ? entityName : entityName + kind,
-  fieldName: (pgAttribute, tags) => tags.name ?? pgAttribute.attname,
-  enumName: (pgType, tags) => tags.name ?? pgType.typname,
-  enumValueName: (value) => value,
-  relationName: (name) => name,
-  functionName: (pgProc, tags) => tags.name ?? `${pgProc.proname}_${pgProc.pronargs}`,
+  // Configurable transforms (default to JS/TS conventions)
+  entityName: (pgClass, tags) => 
+    tags.name ?? (defaultTransforms.entityName ?? identity)(pgClass.relname),
+  shapeName: (entityName, kind) => 
+    kind === "row" ? entityName : entityName + (defaultTransforms.shapeSuffix ?? identity)(kind),
+  fieldName: (pgAttribute, tags) => 
+    tags.name ?? (defaultTransforms.fieldName ?? identity)(pgAttribute.attname),
+  enumName: (pgType, tags) => 
+    tags.name ?? (defaultTransforms.enumName ?? identity)(pgType.typname),
+  enumValueName: (value) => 
+    (defaultTransforms.enumValue ?? identity)(value),
+  relationName: (name) => 
+    (defaultTransforms.relationName ?? identity)(name),
+  functionName: (pgProc, tags) => 
+    tags.name ?? (defaultTransforms.functionName ?? identity)(`${pgProc.proname}_${pgProc.pronargs}`),
 }
 
 // ============================================================================
@@ -246,36 +273,45 @@ export const defaultInflection: CoreInflection = {
 const identity: TransformFn = (s) => s
 
 /**
- * Create a CoreInflection instance with optional configuration.
+ * Create a CoreInflection instance with optional configuration overrides.
  *
+ * By default, applies standard JS/TS naming conventions (PascalCase entities,
+ * camelCase relations, etc.). User config is merged on top of defaults.
  * Smart tags (@name) always take precedence over configured transforms.
  *
  * @example
  * ```typescript
  * import { inflect } from "pg-sourcerer"
- * 
- * // Use defaults (identity - preserve names)
+ *
+ * // Use defaults (standard JS/TS conventions)
  * const inflection = createInflection()
  *
- * // Common JS/TS conventions
+ * // Override specific transforms
  * const inflection = createInflection({
- *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
- *   fieldName: inflect.camelCase,
- *   enumName: inflect.pascalCase,
- *   shapeSuffix: inflect.capitalize,
+ *   fieldName: inflect.camelCase,  // Also camelCase fields
+ * })
+ *
+ * // Use identity (raw DB names) for everything
+ * const inflection = createInflection({
+ *   entityName: (name) => name,
+ *   fieldName: (name) => name,
+ *   enumName: (name) => name,
+ *   shapeSuffix: (name) => name,
+ *   relationName: (name) => name,
  * })
  * ```
  */
 export function createInflection(config?: InflectionConfig): CoreInflection {
   if (!config) return defaultInflection
 
-  const entityFn = config.entityName ?? identity
-  const fieldFn = config.fieldName ?? identity
-  const enumNameFn = config.enumName ?? identity
-  const enumValueFn = config.enumValue ?? identity
-  const shapeSuffixFn = config.shapeSuffix ?? identity
-  const relationFn = config.relationName ?? identity
-  const functionFn = config.functionName ?? identity
+  // Merge user config on top of defaults
+  const entityFn = config.entityName ?? defaultTransforms.entityName ?? identity
+  const fieldFn = config.fieldName ?? defaultTransforms.fieldName ?? identity
+  const enumNameFn = config.enumName ?? defaultTransforms.enumName ?? identity
+  const enumValueFn = config.enumValue ?? defaultTransforms.enumValue ?? identity
+  const shapeSuffixFn = config.shapeSuffix ?? defaultTransforms.shapeSuffix ?? identity
+  const relationFn = config.relationName ?? defaultTransforms.relationName ?? identity
+  const functionFn = config.functionName ?? defaultTransforms.functionName ?? identity
 
   return {
     // Primitive transforms unchanged
@@ -308,19 +344,20 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
 }
 
 /**
- * Create an Effect Layer that provides inflection with optional configuration.
+ * Create an Effect Layer that provides inflection with optional configuration overrides.
+ *
+ * By default, applies standard JS/TS naming conventions. User config is merged on top.
  *
  * @example
  * ```typescript
  * import { inflect } from "pg-sourcerer"
  * 
- * // Default layer (identity transforms)
+ * // Default layer (standard JS/TS conventions)
  * const layer = makeInflectionLayer()
  *
- * // Configured layer
+ * // Override specific transforms
  * const layer = makeInflectionLayer({
- *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
- *   fieldName: inflect.camelCase,
+ *   fieldName: inflect.camelCase,  // Also camelCase fields
  * })
  * ```
  */
@@ -332,32 +369,8 @@ export function makeInflectionLayer(config?: InflectionConfig): Layer.Layer<Infl
 // Convenience Exports
 // ============================================================================
 
-/** Default inflection layer (identity - no transforms) */
+/** Default inflection layer (standard JS/TS naming conventions) */
 export const InflectionLive = makeInflectionLayer()
-
-/**
- * Classic inflection config - matches the "opinionated" defaults of many ORMs:
- * - Entity names: singularize + PascalCase (users → User)
- * - Field names: identity (preserved as snake_case to match DB)
- * - Enum names: PascalCase (user_status → UserStatus)
- * - Shape suffixes: capitalize (row → Row)
- * - Relation names: camelCase
- * 
- * Note: Field names are NOT transformed to camelCase by default because
- * the generated types would not match what the database actually returns.
- * If you use a Kysely plugin that transforms column names, you can override
- * fieldName in your config.
- */
-export const classicInflectionConfig: InflectionConfig = {
-  entityName: (name) => inflect.pascalCase(inflect.singularize(name)),
-  // fieldName: identity (default) - preserves snake_case from database
-  enumName: inflect.pascalCase,
-  shapeSuffix: inflect.capitalize,
-  relationName: inflect.camelCase,
-}
-
-/** Classic inflection layer - applies traditional ORM naming conventions */
-export const ClassicInflectionLive = makeInflectionLayer(classicInflectionConfig)
 
 // ============================================================================
 // Inflection Composition
