@@ -8,8 +8,9 @@ import { Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
 import type { FileNameContext } from "../services/plugin.js"
-import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation } from "../ir/semantic-ir.js"
-import { getTableEntities, getEnumEntities } from "../ir/semantic-ir.js"
+import type { Field, IndexDef, TableEntity, EnumEntity, SemanticIR, Relation, FunctionEntity, FunctionArg, CompositeEntity } from "../ir/semantic-ir.js"
+import { getTableEntities, getEnumEntities, getFunctionEntities, getCompositeEntities } from "../ir/semantic-ir.js"
+
 import { conjure, cast } from "../lib/conjure.js"
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js"
 import { inflect } from "../services/inflection.js"
@@ -21,7 +22,32 @@ const { toExpr } = cast
 // Configuration
 // ============================================================================
 
-const KyselyQueriesPluginConfig = S.Struct({
+/**
+ * Function to generate export names for CRUD/lookup methods.
+ * @param entityName - PascalCase entity name (e.g., "User", "Post")
+ * @param methodName - PascalCase method name (e.g., "FindById", "Create")
+ * @returns The export name (e.g., "UserFindById", "userCreate", "findById")
+ */
+export type ExportNameFn = (entityName: string, methodName: string) => string
+
+/**
+ * Function to generate export names for stored function wrappers.
+ * @param pgFunctionName - PostgreSQL function name in snake_case (e.g., "current_user", "verify_email")
+ * @returns The export name (e.g., "currentUser", "verifyEmail")
+ */
+export type FunctionExportNameFn = (pgFunctionName: string) => string
+
+/** Default export name: entityName + methodName (e.g., "UserFindById") */
+const defaultExportName: ExportNameFn = (entityName, methodName) => `${entityName}${methodName}`
+
+/** Default function export name: camelCase of pg function name */
+const defaultFunctionExportName: FunctionExportNameFn = (pgFunctionName) => inflect.camelCase(pgFunctionName)
+
+/**
+ * Schema for serializable config options (JSON/YAML compatible).
+ * Function options are typed separately in KyselyQueriesConfigInput.
+ */
+const KyselyQueriesPluginConfigSchema = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "kysely-queries" }),
   /** 
    * Path to import DB type from (relative to outputDir). 
@@ -41,9 +67,68 @@ const KyselyQueriesPluginConfig = S.Struct({
    * When enabled, generates: listMany(db, limit = 50, offset = 0)
    */
   generateListMany: S.optionalWith(S.Boolean, { default: () => false }),
+  /**
+   * Whether to generate function wrappers for stored functions.
+   * When true (default), generates queries/mutations namespaces in functions.ts.
+   */
+  generateFunctions: S.optionalWith(S.Boolean, { default: () => true }),
+  /**
+   * Output file name for function wrappers (relative to outputDir).
+   */
+  functionsFile: S.optionalWith(S.String, { default: () => "functions.ts" }),
+  /**
+   * Export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
+   */
+  exportName: S.optional(S.Any),
+  /**
+   * Function export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
+   */
+  functionExportName: S.optional(S.Any),
 })
 
-type KyselyQueriesPluginConfig = S.Schema.Type<typeof KyselyQueriesPluginConfig>
+type KyselyQueriesPluginConfigSchema = S.Schema.Type<typeof KyselyQueriesPluginConfigSchema>
+
+/**
+ * User-facing config input with properly typed function options.
+ */
+export interface KyselyQueriesConfigInput {
+  readonly outputDir?: string
+  readonly dbTypesPath?: string
+  readonly executeQueries?: boolean
+  readonly generateListMany?: boolean
+  readonly generateFunctions?: boolean
+  readonly functionsFile?: string
+  /**
+   * Custom export name function for CRUD/lookup methods.
+   * @default (entityName, methodName) => entityName + methodName
+   * @example
+   * // Unprefixed: "FindById", "Create"
+   * exportName: (_entity, method) => method
+   * 
+   * // camelCase prefix: "userFindById", "userCreate"  
+   * exportName: (entity, method) => entity.toLowerCase() + method
+   */
+  readonly exportName?: ExportNameFn
+  /**
+   * Custom export name function for stored function wrappers.
+   * @default (pgFunctionName) => camelCase(pgFunctionName)
+   * @example
+   * // PascalCase: "CurrentUser", "VerifyEmail"
+   * functionExportName: (fn) => pascalCase(fn)
+   * 
+   * // Prefixed: "fnCurrentUser", "fnVerifyEmail"
+   * functionExportName: (fn) => "fn" + pascalCase(fn)
+   */
+  readonly functionExportName?: FunctionExportNameFn
+}
+
+/**
+ * Resolved config with defaults applied
+ */
+interface KyselyQueriesPluginConfig extends KyselyQueriesPluginConfigSchema {
+  readonly exportName: ExportNameFn
+  readonly functionExportName: FunctionExportNameFn
+}
 
 // ============================================================================
 // Context & Type Helpers
@@ -57,6 +142,10 @@ interface GenerationContext {
   readonly dbTypesPath: string
   readonly executeQueries: boolean
   readonly generateListMany: boolean
+  /** PascalCase entity name for export naming */
+  readonly entityName: string
+  /** Function to generate export names */
+  readonly exportName: ExportNameFn
 }
 
 /**
@@ -198,6 +287,16 @@ const chain = (expr: n.Expression, method: string, args: n.Expression[] = []): n
 type ArrowParam = n.Identifier | n.AssignmentPattern
 
 /**
+ * Create an exported const declaration: export const name = value
+ */
+const exportConst = (name: string, value: n.Expression): n.Statement => {
+  const constDecl = b.variableDeclaration("const", [
+    b.variableDeclarator(id(name), toExpr(value))
+  ])
+  return b.exportNamedDeclaration(constDecl, []) as n.Statement
+}
+
+/**
  * Build arrow function expression: (params) => body
  */
 const arrowFn = (
@@ -220,15 +319,514 @@ const objProp = (key: string, value: n.Expression): n.ObjectProperty => {
 }
 
 // ============================================================================
+// PostgreSQL Type Name to TypeScript Mapping
+// ============================================================================
+
+/**
+ * Map PostgreSQL type name to TypeScript type string.
+ * Used for function argument and return type resolution.
+ */
+const pgTypeNameToTs = (typeName: string): string => {
+  // Normalize: strip schema prefix if present
+  const baseName = typeName.includes(".") ? typeName.split(".").pop()! : typeName
+
+  switch (baseName) {
+    // Boolean
+    case "bool":
+    case "boolean":
+      return "boolean"
+
+    // Integer types → number
+    case "int2":
+    case "smallint":
+    case "int4":
+    case "integer":
+    case "int":
+    case "oid":
+    case "float4":
+    case "real":
+    case "float8":
+    case "double precision":
+      return "number"
+
+    // Big integers/numeric → string (to avoid precision loss)
+    case "int8":
+    case "bigint":
+    case "numeric":
+    case "decimal":
+    case "money":
+      return "string"
+
+    // Text types → string
+    case "text":
+    case "varchar":
+    case "character varying":
+    case "char":
+    case "character":
+    case "bpchar":
+    case "name":
+    case "xml":
+    case "bit":
+    case "varbit":
+    case "bit varying":
+    case "uuid":
+    case "inet":
+    case "cidr":
+    case "macaddr":
+    case "macaddr8":
+    case "time":
+    case "timetz":
+    case "time with time zone":
+    case "time without time zone":
+    case "interval":
+      return "string"
+
+    // Date/Time with date component → Date
+    case "date":
+    case "timestamp":
+    case "timestamptz":
+    case "timestamp with time zone":
+    case "timestamp without time zone":
+      return "Date"
+
+    // JSON → unknown
+    case "json":
+    case "jsonb":
+    case "jsonpath":
+      return "unknown"
+
+    // Binary → Buffer
+    case "bytea":
+      return "Buffer"
+
+    // Void
+    case "void":
+      return "void"
+
+    // Default to unknown
+    default:
+      return "unknown"
+  }
+}
+
+// ============================================================================
+// Function Filtering & Categorization
+// ============================================================================
+
+/**
+ * Context for function generation - extends the table context with function-specific data
+ */
+interface FunctionGenContext {
+  readonly ir: SemanticIR
+  readonly enums: readonly EnumEntity[]
+  readonly defaultSchemas: readonly string[]
+  readonly dbTypesPath: string
+  readonly executeQueries: boolean
+}
+
+/**
+ * Check if a function argument type matches a table/view entity (row type argument).
+ * Functions with row-type arguments are computed fields (e.g., posts_short_body(posts))
+ * and should be excluded from function wrapper generation.
+ */
+const hasRowTypeArg = (arg: FunctionArg, ir: SemanticIR): boolean => {
+  const tableEntities = getTableEntities(ir)
+  // Check if arg.typeName matches a table entity's qualified name
+  // Format: "schema.tablename" or just "tablename" for public schema
+  return tableEntities.some(entity => {
+    const qualifiedName = `${entity.schemaName}.${entity.pgName}`
+    return arg.typeName === qualifiedName || arg.typeName === entity.pgName
+  })
+}
+
+/**
+ * Check if a function should be included in generated wrappers.
+ * 
+ * Includes functions that:
+ * - Have canExecute permission
+ * - Are not trigger functions
+ * - Are not from extensions
+ * - Are not @omit tagged
+ * - Don't have row-type arguments (computed fields)
+ */
+const isGeneratableFunction = (fn: FunctionEntity, ir: SemanticIR): boolean => {
+  if (!fn.canExecute) return false
+  if (fn.returnTypeName === "trigger") return false
+  if (fn.isFromExtension) return false
+  if (fn.tags.omit === true) return false
+  // Check for row-type args (computed field pattern)
+  if (fn.args.some(arg => hasRowTypeArg(arg, ir))) return false
+  return true
+}
+
+/**
+ * Categorize functions by volatility.
+ * Volatile functions go in mutations namespace, stable/immutable in queries.
+ */
+const categorizeFunction = (fn: FunctionEntity): "queries" | "mutations" =>
+  fn.volatility === "volatile" ? "mutations" : "queries"
+
+/**
+ * Get all generatable functions from the IR, categorized by volatility.
+ */
+const getGeneratableFunctions = (ir: SemanticIR): {
+  queries: FunctionEntity[]
+  mutations: FunctionEntity[]
+} => {
+  const all = getFunctionEntities(ir).filter(fn => isGeneratableFunction(fn, ir))
+  return {
+    queries: all.filter(fn => categorizeFunction(fn) === "queries"),
+    mutations: all.filter(fn => categorizeFunction(fn) === "mutations"),
+  }
+}
+
+// ============================================================================
+// Function Return Type Resolution
+// ============================================================================
+
+/**
+ * Resolved return type information for function wrappers.
+ */
+interface ResolvedReturnType {
+  /** TypeScript type string (e.g., "string", "boolean", "Users", "TagSearchResult") */
+  readonly tsType: string
+  /** True for SETOF returns (returns multiple rows) */
+  readonly isArray: boolean
+  /** True for scalar types (primitives like string, number, boolean) */
+  readonly isScalar: boolean
+  /** Type name to import from DB types file, if needed */
+  readonly needsImport?: string
+  /** The entity this return type references (for grouping into entity files) */
+  readonly returnEntity?: TableEntity | CompositeEntity
+}
+
+/**
+ * Resolve a function's return type to TypeScript type information.
+ */
+const resolveReturnType = (fn: FunctionEntity, ir: SemanticIR): ResolvedReturnType => {
+  const returnTypeName = fn.returnTypeName
+  const isArray = fn.returnsSet
+
+  // 1. Check if it's a table return type
+  const tableEntities = getTableEntities(ir)
+  const tableMatch = tableEntities.find(entity => {
+    const qualifiedName = `${entity.schemaName}.${entity.pgName}`
+    return returnTypeName === qualifiedName || returnTypeName === entity.pgName
+  })
+  if (tableMatch) {
+    return {
+      tsType: tableMatch.name,
+      isArray,
+      isScalar: false,
+      needsImport: tableMatch.name,
+      returnEntity: tableMatch,
+    }
+  }
+
+  // 2. Check if it's a composite type return
+  const compositeEntities = getCompositeEntities(ir)
+  const compositeMatch = compositeEntities.find(entity => {
+    const qualifiedName = `${entity.schemaName}.${entity.pgName}`
+    return returnTypeName === qualifiedName || returnTypeName === entity.pgName
+  })
+  if (compositeMatch) {
+    return {
+      tsType: compositeMatch.name,
+      isArray,
+      isScalar: false,
+      needsImport: compositeMatch.name,
+      returnEntity: compositeMatch,
+    }
+  }
+
+  // 3. It's a scalar type - map via type name
+  // Handle "schema.typename" format by extracting just the type name
+  const baseTypeName = returnTypeName.includes(".")
+    ? returnTypeName.split(".").pop()!
+    : returnTypeName
+  const tsType = pgTypeNameToTs(baseTypeName)
+
+  return {
+    tsType,
+    isArray,
+    isScalar: true,
+  }
+}
+
+// ============================================================================
+// Function Argument Type Resolution
+// ============================================================================
+
+/**
+ * Resolved argument information for function wrappers.
+ */
+interface ResolvedArg {
+  /** Parameter name (camelCase) */
+  readonly name: string
+  /** TypeScript type string */
+  readonly tsType: string
+  /** True if argument has a default value */
+  readonly isOptional: boolean
+  /** Type name to import from DB types file, if needed */
+  readonly needsImport?: string
+}
+
+/**
+ * Resolve a function argument to TypeScript type information.
+ */
+const resolveArg = (arg: FunctionArg, ir: SemanticIR): ResolvedArg => {
+  const typeName = arg.typeName
+
+  // Check if it's an array type (ends with [])
+  const isArrayType = typeName.endsWith("[]")
+  const baseTypeName = isArrayType ? typeName.slice(0, -2) : typeName
+
+  // Check enums
+  const enums = getEnumEntities(ir)
+  const enumMatch = enums.find(e => {
+    const qualifiedName = `${e.schemaName}.${e.pgName}`
+    return baseTypeName === qualifiedName || baseTypeName === e.pgName
+  })
+  if (enumMatch) {
+    const tsType = isArrayType ? `${enumMatch.name}[]` : enumMatch.name
+    return {
+      name: arg.name || "arg",
+      tsType,
+      isOptional: arg.hasDefault,
+      needsImport: enumMatch.name,
+    }
+  }
+
+  // Check composites
+  const composites = getCompositeEntities(ir)
+  const compositeMatch = composites.find(e => {
+    const qualifiedName = `${e.schemaName}.${e.pgName}`
+    return baseTypeName === qualifiedName || baseTypeName === e.pgName
+  })
+  if (compositeMatch) {
+    const tsType = isArrayType ? `${compositeMatch.name}[]` : compositeMatch.name
+    return {
+      name: arg.name || "arg",
+      tsType,
+      isOptional: arg.hasDefault,
+      needsImport: compositeMatch.name,
+    }
+  }
+
+  // Scalar type - map via type name
+  // Handle "schema.typename" format
+  const scalarBase = baseTypeName.includes(".")
+    ? baseTypeName.split(".").pop()!
+    : baseTypeName
+  const scalarTs = pgTypeNameToTs(scalarBase)
+  const tsType = isArrayType ? `${scalarTs}[]` : scalarTs
+
+  return {
+    name: arg.name || "arg",
+    tsType,
+    isOptional: arg.hasDefault,
+  }
+}
+
+/**
+ * Resolve all arguments for a function.
+ */
+const resolveArgs = (fn: FunctionEntity, ir: SemanticIR): ResolvedArg[] =>
+  fn.args.map(arg => resolveArg(arg, ir))
+
+// ============================================================================
+// Function Wrapper AST Generation
+// ============================================================================
+
+/**
+ * Generate a typed parameter with explicit type annotation from type string.
+ */
+const typedParamFromString = (name: string, typeStr: string): n.Identifier => {
+  const param = id(name)
+  // Map type string to AST
+  let typeAst: n.TSType
+  switch (typeStr) {
+    case "string":
+      typeAst = ts.string()
+      break
+    case "number":
+      typeAst = ts.number()
+      break
+    case "boolean":
+      typeAst = ts.boolean()
+      break
+    case "Date":
+      typeAst = ts.ref("Date")
+      break
+    case "Buffer":
+      typeAst = ts.ref("Buffer")
+      break
+    case "unknown":
+      typeAst = ts.unknown()
+      break
+    case "void":
+      typeAst = ts.void()
+      break
+    default:
+      // Handle array types like "string[]"
+      if (typeStr.endsWith("[]")) {
+        const elemType = typeStr.slice(0, -2)
+        const elemAst = elemType === "string" ? ts.string()
+          : elemType === "number" ? ts.number()
+          : elemType === "boolean" ? ts.boolean()
+          : ts.ref(elemType)
+        typeAst = ts.array(elemAst)
+      } else {
+        // Assume it's a type reference (composite, enum, etc.)
+        typeAst = ts.ref(typeStr)
+      }
+  }
+  param.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(typeAst))
+  return param
+}
+
+/**
+ * Generate an optional typed parameter with explicit type annotation.
+ */
+const optionalTypedParamFromString = (name: string, typeStr: string): n.Identifier => {
+  const param = typedParamFromString(name, typeStr)
+  param.optional = true
+  return param
+}
+
+/**
+ * Get the fully qualified function name for use in eb.fn call.
+ */
+const getFunctionQualifiedName = (fn: FunctionEntity): string =>
+  `${fn.schemaName}.${fn.pgName}`
+
+/**
+ * Generate a function wrapper method as an object property.
+ * 
+ * Patterns:
+ * - SETOF/table return: db.selectFrom(eb => eb.fn<Type>(...).as('f')).selectAll().execute()
+ * - Single row return: db.selectFrom(eb => eb.fn<Type>(...).as('f')).selectAll().executeTakeFirst()
+ * - Scalar return: db.selectNoFrom(eb => eb.fn<Type>(...).as('result')).executeTakeFirst().then(r => r?.result)
+ */
+const generateFunctionWrapper = (
+  fn: FunctionEntity,
+  ir: SemanticIR,
+  executeQueries: boolean,
+  functionExportName: FunctionExportNameFn
+): n.Statement => {
+  const resolvedReturn = resolveReturnType(fn, ir)
+  const resolvedArgs = resolveArgs(fn, ir)
+  const qualifiedName = getFunctionQualifiedName(fn)
+
+  // Build eb.val(arg) for each argument
+  const fnArgs = resolvedArgs.map(arg =>
+    call(id("eb"), "val", [id(arg.name)])
+  )
+
+  // Build eb.fn<Type>('schema.fn_name', [args]).as('alias')
+  // The type parameter is the return type
+  const returnTypeAst = resolvedReturn.isScalar
+    ? typedParamFromString("_", resolvedReturn.tsType).typeAnnotation!.typeAnnotation as n.TSType
+    : ts.ref(resolvedReturn.tsType)
+
+  // Create eb.fn with type parameter: eb.fn<Type>
+  const fnMember = b.memberExpression(id("eb"), id("fn"))
+  const fnWithType = b.tsInstantiationExpression(
+    fnMember,
+    b.tsTypeParameterInstantiation([cast.toTSType(returnTypeAst)])
+  )
+
+  // Call it: eb.fn<Type>(name, args)
+  const fnCallBase = b.callExpression(
+    fnWithType,
+    [str(qualifiedName), b.arrayExpression(fnArgs.map(toExpr))]
+  )
+
+  // .as('f') or .as('result') for scalar
+  const alias = resolvedReturn.isScalar ? "result" : "f"
+  const fnCallWithAlias = call(fnCallBase, "as", [str(alias)])
+
+  // Arrow function for selectFrom callback: eb => eb.fn<...>(...).as('f')
+  const selectCallback = arrowFn([id("eb")], fnCallWithAlias)
+
+  // Build the query chain
+  let query: n.Expression
+
+  if (resolvedReturn.isScalar) {
+    // Scalar: db.selectNoFrom(eb => ...).executeTakeFirst()
+    // Returns { result: T } | undefined - caller accesses .result
+    query = call(id("db"), "selectNoFrom", [selectCallback])
+
+    if (executeQueries) {
+      query = chain(query, "executeTakeFirst")
+    }
+  } else {
+    // Table/composite: db.selectFrom(eb => ...).selectAll()
+    query = chain(
+      call(id("db"), "selectFrom", [selectCallback]),
+      "selectAll"
+    )
+
+    if (executeQueries) {
+      // SETOF → .execute(), single row → .executeTakeFirst()
+      query = chain(query, resolvedReturn.isArray ? "execute" : "executeTakeFirst")
+    }
+  }
+
+  // Build the parameters: (db: Kysely<DB>, arg1: Type1, arg2?: Type2, ...)
+  const params: ArrowParam[] = [
+    typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
+    ...resolvedArgs.map(arg =>
+      arg.isOptional
+        ? optionalTypedParamFromString(arg.name, arg.tsType)
+        : typedParamFromString(arg.name, arg.tsType)
+    )
+  ]
+
+  const wrapperFn = arrowFn(params, query)
+
+  const exportName = functionExportName(fn.pgName)
+  const constDecl = b.variableDeclaration("const", [
+    b.variableDeclarator(id(exportName), wrapperFn)
+  ])
+  return b.exportNamedDeclaration(constDecl, []) as n.Statement
+}
+
+/**
+ * Collect all type imports needed for function wrappers.
+ */
+const collectFunctionTypeImports = (
+  functions: readonly FunctionEntity[],
+  ir: SemanticIR
+): Set<string> => {
+  const imports = new Set<string>()
+
+  for (const fn of functions) {
+    const resolvedReturn = resolveReturnType(fn, ir)
+    if (resolvedReturn.needsImport) {
+      imports.add(resolvedReturn.needsImport)
+    }
+
+    for (const arg of resolveArgs(fn, ir)) {
+      if (arg.needsImport) {
+        imports.add(arg.needsImport)
+      }
+    }
+  }
+
+  return imports
+}
+
+// ============================================================================
 // CRUD Method Generators
 // ============================================================================
 
 /**
  * Generate findById method:
- * findById: (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
+ * export const UserFindById = (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
  */
-const generateFindById = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -255,7 +853,7 @@ const generateFindById = (ctx: GenerationContext): n.ObjectProperty | undefined 
     query
   )
 
-  return objProp("findById", fn)
+  return exportConst(exportName(entityName, "FindById"), fn)
 }
 
 /** Default limit for findMany queries */
@@ -273,11 +871,11 @@ const paramWithDefault = (name: string, defaultValue: n.Expression): n.Assignmen
 
 /**
  * Generate listMany method with pagination defaults:
- * listMany: (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
+ * export const UserListMany = (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
  *   .limit(limit).offset(offset).execute()
  */
-const generateListMany = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.permissions.canSelect) return undefined
 
   const tableRef = getTableRef(entity, defaultSchemas)
@@ -307,15 +905,15 @@ const generateListMany = (ctx: GenerationContext): n.ObjectProperty | undefined 
     query
   )
 
-  return objProp("listMany", fn)
+  return exportConst(exportName(entityName, "ListMany"), fn)
 }
 
 /**
  * Generate create method:
- * create: (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
+ * export const UserCreate = (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
  */
-const generateCreate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.permissions.canInsert) return undefined
 
   const tableRef = getTableRef(entity, defaultSchemas)
@@ -340,15 +938,15 @@ const generateCreate = (ctx: GenerationContext): n.ObjectProperty | undefined =>
     query
   )
 
-  return objProp("create", fn)
+  return exportConst(exportName(entityName, "Create"), fn)
 }
 
 /**
  * Generate update method:
- * update: (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
+ * export const UserUpdate = (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
  */
-const generateUpdate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canUpdate) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -384,15 +982,15 @@ const generateUpdate = (ctx: GenerationContext): n.ObjectProperty | undefined =>
     query
   )
 
-  return objProp("update", fn)
+  return exportConst(exportName(entityName, "Update"), fn)
 }
 
 /**
  * Generate delete method:
- * delete: (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
+ * export const UserRemove = (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
  */
-const generateDelete = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   if (!entity.primaryKey || !entity.permissions.canDelete) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -419,19 +1017,18 @@ const generateDelete = (ctx: GenerationContext): n.ObjectProperty | undefined =>
     query
   )
 
-  // Use 'remove' since 'delete' is a reserved word
-  return objProp("remove", fn)
+  return exportConst(exportName(entityName, "Remove"), fn)
 }
 
 /** Generate all CRUD methods for an entity */
-const generateCrudMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] =>
+const generateCrudMethods = (ctx: GenerationContext): readonly n.Statement[] =>
   [
     generateFindById(ctx),
     ctx.generateListMany ? generateListMany(ctx) : undefined,
     generateCreate(ctx),
     generateUpdate(ctx),
     generateDelete(ctx),
-  ].filter((p): p is n.ObjectProperty => p != null)
+  ].filter((p): p is n.Statement => p != null)
 
 // ============================================================================
 // Index-based Lookup Functions
@@ -446,17 +1043,17 @@ const shouldGenerateLookup = (index: IndexDef): boolean =>
   index.method !== "gist"
 
 /**
- * Generate a method name for an index-based lookup.
+ * Generate the method name portion for an index-based lookup.
  * Uses semantic naming when the column corresponds to an FK relation.
  */
-const generateLookupName = (
+const generateLookupMethodName = (
   entity: TableEntity,
   index: IndexDef,
   relation: Relation | undefined
 ): string => {
   const isUnique = isUniqueLookup(entity, index)
-  // Kysely uses "findBy" prefix consistently, with "One" or "Many" suffix
-  const prefix = isUnique ? "findOneBy" : "findManyBy"
+  // Uses "FindOneBy" or "FindManyBy" suffix
+  const suffix = isUnique ? "FindOneBy" : "FindManyBy"
 
   // Use semantic name if FK relation exists, otherwise fall back to column name
   const columnName = index.columnNames[0]!
@@ -464,15 +1061,15 @@ const generateLookupName = (
     ? deriveSemanticName(relation, columnName)
     : index.columns[0]!
 
-  return `${prefix}${toPascalCase(byName)}`
+  return `${suffix}${toPascalCase(byName)}`
 }
 
 /**
  * Generate a lookup method for a single-column index.
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
-const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.ObjectProperty => {
-  const { entity, executeQueries, defaultSchemas } = ctx
+const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statement => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
   const tableRef = getTableRef(entity, defaultSchemas)
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
@@ -515,8 +1112,8 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Object
     query
   )
 
-  const methodName = generateLookupName(entity, index, relation)
-  return objProp(methodName, fn)
+  const methodName = generateLookupMethodName(entity, index, relation)
+  return exportConst(exportName(entityName, methodName), fn)
 }
 
 /**
@@ -551,7 +1148,7 @@ const isUniqueLookup = (entity: TableEntity, index: IndexDef): boolean => {
 }
 
 /** Generate lookup methods for all eligible indexes, deduplicating by column */
-const generateLookupMethods = (ctx: GenerationContext): readonly n.ObjectProperty[] => {
+const generateLookupMethods = (ctx: GenerationContext): readonly n.Statement[] => {
   const eligibleIndexes = ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
 
@@ -582,27 +1179,58 @@ export const kyselyQueriesPlugin = definePlugin({
   name: "kysely-queries",
   provides: ["queries", "queries:kysely"],
   requires: [],  // No dependency on types:kysely for now - uses external kysely-codegen types
-  configSchema: KyselyQueriesPluginConfig,
+  configSchema: KyselyQueriesPluginConfigSchema,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,
     symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
   },
 
-  run: (ctx, config) => {
+  run: (ctx, rawConfig) => {
+    // Resolve config with function defaults
+    const config: KyselyQueriesPluginConfig = {
+      ...rawConfig,
+      exportName: rawConfig.exportName ?? defaultExportName,
+      functionExportName: rawConfig.functionExportName ?? defaultFunctionExportName,
+    }
+
     const enums = getEnumEntities(ctx.ir)
     const defaultSchemas = ctx.ir.schemas
-    const { dbTypesPath, executeQueries, generateListMany } = config
+    const { dbTypesPath, executeQueries, generateListMany, exportName, functionExportName } = config
+
+    // Pre-compute function groupings by return entity name
+    // Functions returning entities go in that entity's file; scalars go in functions.ts
+    const functionsByEntity = new Map<string, FunctionEntity[]>()
+    const scalarFunctions: FunctionEntity[] = []
+
+    if (config.generateFunctions) {
+      const { queries, mutations } = getGeneratableFunctions(ctx.ir)
+      const allFunctions = [...queries, ...mutations]
+
+      for (const fn of allFunctions) {
+        const resolved = resolveReturnType(fn, ctx.ir)
+        if (resolved.returnEntity) {
+          const entityName = resolved.returnEntity.name
+          const existing = functionsByEntity.get(entityName) ?? []
+          functionsByEntity.set(entityName, [...existing, fn])
+        } else {
+          scalarFunctions.push(fn)
+        }
+      }
+    }
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany }
-        
-        const methods = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
-
-        if (methods.length === 0) return
-
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName }
+        
+        const crudStatements = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
+
+        // Get functions that return this entity
+        const entityFunctions = functionsByEntity.get(entity.name) ?? []
+
+        if (crudStatements.length === 0 && entityFunctions.length === 0) return
+
         const fileNameCtx: FileNameContext = {
           entityName,
           pgName: entity.pgName,
@@ -612,18 +1240,13 @@ export const kyselyQueriesPlugin = definePlugin({
         }
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
 
-        // Build the namespace object: export const users = { findById, findMany, ... }
-        const namespaceObj = b.objectExpression(
-          methods.map(m => m as Parameters<typeof b.objectExpression>[0][0])
-        )
+        // All statements for the file: CRUD methods + function wrappers
+        const statements: n.Statement[] = [...crudStatements]
 
-        // Lowercase entity name for the namespace variable
-        const namespaceName = entity.pgName
-
-        const constDecl = b.variableDeclaration("const", [
-          b.variableDeclarator(id(namespaceName), namespaceObj)
-        ])
-        const exportDecl = b.exportNamedDeclaration(constDecl, []) as n.Statement
+        // Add function wrappers as flat exports
+        for (const fn of entityFunctions) {
+          statements.push(generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName))
+        }
 
         const file = ctx
           .file(filePath)
@@ -665,7 +1288,65 @@ export const kyselyQueriesPlugin = definePlugin({
           file.import({ kind: "package", types: ["Updateable"], from: "kysely" })
         }
 
-        file.ast(conjure.program(exportDecl)).emit()
+        // Import types needed by function args (for functions grouped into this file)
+        if (entityFunctions.length > 0) {
+          const fnTypeImports = collectFunctionTypeImports(entityFunctions, ctx.ir)
+          // Remove the entity's own type (already in scope or self-referential)
+          fnTypeImports.delete(entity.name)
+          if (fnTypeImports.size > 0) {
+            file.import({ kind: "relative", types: [...fnTypeImports], from: dbTypesPath })
+          }
+        }
+
+        file.ast(conjure.program(...statements)).emit()
       })
+
+    // Generate files for composite types that have functions returning them
+    if (config.generateFunctions) {
+      const composites = getCompositeEntities(ctx.ir)
+      for (const composite of composites) {
+        const compositeFunctions = functionsByEntity.get(composite.name) ?? []
+        if (compositeFunctions.length === 0) continue
+
+        const filePath = `${config.outputDir}/${composite.name}.ts`
+        const statements = compositeFunctions.map(fn =>
+          generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+        )
+
+        const file = ctx.file(filePath)
+        file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+        file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+
+        // Import the composite type and any types needed by function args
+        const fnTypeImports = collectFunctionTypeImports(compositeFunctions, ctx.ir)
+        fnTypeImports.add(composite.name) // Always import the composite type
+        file.import({ kind: "relative", types: [...fnTypeImports], from: dbTypesPath })
+
+        file.ast(conjure.program(...statements)).emit()
+      }
+    }
+
+    // Generate functions.ts for scalar-returning functions only
+    if (config.generateFunctions && scalarFunctions.length > 0) {
+      const filePath = `${config.outputDir}/${config.functionsFile}`
+
+      const statements = scalarFunctions.map(fn =>
+        generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+      )
+
+      const file = ctx.file(filePath)
+
+      // Import Kysely type and DB
+      file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+      file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+
+      // Import any types needed for function args (scalars don't need return type imports)
+      const typeImports = collectFunctionTypeImports(scalarFunctions, ctx.ir)
+      if (typeImports.size > 0) {
+        file.import({ kind: "relative", types: [...typeImports], from: dbTypesPath })
+      }
+
+      file.ast(conjure.program(...statements)).emit()
+    }
   },
 })
