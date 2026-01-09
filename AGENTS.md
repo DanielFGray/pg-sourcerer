@@ -192,6 +192,11 @@ packages/pg-sourcerer/src/
 ├── lib/
 │   └── conjure.ts        # AST builders for code generation
 ├── plugins/
+│   ├── arktype.ts        # ArkType schema plugin
+│   ├── effect-model.ts   # Effect Schema plugin
+│   ├── kysely-queries.ts # Kysely query builders plugin
+│   ├── kysely-types.ts   # Kysely-compatible types plugin
+│   ├── sql-queries.ts    # Raw SQL query functions plugin
 │   ├── types.ts          # TypeScript types plugin
 │   └── zod.ts            # Zod schema plugin
 └── services/

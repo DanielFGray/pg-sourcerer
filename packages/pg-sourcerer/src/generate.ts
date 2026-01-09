@@ -18,10 +18,7 @@ import { Effect, Layer } from "effect"
 import { FileSystem, Path, Command, CommandExecutor } from "@effect/platform"
 import type { ResolvedConfig } from "./config.js"
 import type { ConfiguredPlugin, RunResult } from "./services/plugin-runner.js"
-import {
-  ConfigLoaderService,
-  ConfigLoaderLive,
-} from "./services/config-loader.js"
+import { ConfigService } from "./services/config.js"
 import {
   DatabaseIntrospectionService,
   DatabaseIntrospectionLive,
@@ -55,10 +52,6 @@ import {
  * Options for the generate function
  */
 export interface GenerateOptions {
-  /** Path to config file (optional - will search if not provided) */
-  readonly configPath?: string
-  /** Directory to search for config from (default: cwd) */
-  readonly searchFrom?: string
   /** Override output directory from config */
   readonly outputDir?: string
   /** Dry run - don't write files, just return what would be written */
@@ -142,32 +135,26 @@ const runFormatter = (
 }
 
 /**
- * The main generate pipeline
+ * The main generate pipeline.
+ *
+ * Config is provided via ConfigService layer (Effect DI).
+ * Use ConfigFromFile or ConfigWithInit layers depending on context.
  */
 export const generate = (
   options: GenerateOptions = {}
 ): Effect.Effect<
   GenerateResult,
   GenerateError,
-  | ConfigLoaderService
+  | ConfigService
   | DatabaseIntrospectionService
   | FileSystem.FileSystem
   | Path.Path
   | CommandExecutor.CommandExecutor
 > =>
   Effect.gen(function* () {
-    // 1. Load configuration
+    // 1. Get configuration from Effect context (DI)
     yield* Effect.logDebug("Loading configuration...")
-    const configLoader = yield* ConfigLoaderService
-    const config = yield* configLoader.load(
-      // Only include defined properties to satisfy exactOptionalPropertyTypes
-      Object.fromEntries(
-        Object.entries({
-          configPath: options.configPath,
-          searchFrom: options.searchFrom,
-        }).filter(([, v]) => v !== undefined)
-      ) as { configPath?: string; searchFrom?: string }
-    )
+    const config = yield* ConfigService
     yield* Effect.logDebug(`Config schemas: ${config.schemas.join(", ")}`)
     yield* Effect.logDebug(`Config plugins: ${config.plugins.length}`)
 
@@ -294,27 +281,42 @@ export const generate = (
   })
 
 /**
- * Layer that provides all services needed for generate()
- * 
+ * Layer that provides database introspection for generate().
+ *
+ * Note: ConfigService is NOT included here - it must be provided separately
+ * via ConfigFromFile, ConfigWithInit, or ConfigTest layers.
+ *
  * Note: PluginRunner is NOT included here because it needs to be
  * created with the user's inflection config (from loaded config).
  * The generate() function creates the PluginRunner internally.
  */
-export const GenerateLive = Layer.mergeAll(
-  ConfigLoaderLive,
-  Layer.effect(DatabaseIntrospectionService, DatabaseIntrospectionLive),
+export const GenerateLive = Layer.effect(
+  DatabaseIntrospectionService,
+  DatabaseIntrospectionLive,
 )
 
 /**
- * Run generate with all dependencies provided
+ * Run generate with database introspection provided.
  *
- * This is the main entry point for programmatic usage.
- * Requires FileSystem, Path, and CommandExecutor from @effect/platform.
+ * ConfigService must still be provided by the caller via one of:
+ * - ConfigFromFile (load from disk, fail if not found)
+ * - ConfigWithInit (load from disk, or run interactive init)
+ * - ConfigTest (provide config directly for testing)
+ *
+ * @example
+ * ```typescript
+ * import { ConfigFromFile } from "./services/config.js"
+ *
+ * runGenerate({ dryRun: true }).pipe(
+ *   Effect.provide(ConfigFromFile()),
+ *   // ... platform layers
+ * )
+ * ```
  */
 export const runGenerate = (
   options: GenerateOptions = {}
 ): Effect.Effect<
   GenerateResult,
   GenerateError,
-  FileSystem.FileSystem | Path.Path | CommandExecutor.CommandExecutor
+  ConfigService | FileSystem.FileSystem | Path.Path | CommandExecutor.CommandExecutor
 > => generate(options).pipe(Effect.provide(GenerateLive))

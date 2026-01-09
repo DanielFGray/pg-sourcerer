@@ -12,7 +12,7 @@ import { FileSystem, Path } from "@effect/platform"
 import { NodeFileSystem, NodePath, NodeCommandExecutor } from "@effect/platform-node"
 
 import { generate } from "../generate.js"
-import { ConfigLoaderService } from "../services/config-loader.js"
+import { ConfigTest } from "../services/config.js"
 import { DatabaseIntrospectionLive, DatabaseIntrospectionService } from "../services/introspection.js"
 import { typesPlugin } from "../plugins/types.js"
 import { zodPlugin } from "../plugins/zod.js"
@@ -38,14 +38,6 @@ const IntrospectionLayer = Layer.effect(
   DatabaseIntrospectionLive
 )
 
-/**
- * Create a stub ConfigLoader that returns the given config
- */
-const makeConfigLoaderStub = (config: ResolvedConfig) =>
-  Layer.succeed(ConfigLoaderService, {
-    load: () => Effect.succeed(config),
-  })
-
 // Base test layer with platform + introspection
 const BaseTestLayer = Layer.mergeAll(PlatformLayer, IntrospectionLayer)
 
@@ -68,7 +60,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           }
 
           const result = yield* generate({ outputDir: tmpDir }).pipe(
-            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(ConfigTest(config)),
             Effect.provide(QuietLogger)
           )
 
@@ -158,7 +150,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           }
 
           const result = yield* generate({ outputDir: tmpDir, dryRun: true }).pipe(
-            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(ConfigTest(config)),
             Effect.provide(QuietLogger)
           )
 
@@ -196,7 +188,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           }
 
           const result = yield* generate({ outputDir: tmpDir }).pipe(
-            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(ConfigTest(config)),
             Effect.provide(QuietLogger)
           )
 
@@ -238,7 +230,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
           }
 
           const result = yield* generate({ outputDir: tmpDir }).pipe(
-            Effect.provide(makeConfigLoaderStub(config)),
+            Effect.provide(ConfigTest(config)),
             Effect.provide(QuietLogger)
           )
 

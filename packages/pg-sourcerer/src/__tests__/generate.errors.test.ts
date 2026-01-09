@@ -11,7 +11,7 @@ import { FileSystem } from "@effect/platform"
 import { NodeFileSystem, NodePath, NodeCommandExecutor } from "@effect/platform-node"
 
 import { generate } from "../generate.js"
-import { ConfigLoaderService } from "../services/config-loader.js"
+import { ConfigService, ConfigTest } from "../services/config.js"
 import { DatabaseIntrospectionService } from "../services/introspection.js"
 import { definePlugin } from "../services/plugin.js"
 import { typesPlugin } from "../plugins/types.js"
@@ -43,41 +43,28 @@ const IntrospectionStubLayer = Layer.succeed(DatabaseIntrospectionService, {
 })
 
 /**
- * Create a stub ConfigLoader that returns the given config
- */
-const makeConfigLoaderStub = (config: ResolvedConfig) =>
-  Layer.succeed(ConfigLoaderService, {
-    load: () => Effect.succeed(config),
-  })
-
-/**
- * Create a stub ConfigLoader that fails with ConfigNotFound
+ * Create a stub ConfigService that fails with ConfigNotFound at layer construction.
+ * Uses Layer.fail since the error happens during service construction.
  */
 const makeConfigNotFoundStub = (searchPaths: string[]) =>
-  Layer.succeed(ConfigLoaderService, {
-    load: () =>
-      Effect.fail(
-        new ConfigNotFound({
-          message: "No configuration file found",
-          searchPaths,
-        })
-      ),
-  })
+  Layer.fail(
+    new ConfigNotFound({
+      message: "No configuration file found",
+      searchPaths,
+    }),
+  )
 
 /**
- * Create a stub ConfigLoader that fails with ConfigInvalid
+ * Create a stub ConfigService that fails with ConfigInvalid at layer construction.
  */
 const makeConfigInvalidStub = (path: string, errors: string[]) =>
-  Layer.succeed(ConfigLoaderService, {
-    load: () =>
-      Effect.fail(
-        new ConfigInvalid({
-          message: `Invalid configuration in ${path}`,
-          path,
-          errors,
-        })
-      ),
-  })
+  Layer.fail(
+    new ConfigInvalid({
+      message: `Invalid configuration in ${path}`,
+      path,
+      errors,
+    }),
+  )
 
 /**
  * Create a stub DatabaseIntrospection that fails with ConnectionFailed
@@ -197,7 +184,7 @@ layer(DatabaseErrorTestLayer)("Database Error Handling", (it) => {
         }
 
         const exit = yield* generate({ outputDir: tmpDir }).pipe(
-          Effect.provide(makeConfigLoaderStub(config)),
+          Effect.provide(ConfigTest(config)),
           Effect.provide(makeConnectionFailedStub()),
           Effect.provide(QuietLogger),
           Effect.exit
@@ -259,7 +246,7 @@ layer(PluginTestLayer)("Plugin Error Handling", (it) => {
         }
 
         const exit = yield* generate({ outputDir: tmpDir }).pipe(
-          Effect.provide(makeConfigLoaderStub(config)),
+          Effect.provide(ConfigTest(config)),
           Effect.provide(QuietLogger),
           Effect.exit
         )
@@ -312,7 +299,7 @@ layer(PluginTestLayer)("Plugin Error Handling", (it) => {
         }
 
         const exit = yield* generate({ outputDir: tmpDir }).pipe(
-          Effect.provide(makeConfigLoaderStub(config)),
+          Effect.provide(ConfigTest(config)),
           Effect.provide(QuietLogger),
           Effect.exit
         )
@@ -364,7 +351,7 @@ layer(PluginTestLayer)("Plugin Error Handling", (it) => {
         }
 
         const exit = yield* generate({ outputDir: tmpDir }).pipe(
-          Effect.provide(makeConfigLoaderStub(config)),
+          Effect.provide(ConfigTest(config)),
           Effect.provide(QuietLogger),
           Effect.exit
         )
@@ -425,7 +412,7 @@ layer(PluginTestLayer)("Plugin Error Handling", (it) => {
         }
 
         const exit = yield* generate({ outputDir: tmpDir }).pipe(
-          Effect.provide(makeConfigLoaderStub(config)),
+          Effect.provide(ConfigTest(config)),
           Effect.provide(QuietLogger),
           Effect.exit
         )

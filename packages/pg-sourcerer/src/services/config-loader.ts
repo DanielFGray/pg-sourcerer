@@ -35,7 +35,7 @@ export class ConfigLoaderService extends Context.Tag("ConfigLoader")<
 /**
  * Default config file names to search for
  */
-const CONFIG_FILE_NAMES = [
+export const CONFIG_FILE_NAMES = [
   "pgsourcerer.config.ts",
   "pgsourcerer.config.js",
   "pgsourcerer.config.mjs",
