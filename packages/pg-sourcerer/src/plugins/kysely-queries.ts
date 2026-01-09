@@ -23,13 +23,12 @@ const { toExpr } = cast
 
 const KyselyQueriesPluginConfig = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "kysely-queries" }),
-  header: S.optional(S.String),
   /** 
    * Path to import DB type from (relative to outputDir). 
-   * Defaults to "../DB.js" which works with kysely-codegen's DB.d.ts output.
-   * For node16/nodenext module resolution, use ".js" extension even for .d.ts files.
+   * Defaults to "../db.js" which works with kysely-types plugin output.
+   * For node16/nodenext module resolution, use ".js" extension even for .ts files.
    */
-  dbTypesPath: S.optionalWith(S.String, { default: () => "../DB.js" }),
+  dbTypesPath: S.optionalWith(S.String, { default: () => "../db.js" }),
   /**
    * Whether to call .execute() / .executeTakeFirst() on queries.
    * When true (default), methods return Promise<Row> or Promise<Row[]>.
@@ -54,6 +53,7 @@ interface GenerationContext {
   readonly entity: TableEntity
   readonly enums: readonly EnumEntity[]
   readonly ir: SemanticIR
+  readonly defaultSchemas: readonly string[]
   readonly dbTypesPath: string
   readonly executeQueries: boolean
   readonly generateListMany: boolean
@@ -61,15 +61,19 @@ interface GenerationContext {
 
 /**
  * Get the Kysely table interface name from the entity.
- * Converts schema.table to PascalCase: app_public.users -> AppPublicUsers
- * Uses the inflection utility to match kysely-codegen's naming convention.
+ * Uses entity.name which is already PascalCase from inflection (e.g., Users).
  */
-const getTableTypeName = (entity: TableEntity): string =>
-  `${inflect.pascalCase(entity.schemaName)}${inflect.pascalCase(entity.pgName)}`
+const getTableTypeName = (entity: TableEntity): string => entity.name
 
-/** Get the schema-qualified table name for Kysely */
-const getTableRef = (entity: TableEntity): string =>
-  `${entity.schemaName}.${entity.pgName}`
+/** 
+ * Get the table reference for Kysely queries.
+ * Uses schema-qualified name only if the schema is NOT in defaultSchemas.
+ * This matches the keys in the DB interface from kysely-types plugin.
+ */
+const getTableRef = (entity: TableEntity, defaultSchemas: readonly string[]): string =>
+  defaultSchemas.includes(entity.schemaName)
+    ? entity.pgName
+    : `${entity.schemaName}.${entity.pgName}`
 
 /** Find a field in the row shape by column name */
 const findRowField = (entity: TableEntity, columnName: string): Field | undefined =>
@@ -224,14 +228,14 @@ const objProp = (key: string, value: n.Expression): n.ObjectProperty => {
  * findById: (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
  */
 const generateFindById = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries } = ctx
+  const { entity, executeQueries, defaultSchemas } = ctx
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
   const pkField = findRowField(entity, pkColName)
   if (!pkField) return undefined
 
-  const tableRef = getTableRef(entity)
+  const tableRef = getTableRef(entity, defaultSchemas)
   const fieldName = pkField.name
   const fieldType = getFieldTypeAst(pkField, ctx)
 
@@ -273,10 +277,10 @@ const paramWithDefault = (name: string, defaultValue: n.Expression): n.Assignmen
  *   .limit(limit).offset(offset).execute()
  */
 const generateListMany = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries } = ctx
+  const { entity, executeQueries, defaultSchemas } = ctx
   if (!entity.permissions.canSelect) return undefined
 
-  const tableRef = getTableRef(entity)
+  const tableRef = getTableRef(entity, defaultSchemas)
 
   // Build query: db.selectFrom('table').selectAll().limit(limit).offset(offset)
   let query: n.Expression = chain(
@@ -311,10 +315,10 @@ const generateListMany = (ctx: GenerationContext): n.ObjectProperty | undefined 
  * create: (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
  */
 const generateCreate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries } = ctx
+  const { entity, executeQueries, defaultSchemas } = ctx
   if (!entity.permissions.canInsert) return undefined
 
-  const tableRef = getTableRef(entity)
+  const tableRef = getTableRef(entity, defaultSchemas)
   const tableTypeName = getTableTypeName(entity)
 
   // db.insertInto('table').values(data).returningAll()
@@ -344,14 +348,14 @@ const generateCreate = (ctx: GenerationContext): n.ObjectProperty | undefined =>
  * update: (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
  */
 const generateUpdate = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries } = ctx
+  const { entity, executeQueries, defaultSchemas } = ctx
   if (!entity.primaryKey || !entity.permissions.canUpdate) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
   const pkField = findRowField(entity, pkColName)
   if (!pkField) return undefined
 
-  const tableRef = getTableRef(entity)
+  const tableRef = getTableRef(entity, defaultSchemas)
   const fieldName = pkField.name
   const fieldType = getFieldTypeAst(pkField, ctx)
   const tableTypeName = getTableTypeName(entity)
@@ -388,14 +392,14 @@ const generateUpdate = (ctx: GenerationContext): n.ObjectProperty | undefined =>
  * delete: (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
  */
 const generateDelete = (ctx: GenerationContext): n.ObjectProperty | undefined => {
-  const { entity, executeQueries } = ctx
+  const { entity, executeQueries, defaultSchemas } = ctx
   if (!entity.primaryKey || !entity.permissions.canDelete) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
   const pkField = findRowField(entity, pkColName)
   if (!pkField) return undefined
 
-  const tableRef = getTableRef(entity)
+  const tableRef = getTableRef(entity, defaultSchemas)
   const fieldName = pkField.name
   const fieldType = getFieldTypeAst(pkField, ctx)
 
@@ -468,8 +472,8 @@ const generateLookupName = (
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
 const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.ObjectProperty => {
-  const { entity, executeQueries } = ctx
-  const tableRef = getTableRef(entity)
+  const { entity, executeQueries, defaultSchemas } = ctx
+  const tableRef = getTableRef(entity, defaultSchemas)
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
   const fieldName = field?.name ?? index.columns[0]!
@@ -586,12 +590,13 @@ export const kyselyQueriesPlugin = definePlugin({
 
   run: (ctx, config) => {
     const enums = getEnumEntities(ctx.ir)
+    const defaultSchemas = ctx.ir.schemas
     const { dbTypesPath, executeQueries, generateListMany } = config
 
     getTableEntities(ctx.ir)
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, dbTypesPath, executeQueries, generateListMany }
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany }
         
         const methods = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
 
@@ -622,9 +627,6 @@ export const kyselyQueriesPlugin = definePlugin({
 
         const file = ctx
           .file(filePath)
-          .header(
-            config.header ? `${config.header}\n` : "// This file is auto-generated. Do not edit.\n"
-          )
 
         // Import Kysely type and DB from kysely-codegen output
         file.import({ kind: "package", types: ["Kysely"], from: "kysely" })

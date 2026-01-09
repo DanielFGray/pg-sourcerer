@@ -160,7 +160,6 @@ export {
   type WriteOptions,
   FileWriterSvc,
   createFileWriter,
-  defaultHeader,
   FileWriterLive,
 } from "./services/file-writer.js"
 
@@ -223,6 +222,7 @@ export { arktypePlugin } from "./plugins/arktype.js"
 export { effectModelPlugin } from "./plugins/effect-model.js"
 export { sqlQueriesPlugin } from "./plugins/sql-queries.js"
 export { kyselyQueriesPlugin } from "./plugins/kysely-queries.js"
+export { kyselyTypesPlugin } from "./plugins/kysely-types.js"
 
 // Generate orchestration
 export {

@@ -83,7 +83,7 @@ describe("Kysely Queries Plugin", () => {
       })
     )
 
-    it.effect("uses schema-qualified table names", () =>
+    it.effect("uses unqualified table names for default schemas", () =>
       Effect.gen(function* () {
         const ir = yield* Effect.promise(() => buildTestIR(["app_public"]))
         const testLayer = createTestLayer(ir)
@@ -94,8 +94,10 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // Should use schema.table format
-        expect(userFile?.content).toContain('"app_public.users"')
+        // When schema is in defaultSchemas, use unqualified name to match DB interface
+        expect(userFile?.content).toContain('"users"')
+        // Should NOT contain schema-qualified name
+        expect(userFile?.content).not.toContain('"app_public.users"')
       })
     )
   })
