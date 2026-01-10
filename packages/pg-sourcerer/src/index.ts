@@ -227,11 +227,15 @@ export {
 // Plugins
 export { typesPlugin } from "./plugins/types.js"
 export { zodPlugin } from "./plugins/zod.js"
+export { valibotPlugin } from "./plugins/valibot.js"
 export { arktypePlugin } from "./plugins/arktype.js"
 export { effectModelPlugin } from "./plugins/effect-model.js"
 export { sqlQueriesPlugin } from "./plugins/sql-queries.js"
 export { kyselyQueriesPlugin } from "./plugins/kysely-queries.js"
 export { kyselyTypesPlugin } from "./plugins/kysely-types.js"
+export { httpElysiaPlugin } from "./plugins/http-elysia.js"
+export { httpTrpcPlugin } from "./plugins/http-trpc.js"
+export { httpOrpcPlugin } from "./plugins/http-orpc.js"
 
 // Generate orchestration
 export {
