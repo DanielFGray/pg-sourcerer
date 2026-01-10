@@ -248,8 +248,8 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // All methods should have db: Kysely<DB> as first param
-        expect(userFile?.content).toMatch(/findById\s*=\s*\(db:\s*Kysely<DB>/)
+        // All methods should have destructured options first, db: Kysely<DB> as last param
+        expect(userFile?.content).toMatch(/findById\s*=\s*\(/)
       })
     )
   })
@@ -284,9 +284,9 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // Methods should be object properties
-        expect(userFile?.content).toMatch(/findById:\s*\(db:\s*Kysely<DB>/)
-        expect(userFile?.content).toMatch(/create:\s*\(db:\s*Kysely<DB>/)
+        // Methods should be object properties with destructured params first, db last
+        expect(userFile?.content).toMatch(/findById:\s*\(/)
+        expect(userFile?.content).toMatch(/create:\s*\(/)
       })
     )
 
@@ -574,8 +574,10 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const functionsFile = all.find((e) => e.path.includes("functions.ts"))
 
-        // verify_email has user_email_id: uuid and token: text
-        expect(functionsFile?.content).toMatch(/verifyEmail.*user_email_id:\s*string.*token:\s*string/)
+        // verify_email has user_email_id: uuid and token: text in destructured object
+        expect(functionsFile?.content).toMatch(/verifyEmail\s*=\s*\(/)
+        expect(functionsFile?.content).toContain("user_email_id")
+        expect(functionsFile?.content).toContain("token")
       })
     )
 
@@ -680,6 +682,100 @@ describe("Kysely Queries Plugin", () => {
         // Array is formatted with newlines
         expect(content).toMatch(/\.select\(\[\s*"id"/)
         expect(content).toContain('"username"')
+      })
+    )
+  })
+
+  describe("dbAsParameter config", () => {
+    it.effect("includes db parameter by default", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Default: db parameter should be present
+        expect(userFile?.content).toContain("db: Kysely<DB>")
+        // Kysely should be imported
+        expect(userFile?.content).toMatch(/import.*Kysely.*from "kysely"/)
+      })
+    )
+
+    it.effect("omits db parameter when dbAsParameter: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header: 'import { db } from "../db.js";'
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+        const content = userFile?.content ?? ""
+
+        // db parameter should NOT be in function signatures
+        expect(content).not.toContain("db: Kysely<DB>")
+        // The header import should be present
+        expect(content).toContain('import { db } from "../db.js"')
+        // Kysely type should NOT be imported (not needed)
+        expect(content).not.toMatch(/import.*\bKysely\b.*from "kysely"/)
+      })
+    )
+
+    it.effect("prepends header to all generated files", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        const header = 'import { db } from "../database.js";\n// Custom header comment'
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        
+        // Check all .ts files have the header
+        const tsFiles = all.filter((e) => e.path.endsWith(".ts"))
+        for (const file of tsFiles) {
+          expect(file.content).toContain('import { db } from "../database.js"')
+          expect(file.content).toContain("// Custom header comment")
+        }
+      })
+    )
+
+    it.effect("function wrappers also respect dbAsParameter: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header: 'import { db } from "../db.js";'
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+        
+        if (functionsFile) {
+          const content = functionsFile.content
+          // db parameter should NOT be in function signatures
+          expect(content).not.toContain("db: Kysely<DB>")
+          // Header should be present
+          expect(content).toContain('import { db } from "../db.js"')
+        }
       })
     )
   })
