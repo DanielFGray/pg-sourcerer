@@ -473,7 +473,10 @@ const buildFileNameContext = (
  */
 export const effectModelPlugin = definePlugin({
   name: "effect-model",
-  provides: ["models:effect", "models"],
+  provides: config =>
+    config.exportTypes
+      ? ["models:effect", "models", "types"]
+      : ["models:effect", "models"],
   configSchema: EffectModelPluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,

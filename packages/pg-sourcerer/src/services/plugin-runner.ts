@@ -61,10 +61,19 @@ const expandCapability = (cap: CapabilityKey): readonly CapabilityKey[] =>
     Arr.map(n => cap.split(":").slice(0, n).join(":")),
   );
 
+/**
+ * Resolve provides from a plugin - handles both static arrays and config-dependent functions.
+ * Must be called with validated/decoded config (defaults applied).
+ */
+const resolveProvides = (plugin: ConfiguredPlugin["plugin"], config: unknown): readonly CapabilityKey[] =>
+  typeof plugin.provides === "function"
+    ? plugin.provides(config)
+    : plugin.provides;
+
 /** Extract (capability, pluginName) pairs from plugins with expansion */
 const capabilityPairs = (plugins: readonly ConfiguredPlugin[]) =>
-  plugins.flatMap(({ plugin }) =>
-    plugin.provides.flatMap(expandCapability).map(cap => [cap, plugin.name] as const),
+  plugins.flatMap(({ plugin, config }) =>
+    resolveProvides(plugin, config).flatMap(expandCapability).map(cap => [cap, plugin.name] as const),
   );
 
 /** Extract (required, pluginName) pairs from plugins */

@@ -47,9 +47,13 @@ const ArkTypePluginConfig = S.Struct({
   /** Export inferred types alongside schemas */
   exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
   /** How to represent enum values: 'strings' uses union literals, 'enum' uses TS enum */
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
+    default: () => "strings" as const,
+  }),
   /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
+  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
+    default: () => "separate" as const,
+  }),
 });
 
 type ArkTypePluginConfig = S.Schema.Type<typeof ArkTypePluginConfig>;
@@ -430,7 +434,10 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
  */
 export const arktypePlugin = definePlugin({
   name: "arktype",
-  provides: ["schemas:arktype", "schemas"],
+  provides: config =>
+    config.exportTypes
+      ? ["schemas:arktype", "schemas", "types"]
+      : ["schemas:arktype", "schemas"],
   configSchema: ArkTypePluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,

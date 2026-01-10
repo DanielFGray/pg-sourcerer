@@ -72,8 +72,23 @@ describe("Effect Model Plugin", () => {
     })
 
     it("provides model capabilities", () => {
-      expect(effectModelPlugin.plugin.provides).toContain("models:effect")
-      expect(effectModelPlugin.plugin.provides).toContain("models")
+      // provides is a function that depends on config - call with exportTypes to test
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides
+      expect(capabilities).toContain("models:effect")
+      expect(capabilities).toContain("models")
+    })
+
+    it("provides types capability when exportTypes is true", () => {
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides
+      expect(capabilities).toContain("types")
+    })
+
+    it("does not provide types capability when exportTypes is false", () => {
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: false } as any) : provides
+      expect(capabilities).not.toContain("types")
     })
 
     it("has no requirements", () => {

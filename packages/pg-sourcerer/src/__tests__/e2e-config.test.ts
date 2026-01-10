@@ -296,7 +296,7 @@ layer(BaseTestLayer)("E2E Config Integration", (it) => {
           plugins: [
             typesPlugin({ outputDir: "types" }),
             zodPlugin({ outputDir: "zod", exportTypes: false }),
-            effectModelPlugin({ outputDir: "models" }),
+            effectModelPlugin({ outputDir: "models", exportTypes: false }),
           ],
         })
 
@@ -351,7 +351,7 @@ layer(BaseTestLayer)("E2E Config Integration", (it) => {
           },
           plugins: [
             typesPlugin({ outputDir: "types" }),
-            zodPlugin({ outputDir: "zod", exportTypes: true }),
+            zodPlugin({ outputDir: "zod", exportTypes: false }),
           ],
         })
 

@@ -72,8 +72,23 @@ describe("ArkType Plugin", () => {
     });
 
     it("provides schemas capabilities", () => {
-      expect(arktypePlugin.plugin.provides).toContain("schemas:arktype");
-      expect(arktypePlugin.plugin.provides).toContain("schemas");
+      // provides is a function that depends on config - call with exportTypes to test
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides;
+      expect(capabilities).toContain("schemas:arktype");
+      expect(capabilities).toContain("schemas");
+    });
+
+    it("provides types capability when exportTypes is true", () => {
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides;
+      expect(capabilities).toContain("types");
+    });
+
+    it("does not provide types capability when exportTypes is false", () => {
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: false } as any) : provides;
+      expect(capabilities).not.toContain("types");
     });
 
     it("has no requirements", () => {

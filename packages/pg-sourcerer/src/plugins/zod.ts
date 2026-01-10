@@ -363,7 +363,10 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
  */
 export const zodPlugin = definePlugin({
   name: "zod",
-  provides: ["schemas:zod", "schemas"],
+  provides: config =>
+    config.exportTypes
+      ? ["schemas:zod", "schemas", "types"]
+      : ["schemas:zod", "schemas"],
   configSchema: ZodPluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,
