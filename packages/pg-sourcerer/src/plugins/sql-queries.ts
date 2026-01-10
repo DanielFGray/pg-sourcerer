@@ -12,7 +12,7 @@ import { hex, type SqlStyle, type QueryParts } from "../lib/hex.js";
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js";
 import { inflect } from "../services/inflection.js";
 
-const { ts, b, param } = conjure;
+const { ts, b, param, asyncFn } = conjure;
 
 // ============================================================================
 // Configuration
@@ -177,7 +177,7 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
   const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
   const name = exportName(entityName, "FindById");
-  const fn = hex.asyncFn(name, [param.pick([fieldName], rowType)], [
+  const fn = asyncFn(name, [param.pick([fieldName], rowType)], [
     varDecl,
     b.returnStatement(b.identifier("result")),
   ]);
@@ -198,7 +198,7 @@ const generateFindMany = (ctx: GenerationContext): MethodDef | undefined => {
   };
 
   const name = exportName(entityName, "FindManys");
-  const fn = hex.asyncFn(
+  const fn = asyncFn(
     name,
     [
       param.destructured([
@@ -232,7 +232,7 @@ const generateDelete = (ctx: GenerationContext): MethodDef | undefined => {
   // Delete returns void, no type parameter needed
   const queryExpr = hex.query(sqlStyle, parts);
   const name = exportName(entityName, "Delete");
-  const fn = hex.asyncFn(name, [param.pick([fieldName], rowType)], [
+  const fn = asyncFn(name, [param.pick([fieldName], rowType)], [
     b.expressionStatement(queryExpr),
   ]);
 
@@ -277,7 +277,7 @@ const generateInsert = (ctx: GenerationContext): MethodDef | undefined => {
   const dataParam = param.typed("data", ts.ref(insertType));
 
   const name = exportName(entityName, "Insert");
-  const fn = hex.asyncFn(name, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]);
+  const fn = asyncFn(name, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]);
 
   return { name, fn };
 };
@@ -365,7 +365,7 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
     const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
     const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-    const fn = hex.asyncFn(name, [paramNode], [
+    const fn = asyncFn(name, [paramNode], [
       varDecl,
       b.returnStatement(b.identifier("result")),
     ]);
@@ -374,7 +374,7 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   }
 
   // Non-unique: return all matching rows
-  const fn = hex.asyncFn(name, [paramNode], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))));
+  const fn = asyncFn(name, [paramNode], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))));
 
   return { name, fn };
 };
@@ -732,7 +732,7 @@ const generateFunctionWrapper = (
     body = [varDecl, b.returnStatement(b.identifier("result"))];
   }
 
-  const fnDecl = hex.asyncFn(name, params, body);
+  const fnDecl = asyncFn(name, params, body);
   return { name, fn: fnDecl };
 };
 

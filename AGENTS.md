@@ -177,7 +177,8 @@ packages/pg-sourcerer/src/
 │   ├── smart-tags.ts     # SmartTags Effect Schema
 │   └── semantic-ir.ts    # IR types and builder
 ├── lib/
-│   └── conjure.ts        # AST builders for code generation
+│   ├── conjure.ts        # AST builders for code generation
+│   └── hex.ts            # SQL-specific query builders only
 ├── plugins/
 │   ├── arktype.ts        # ArkType schema plugin
 │   ├── effect-model.ts   # Effect Schema plugin
