@@ -916,7 +916,12 @@ export const sqlQueriesPlugin = definePlugin({
           const fnTypeImports = collectFunctionTypeImports(entityFunctions, ctx.ir);
           // Remove the entity's own type (already in scope)
           fnTypeImports.delete(entity.name);
-          // TODO: Import these types when symbol registry supports it
+          for (const typeName of fnTypeImports) {
+            file.import({
+              kind: "symbol",
+              ref: { capability: "types", entity: typeName },
+            });
+          }
         }
 
         file.ast(conjure.program(...statements)).emit();
@@ -948,7 +953,12 @@ export const sqlQueriesPlugin = definePlugin({
         // Import the composite type and any types needed by function args
         const fnTypeImports = collectFunctionTypeImports(compositeFunctions, ctx.ir);
         fnTypeImports.add(composite.name); // Always import the composite type
-        // TODO: Import these types when symbol registry supports it
+        for (const typeName of fnTypeImports) {
+          file.import({
+            kind: "symbol",
+            ref: { capability: "types", entity: typeName },
+          });
+        }
 
         file.ast(conjure.program(...statements)).emit();
       }
@@ -975,7 +985,12 @@ export const sqlQueriesPlugin = definePlugin({
 
       // Import types needed by function args
       const fnTypeImports = collectFunctionTypeImports(scalarFunctions, ctx.ir);
-      // TODO: Import these types when symbol registry supports it
+      for (const typeName of fnTypeImports) {
+        file.import({
+          kind: "symbol",
+          ref: { capability: "types", entity: typeName },
+        });
+      }
 
       file.ast(conjure.program(...statements)).emit();
     }

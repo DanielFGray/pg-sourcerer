@@ -283,7 +283,7 @@ const generateModelStatement = (
     node: conjure.b.exportNamedDeclaration(classDecl, []),
     symbol: {
       name: className,
-      capability: "models:effect",
+      capability: "models",
       entity: entity.name,
       isType: false,
     },
@@ -296,7 +296,7 @@ const generateModelStatement = (
 const generateEnumStatement = (enumEntity: EnumEntity): SymbolStatement =>
   exp.const(
     enumEntity.name,
-    { capability: "models:effect", entity: enumEntity.name },
+    { capability: "models", entity: enumEntity.name },
     buildEnumSchema({
       name: enumEntity.name,
       pgName: enumEntity.pgName,
@@ -358,17 +358,19 @@ const generateCompositeStatements = (
   }, obj());
 
   const structExpr = conjure.id("S").method("Struct", [fieldsObj.build()]).build();
-  const symbolCtx = { capability: "models:effect", entity: composite.name };
+  const modelSymbolCtx = { capability: "models", entity: composite.name };
 
-  const schemaStatement = exp.const(composite.name, symbolCtx, structExpr);
+  const schemaStatement = exp.const(composite.name, modelSymbolCtx, structExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
   }
 
   // Generate: export type CompositeName = S.Schema.Type<typeof CompositeName>
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: composite.name };
   const inferType = ts.qualifiedRefWithParams(["S", "Schema", "Type"], [ts.typeof(composite.name)]);
-  const typeStatement = exp.type(composite.name, symbolCtx, inferType);
+  const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
 };
@@ -397,7 +399,7 @@ const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]
 const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   Arr.fromIterable(usedEnums).map(enumName => ({
     kind: "symbol" as const,
-    ref: { capability: "models:effect", entity: enumName },
+    ref: { capability: "models", entity: enumName },
   }));
 
 /**
@@ -405,7 +407,7 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
  * Generates: export enum EnumName { A = 'a', ... } + export const EnumNameSchema = S.Enums(EnumName)
  */
 const generateNativeEnumStatements = (enumEntity: EnumEntity): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "models:effect", entity: enumEntity.name };
+  const symbolCtx = { capability: "models", entity: enumEntity.name };
 
   // Generate: export enum EnumName { A = 'a', B = 'b', ... }
   const enumDecl = conjure.b.tsEnumDeclaration(
@@ -422,7 +424,7 @@ const generateNativeEnumStatements = (enumEntity: EnumEntity): readonly SymbolSt
     node: conjure.b.exportNamedDeclaration(enumDecl, []),
     symbol: {
       name: enumEntity.name,
-      capability: "models:effect",
+      capability: "models",
       entity: enumEntity.name,
       isType: true,
     },
@@ -475,8 +477,8 @@ export const effectModelPlugin = definePlugin({
   name: "effect-model",
   provides: config =>
     config.exportTypes
-      ? ["models:effect", "models", "types"]
-      : ["models:effect", "models"],
+      ? ["models", "types"]
+      : ["models"],
   configSchema: EffectModelPluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,

@@ -1022,14 +1022,14 @@ describe("Conjure", () => {
     it("creates exported const with symbol metadata", () => {
       const schema = conjure.exp.const(
         "UserSchema",
-        { capability: "schemas:zod", entity: "User", shape: "row" },
+        { capability: "schemas", entity: "User", shape: "row" },
         conjure.id("z").method("object", [conjure.obj().build()]).build()
       )
 
       expect(schema._tag).toBe("SymbolStatement")
       expect(schema.symbol).toEqual({
         name: "UserSchema",
-        capability: "schemas:zod",
+        capability: "schemas",
         entity: "User",
         shape: "row",
         isType: false,
@@ -1054,7 +1054,7 @@ describe("Conjure", () => {
     it("creates exported type for inferred types", () => {
       const inferredType = conjure.exp.type(
         "User",
-        { capability: "schemas:zod", entity: "User", shape: "row" },
+        { capability: "schemas", entity: "User", shape: "row" },
         conjure.ts.typeof("UserSchema")
       )
 
