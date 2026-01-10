@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.2](https://github.com/DanielFGray/pg-sourcerer/compare/v0.2.1...v0.2.2) (2026-01-10)
+
+
+### Features
+
+* **conjure:** add export.* helpers for cleaner export generation ([0853b94](https://github.com/DanielFGray/pg-sourcerer/commit/0853b94ddd39b530d5d4e8059bcbb70fbe51b6aa))
+* **emissions:** add blank lines before export statements ([b2736e5](https://github.com/DanielFGray/pg-sourcerer/commit/b2736e5f7734011112f7450589dfe9e34ae1b4f0))
+* **emissions:** detect and report undefined symbol references ([4980dd8](https://github.com/DanielFGray/pg-sourcerer/commit/4980dd87522f05d9a644c2602c6c86e739fdf328))
+* **kysely-types:** add composite type support ([f0b0441](https://github.com/DanielFGray/pg-sourcerer/commit/f0b044159c777a456782a52e351d9aabc18cc586))
+* **plugins:** add explicitColumns config for runtime column filtering ([c39fcb0](https://github.com/DanielFGray/pg-sourcerer/commit/c39fcb05708ed5f9e394dbeb669e7c067af74e88))
+* **plugins:** add exportStyle and exportName config to query plugins ([f20434a](https://github.com/DanielFGray/pg-sourcerer/commit/f20434ae78a13f23413b550edfdbe9cf15b6d270))
+* **plugins:** support dynamic provides based on config ([8d6d0d3](https://github.com/DanielFGray/pg-sourcerer/commit/8d6d0d3b9f6f95f45611ebc3e30ec33a5e6e874f))
+* **sql-queries:** add stored function wrappers ([8bb97e4](https://github.com/DanielFGray/pg-sourcerer/commit/8bb97e404c471364c10d823e1e74067b8a64a370))
+
+
+### Bug Fixes
+
+* **cli:** refactor config loading to use Effect DI pattern ([e756bc2](https://github.com/DanielFGray/pg-sourcerer/commit/e756bc233651af88cbb6239b8c009e4a9c7c2663))
+* **plugins:** simplify capability names and fix type registration ([595e4a4](https://github.com/DanielFGray/pg-sourcerer/commit/595e4a49ef48d559790f46856aaebdd1fd12d860))
+
 ## [0.2.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.2.0...v0.2.1) (2026-01-09)
 
 
