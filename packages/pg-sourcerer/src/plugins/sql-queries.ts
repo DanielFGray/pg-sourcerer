@@ -44,6 +44,11 @@ const defaultExportName: ExportNameFn = (entityName, methodName) => {
 
 const SqlQueriesPluginConfigSchema = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "sql-queries" }),
+  /**
+   * Header content to prepend to each generated file.
+   * Must include the SQL client import (e.g., `import { sql } from "../db"`).
+   */
+  header: S.String,
   /** SQL query style. Defaults to "tag" (tagged template literals) */
   sqlStyle: S.optionalWith(S.Union(S.Literal("tag"), S.Literal("string")), { default: () => "tag" as const }),
   /** Generate wrappers for PostgreSQL functions. Defaults to true. */
@@ -256,7 +261,7 @@ const generateInsert = (ctx: GenerationContext): MethodDef | undefined => {
   const columnNames = insertableFields.map(f => f.columnName);
   const fieldNames = insertableFields.map(f => f.name);
 
-  // Build: insert into schema.table (col1, col2) values ($data.field1, $data.field2) returning *
+  // Build: insert into schema.table (col1, col2) values ($field1, $field2) returning *
   const columnList = columnNames.join(", ");
   const valuePlaceholders = fieldNames.map((_, i) => (i === 0 ? "" : ", "));
   
@@ -267,14 +272,14 @@ const generateInsert = (ctx: GenerationContext): MethodDef | undefined => {
       ...valuePlaceholders.slice(1),
       `) returning *`,
     ],
-    params: fieldNames.map(f => b.memberExpression(b.identifier("data"), b.identifier(f), false)),
+    params: fieldNames.map(f => b.identifier(f)),
   };
 
   const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
   const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-  // Simple typed parameter: data: InsertType
-  const dataParam = param.typed("data", ts.ref(insertType));
+  // Destructured parameter with Pick type for consistency
+  const dataParam = param.pick(fieldNames, insertType);
 
   const name = exportName(entityName, "Insert");
   const fn = asyncFn(name, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]);
@@ -355,9 +360,11 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   const methodName = generateLookupMethodName(index, relation, columnName);
   const name = exportName(entityName, methodName);
 
-  // Build the parameter - use indexed access type for semantic naming
+  // Build the parameter - use destructured style for both cases
+  // Semantic naming: { user }: { user: Post["user_id"] }
+  // Regular naming: { fieldName }: Pick<Post, "fieldName">
   const paramNode = useSemanticNaming
-    ? param.typed(paramName, ts.indexedAccess(ts.ref(rowType), ts.literal(fieldName)))
+    ? param.destructured([{ name: paramName, type: ts.indexedAccess(ts.ref(rowType), ts.literal(fieldName)) }])
     : param.pick([fieldName], rowType);
 
   if (isUnique) {
@@ -887,12 +894,8 @@ export const sqlQueriesPlugin = definePlugin({
 
         const file = ctx.file(filePath);
 
-        // Import the appropriate SQL client based on style
-        if (sqlStyle === "tag") {
-          file.import({ kind: "relative", names: ["sql"], from: "../db" });
-        } else {
-          file.import({ kind: "relative", names: ["pool"], from: "../db" });
-        }
+        // Add user-provided header (must include SQL client import)
+        file.header(config.header);
 
         file.import({
           kind: "symbol",
@@ -943,12 +946,8 @@ export const sqlQueriesPlugin = definePlugin({
 
         const file = ctx.file(filePath);
 
-        // Import the appropriate SQL client based on style
-        if (sqlStyle === "tag") {
-          file.import({ kind: "relative", names: ["sql"], from: "../db" });
-        } else {
-          file.import({ kind: "relative", names: ["pool"], from: "../db" });
-        }
+        // Add user-provided header (must include SQL client import)
+        file.header(config.header);
 
         // Import the composite type and any types needed by function args
         const fnTypeImports = collectFunctionTypeImports(compositeFunctions, ctx.ir);
@@ -976,12 +975,8 @@ export const sqlQueriesPlugin = definePlugin({
 
       const file = ctx.file(filePath);
 
-      // Import the appropriate SQL client based on style
-      if (sqlStyle === "tag") {
-        file.import({ kind: "relative", names: ["sql"], from: "../db" });
-      } else {
-        file.import({ kind: "relative", names: ["pool"], from: "../db" });
-      }
+      // Add user-provided header (must include SQL client import)
+      file.header(config.header);
 
       // Import types needed by function args
       const fnTypeImports = collectFunctionTypeImports(scalarFunctions, ctx.ir);

@@ -415,8 +415,8 @@ export function createEmissionBuffer(): EmissionBuffer {
         const bodyCode = serialize(entry.ast);
         const formattedBody = ensureBlankLinesBeforeExports(bodyCode);
 
-        // Order: imports → header → body
-        const content = importCode + (entry.header ? entry.header + formattedBody : formattedBody);
+        // Order: header → imports → body
+        const content = (entry.header ? entry.header + "\n" : "") + importCode + formattedBody;
         MutableHashMap.set(emissions, entry.path, {
           path: entry.path,
           content,
