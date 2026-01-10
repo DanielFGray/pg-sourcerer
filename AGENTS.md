@@ -337,6 +337,37 @@ prog parent ts-task ep-epic
 
 For interactive browsing: `prog tui` (or `prog ui`)
 
+### Knowledge Base: `prog learn`
+
+When you research something that future sessions would benefit from, capture it:
+
+```bash
+# Log a learning linked to a concept
+prog learn "insight here" -c concept-name -p pg-sourcerer
+
+# Check existing learnings before researching
+prog concepts -p pg-sourcerer
+prog context -c concept-name -p pg-sourcerer --summary
+```
+
+**What to capture** (facts about external libraries/APIs):
+- pg-introspection: `pgAttribute.getType()` not `attr.type`
+- Kysely: `Generated<T>` wraps columns with defaults
+- Effect Schema: use `S.optionalWith({ default: () => val })` for defaults
+- API patterns for Hono, Express, tRPC, etc.
+
+**What NOT to capture** (project state that can become stale):
+- "QueryArtifact is in ir/query-artifact.ts" (file locations change)
+- "http-elysia uses TypeBox" (implementation details change)
+- Task status or progress
+
+**When to use:**
+- After researching a library API via Context7 or docs
+- After discovering a non-obvious pattern through trial/error
+- Before ending a session, if you learned something reusable
+
+Good learnings are **stable facts** that won't change with our code.
+
 ## Priority Rules: Core > Plugins
 
 **Core issues take priority over plugin issues at every priority level.**
