@@ -22,7 +22,8 @@
     "kysely:codegen": "kysely-codegen --env-file=.env --dialect=postgres --log-level debug --exclude-pattern 'graphile*.*' --out-file=generated/DB.d.ts",
     "db:init": "run-s db:start db:setup db:reset db:latest",
     "env:init": "bun scripts/generateEnvFile.ts",
-    "init": "NOCONFIRM=1 run-s -s env:init db:init"
+    "init": "NOCONFIRM=1 run-s -s env:init db:init",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@danielfgray/pg-sourcerer": "workspace:*",
@@ -30,11 +31,15 @@
     "@effect/platform": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@orpc/server": "^1.13.2",
+    "@trpc/server": "^11.8.1",
     "arktype": "^2.1.29",
     "effect": "^3.19.14",
+    "elysia": "^1.4.21",
     "graphile-migrate": "next",
     "inquirer": "^9.2.12",
     "npm-run-all": "^4.1.5",
+    "valibot": "^1.2.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {

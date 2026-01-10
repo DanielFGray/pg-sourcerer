@@ -1,4 +1,16 @@
-import { defineConfig, arktypePlugin, sqlQueriesPlugin } from "@danielfgray/pg-sourcerer";
+import {
+  defineConfig,
+  arktypePlugin,
+  kyselyTypesPlugin,
+  kyselyQueriesPlugin,
+  sqlQueriesPlugin,
+  zodPlugin,
+  httpElysiaPlugin,
+  httpTrpcPlugin,
+  httpOrpcPlugin,
+  valibotPlugin,
+  typesPlugin,
+} from "@danielfgray/pg-sourcerer";
 
 export default defineConfig({
   connectionString: process.env.AUTH_DATABASE_URL!,
@@ -7,10 +19,26 @@ export default defineConfig({
   outputDir: "./generated",
   formatter: "bunx oxfmt --write",
   plugins: [
-    arktypePlugin({ exportTypes: true }),
+    typesPlugin(),
+
+    // zodPlugin({ exportTypes: true }),
+    // arktypePlugin({ exportTypes: true }),
+    // valibotPlugin(),
+
+    // kyselyTypesPlugin(),
+    // kyselyQueriesPlugin({
+    //   explicitColumns: true,
+    //   dbAsParameter: false,
+    //   header: `import { db } from "../../db.js";`,
+    // }),
+
     sqlQueriesPlugin({
-      sqlStyle: "string",
-      header: `import { pool } from "../../db.js";`,
+      sqlStyle: "tag",
+      header: `import { sql } from "../../db.js";`,
     }),
+
+    httpElysiaPlugin(),
+    // httpTrpcPlugin(),
+    // httpOrpcPlugin(),
   ],
 });
