@@ -374,7 +374,7 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
     )
     if (Option.isSome(extType)) {
       return {
-        selectType: tsTypeToAst(extType.value),
+        selectType: ts.fromString(extType.value),
         needsColumnType: false,
       }
     }
@@ -384,21 +384,6 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
   return {
     selectType: ts.string(),
     needsColumnType: false,
-  }
-}
-
-/** Convert a simple TS type string to AST */
-function tsTypeToAst(typeName: string): n.TSType {
-  switch (typeName) {
-    case "string": return ts.string()
-    case "number": return ts.number()
-    case "boolean": return ts.boolean()
-    case "bigint": return ts.bigint()
-    case "unknown": return ts.unknown()
-    case "null": return ts.null()
-    case "Date": return ts.ref("Date")
-    case "Buffer": return ts.ref("Buffer")
-    default: return ts.ref(typeName)
   }
 }
 
@@ -436,7 +421,7 @@ function buildFieldType(
   
   // Wrap in nullable if needed
   if (field.nullable) {
-    baseType = ts.union(baseType, ts.null())
+    baseType = ts.nullable(baseType)
   }
   
   // Wrap in Generated<T> if field has default and is not insertable

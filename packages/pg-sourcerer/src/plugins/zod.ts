@@ -300,26 +300,11 @@ const generateEnumStatement = (
   if (enumStyle === "enum") {
     // Generate: export enum EnumName { A = 'a', B = 'b', ... }
     // Then: export const EnumNameSchema = z.nativeEnum(EnumName)
-    const enumDecl = conjure.b.tsEnumDeclaration(
-      conjure.b.identifier(enumEntity.name),
-      enumEntity.values.map(v =>
-        conjure.b.tsEnumMember(
-          conjure.b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
-          conjure.str(v),
-        ),
-      ),
+    const enumStatement = exp.tsEnum(
+      enumEntity.name,
+      { capability: "types", entity: enumEntity.name },
+      enumEntity.values,
     );
-    // The enum itself is a type - register under "types" capability
-    const enumStatement: SymbolStatement = {
-      _tag: "SymbolStatement",
-      node: conjure.b.exportNamedDeclaration(enumDecl, []),
-      symbol: {
-        name: enumEntity.name,
-        capability: "types",
-        entity: enumEntity.name,
-        isType: true,
-      },
-    };
 
     const schemaName = `${enumEntity.name}Schema`;
     const schemaExpr = conjure

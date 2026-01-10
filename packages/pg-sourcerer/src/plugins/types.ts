@@ -84,14 +84,6 @@ const buildFieldMatch = (field: Field, ctx: FieldContext): TypeHintFieldMatch =>
     : field.pgAttribute.getType()?.typname ?? "",
 })
 
-/** Wrap type with null union if nullable */
-const wrapNullable = (typeNode: n.TSType, nullable: boolean): n.TSType =>
-  nullable ? ts.union(typeNode, ts.null()) : typeNode
-
-/** Wrap type in array if needed */
-const wrapArray = (typeNode: n.TSType, isArray: boolean): n.TSType =>
-  isArray ? ts.array(typeNode) : typeNode
-
 /** Group custom imports by path */
 const groupImportsByPath = (imports: readonly CustomImportInfo[]): Map<string, Set<string>> =>
   imports.reduce((map, info) => {
@@ -147,7 +139,7 @@ const resolveFieldType = (field: Field, ctx: FieldContext): ResolvedFieldType =>
         const importPath = ctx.typeHints.getHint<string>(fieldMatch, "import")
         const baseType = ts.ref(typeName)
         return {
-          type: wrapArray(baseType, field.isArray),
+          type: ts.withModifiers(baseType, { array: field.isArray }),
           customImport: pipe(
             importPath,
             Option.map(path => ({ typeName, importPath: path })),
@@ -161,7 +153,7 @@ const resolveFieldType = (field: Field, ctx: FieldContext): ResolvedFieldType =>
         const baseType = resolved.enumDef
           ? ts.ref(resolved.enumDef.name)
           : tsTypeToAst(resolved.tsType)
-        return { type: wrapArray(baseType, field.isArray) }
+        return { type: ts.withModifiers(baseType, { array: field.isArray }) }
       },
     })
   )
@@ -185,7 +177,7 @@ const generateShapeStatement = (
 
   const properties = resolvedFields.map(({ field, resolved }) => ({
     name: field.name,
-    type: wrapNullable(resolved.type, field.nullable),
+    type: ts.withModifiers(resolved.type, { nullable: field.nullable }),
     optional: field.optional || undefined,
   }))
 
@@ -246,7 +238,7 @@ const generateCompositeStatement = (
 
   const properties = resolvedFields.map(({ field, resolved }) => ({
     name: field.name,
-    type: wrapNullable(resolved.type, field.nullable),
+    type: ts.withModifiers(resolved.type, { nullable: field.nullable }),
     optional: field.optional || undefined,
   }))
 

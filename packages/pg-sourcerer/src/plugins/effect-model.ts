@@ -410,25 +410,7 @@ const generateNativeEnumStatements = (enumEntity: EnumEntity): readonly SymbolSt
   const symbolCtx = { capability: "models", entity: enumEntity.name };
 
   // Generate: export enum EnumName { A = 'a', B = 'b', ... }
-  const enumDecl = conjure.b.tsEnumDeclaration(
-    conjure.b.identifier(enumEntity.name),
-    enumEntity.values.map(v =>
-      conjure.b.tsEnumMember(
-        conjure.b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
-        conjure.str(v),
-      ),
-    ),
-  );
-  const enumStatement: SymbolStatement = {
-    _tag: "SymbolStatement",
-    node: conjure.b.exportNamedDeclaration(enumDecl, []),
-    symbol: {
-      name: enumEntity.name,
-      capability: "models",
-      entity: enumEntity.name,
-      isType: true,
-    },
-  };
+  const enumStatement = exp.tsEnum(enumEntity.name, symbolCtx, enumEntity.values);
 
   const schemaName = `${enumEntity.name}Schema`;
   const schemaExpr = conjure.id("S").method("Enums", [
