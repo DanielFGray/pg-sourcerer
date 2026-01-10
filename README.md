@@ -80,20 +80,11 @@ create table app_public.users (
 
 alter table app_public.users enable row level security;
 create index on app_public.users (username);
-create index on app_public.users using gin(username gin_trgm_ops);
 
--- We couldn't implement this relationship on the sessions table until the users table existed!
-alter table app_private.sessions
-  add constraint sessions_user_id_fkey
-  foreign key ("user_id") references app_public.users on delete cascade;
-
--- Users are publicly visible, like on GitHub, Twitter, Facebook, Trello, etc.
-create policy select_all on app_public.users for select using (true);
--- You can only update yourself.
-create policy update_self on app_public.users for update using (id = app_public.current_user_id());
-grant select on app_public.users to :DATABASE_VISITOR;
--- NOTE: `insert` is not granted, because we'll handle that separately
-grant update(username, name, bio, avatar_url) on app_public.users to :DATABASE_VISITOR;
+grant
+  select,
+  update(username, name, bio, avatar_url)
+  on app_public.users to :DATABASE_VISITOR;
 ```
 
 Each plugin generates different artifacts:
@@ -124,39 +115,77 @@ export interface UserUpdate {
 ### `zodPlugin` — Zod Schemas
 
 ```typescript
+// UserRole.ts
 import { z } from "zod";
+
+export const UserRole = z.enum(["admin", "moderator", "user"]);
+
+export type UserRole = z.infer<typeof UserRole>;
+
+// User.ts
+import { z } from "zod";
+import { UserRole } from "./UserRole.js";
 
 export const User = z.object({
   id: z.string().uuid(),
   username: z.string(),
   name: z.string().nullable().optional(),
-  role: z.enum(["admin", "moderator", "user"]),
+  avatar_url: z.string().nullable().optional(),
+  role: UserRole,
   bio: z.string(),
-  isVerified: z.boolean(),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  is_verified: z.boolean(),
+  created_at: z.coerce.date(),
+  updated_at: z.coerce.date(),
 });
 
 export type User = z.infer<typeof User>;
+
+export const UserUpdate = z.object({
+  username: z.string().optional(),
+  name: z.string().nullable().optional(),
+  avatar_url: z.string().nullable().optional(),
+  bio: z.string().optional(),
+});
+
+export type UserUpdate = z.infer<typeof UserUpdate>;
 ```
 
 ### `arktypePlugin` — ArkType Validators
 
 ```typescript
+// UserRole.ts
 import { type } from "arktype";
+
+export const UserRole = type("'admin' | 'moderator' | 'user'");
+
+export type UserRole = typeof UserRole.infer;
+
+// User.ts
+import { type } from "arktype";
+import { UserRole } from "./UserRole.js";
 
 export const User = type({
   id: "string.uuid",
   username: "string",
   "name?": "string | null",
-  role: "'admin' | 'moderator' | 'user'",
+  "avatar_url?": "string | null",
+  role: UserRole,
   bio: "string",
-  isVerified: "boolean",
-  createdAt: "Date",
-  updatedAt: "Date",
+  is_verified: "boolean",
+  created_at: "Date",
+  updated_at: "Date",
 });
 
 export type User = typeof User.infer;
+
+export const UserUpdate = type({
+  "username?": "string",
+  "name?": "string | null",
+  "avatar_url?": "string | null",
+  "bio?": "string",
+});
+
+export type UserUpdate = typeof UserUpdate.infer;
 ```
 
 ### `effectModelPlugin` — Effect SQL Models
@@ -208,42 +237,29 @@ not using tagged templates? got you covered with `sqlQueriesPlugin({ sqlStyle: "
 ### `kyselyQueriesPlugin` — Kysely Query Builders
 
 ```typescript
-import type { Kysely, Updateable } from "kysely";
-import type { DB, AppPublicUsers } from "../DB.js";
+import type { Kysely, Insertable, Updateable } from "kysely";
+import type { DB, User } from "../db.js";
 
-export const users = {
-  findById: (db: Kysely<DB>, id: string) => db
-    .selectFrom("app_public.users")
+export const findById = (db: Kysely<DB>, id: string) =>
+  db.selectFrom("users").selectAll().where("id", "=", id).executeTakeFirst();
+
+export const create = (db: Kysely<DB>, data: Insertable<User>) =>
+  db.insertInto("users").values(data).returningAll().executeTakeFirstOrThrow();
+
+export const update = (db: Kysely<DB>, id: string, data: Updateable<User>) =>
+  db.updateTable("users").set(data).where("id", "=", id).returningAll().executeTakeFirstOrThrow();
+
+export const remove = (db: Kysely<DB>, id: string) =>
+  db.deleteFrom("users").where("id", "=", id).execute();
+
+export const findOneByUsername = (db: Kysely<DB>, username: string) =>
+  db.selectFrom("users").selectAll().where("username", "=", username).executeTakeFirst();
+
+export const currentUser = (db: Kysely<DB>) =>
+  db
+    .selectFrom((eb) => eb.fn<User>("app_public.current_user", []).as("f"))
     .selectAll()
-    .where("id", "=", id)
-    .executeTakeFirst(),
-  update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) => db
-    .updateTable("app_public.users")
-    .set(data)
-    .where("id", "=", id)
-    .returningAll()
-    .executeTakeFirstOrThrow(),
-  findOneByUsername: (db: Kysely<DB>, username: string) => db
-    .selectFrom("app_public.users")
-    .selectAll()
-    .where("username", "=", username)
-    .executeTakeFirst()
-};
-```
-
-## Feature Support
-
-| Feature | types | zod | arktype | effect-model | kysely | sql |
-|---------|:-----:|:---:|:-------:|:------------:|:------:|:---:|
-| Row types | ✓ | ✓ | ✓ | ✓ | — | imports |
-| Insert shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
-| Update shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
-| Enums | ✓ | ✓ | ✓ | ✓ | — | — |
-| Composite types | ✓ | ✓ | ✓ | ✓ | — | — |
-| Views | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| CRUD queries | — | — | — | — | ✓ | ✓ |
-| Index lookups | — | — | — | — | ✓ | ✓ |
-| Runtime validation | — | ✓ | ✓ | ✓ | — | — |
+    .executeTakeFirst();
 
 ## Smart Tags
 
