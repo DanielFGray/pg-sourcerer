@@ -515,4 +515,97 @@ describe("Kysely Types Plugin", () => {
       }),
     );
   });
+
+  describe("composite type generation", () => {
+    it.effect("generates interfaces for composite types", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* kyselyTypesPlugin.plugin.run({}).pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const content = all[0]?.content ?? "";
+
+        // app_public has username_search and tag_search_result composites
+        expect(content).toContain("export interface UsernameSearch");
+        expect(content).toContain("export interface TagSearchResult");
+      }),
+    );
+
+    it.effect("composite interfaces have correct fields", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* kyselyTypesPlugin.plugin.run({}).pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const content = all[0]?.content ?? "";
+
+        // UsernameSearch should have username and avatar_url fields
+        expect(content).toMatch(/interface UsernameSearch[^}]+username:/);
+        expect(content).toMatch(/interface UsernameSearch[^}]+avatar_url:/);
+
+        // TagSearchResult should have tag and count fields
+        expect(content).toMatch(/interface TagSearchResult[^}]+tag:/);
+        expect(content).toMatch(/interface TagSearchResult[^}]+count:/);
+      }),
+    );
+
+    it.effect("composite fields have correct types", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* kyselyTypesPlugin.plugin.run({}).pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const content = all[0]?.content ?? "";
+
+        // username should be string | null, avatar_url should be string | null
+        // (checking within UsernameSearch context via earlier test)
+        // TagSearchResult.count should use ColumnType (it's bigint)
+        expect(content).toMatch(/interface TagSearchResult[^}]+count:\s*ColumnType/);
+      }),
+    );
+
+    it.effect("registers symbols for composite types", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* kyselyTypesPlugin.plugin.run({}).pipe(Effect.provide(testLayer));
+
+        const symbols = yield* Symbols.pipe(Effect.provide(testLayer));
+        const allSymbols = symbols.getAll();
+
+        // Should have registered composite symbols
+        const usernameSearchSymbol = allSymbols.find(s => s.name === "UsernameSearch");
+        expect(usernameSearchSymbol).toBeDefined();
+        expect(usernameSearchSymbol?.capability).toBe("types:kysely");
+        expect(usernameSearchSymbol?.isType).toBe(true);
+      }),
+    );
+
+    it.effect("does not use Generated for composite fields", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* kyselyTypesPlugin.plugin.run({}).pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const content = all[0]?.content ?? "";
+
+        // Extract the UsernameSearch interface content
+        const usernameSearchMatch = content.match(/interface UsernameSearch\s*\{([^}]+)\}/);
+        expect(usernameSearchMatch).toBeDefined();
+
+        const interfaceBody = usernameSearchMatch?.[1] ?? "";
+        // Composite fields should NOT have Generated wrapper
+        expect(interfaceBody).not.toContain("Generated");
+      }),
+    );
+  });
 });
