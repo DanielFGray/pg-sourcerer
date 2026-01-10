@@ -72,8 +72,23 @@ describe("ArkType Plugin", () => {
     });
 
     it("provides schemas capabilities", () => {
-      expect(arktypePlugin.plugin.provides).toContain("schemas:arktype");
-      expect(arktypePlugin.plugin.provides).toContain("schemas");
+      // provides is a function that depends on config - call with exportTypes to test
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides;
+      expect(capabilities).toContain("schemas");
+      expect(capabilities).toContain("schemas");
+    });
+
+    it("provides types capability when exportTypes is true", () => {
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides;
+      expect(capabilities).toContain("types");
+    });
+
+    it("does not provide types capability when exportTypes is false", () => {
+      const provides = arktypePlugin.plugin.provides;
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: false } as any) : provides;
+      expect(capabilities).not.toContain("types");
     });
 
     it("has no requirements", () => {
@@ -290,7 +305,7 @@ describe("ArkType Plugin", () => {
         // Should have registered User schema
         const userRowSymbol = allSymbols.find(s => s.name === "User" && !s.isType);
         expect(userRowSymbol).toBeDefined();
-        expect(userRowSymbol?.capability).toBe("schemas:arktype");
+        expect(userRowSymbol?.capability).toBe("schemas");
         expect(userRowSymbol?.shape).toBe("row");
       }),
     );
@@ -310,7 +325,7 @@ describe("ArkType Plugin", () => {
         // Should have registered User type
         const userRowTypeSymbol = allSymbols.find(s => s.name === "User" && s.isType);
         expect(userRowTypeSymbol).toBeDefined();
-        expect(userRowTypeSymbol?.capability).toBe("schemas:arktype");
+        expect(userRowTypeSymbol?.capability).toBe("types");
         expect(userRowTypeSymbol?.isType).toBe(true);
       }),
     );
@@ -411,7 +426,7 @@ describe("ArkType Plugin", () => {
           s => (s.entity === "UsernameSearch" || s.entity === "TagSearchResult") && !s.isType,
         );
         expect(compositeSymbol).toBeDefined();
-        expect(compositeSymbol?.capability).toBe("schemas:arktype");
+        expect(compositeSymbol?.capability).toBe("schemas");
       }),
     );
   });

@@ -716,6 +716,21 @@ const stmt = {
   /** Block statement */
   block: (...statements: n.Statement[]) =>
     b.blockStatement(statements.map(toStmt)),
+
+  /** Async function declaration */
+  asyncFn: (
+    name: string,
+    params: (n.Identifier | n.ObjectPattern)[],
+    body: n.Statement[]
+  ): n.FunctionDeclaration => {
+    const fn = b.functionDeclaration(
+      b.identifier(name),
+      params,
+      b.blockStatement(body.map(toStmt))
+    )
+    fn.async = true
+    return fn
+  },
 } as const
 
 // =============================================================================
@@ -1334,6 +1349,17 @@ export const conjure = {
 
   // === Export statements ===
   export: exportHelpers,
+
+  /** Async function declaration */
+  asyncFn: (name: string, params: (n.Identifier | n.ObjectPattern)[], body: n.Statement[]): n.FunctionDeclaration => {
+    const fn = b.functionDeclaration(
+      b.identifier(name),
+      params,
+      b.blockStatement(body.map(toStmt))
+    )
+    fn.async = true
+    return fn
+  },
 
   // === TypeScript types ===
   ts,

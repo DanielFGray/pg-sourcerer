@@ -23,7 +23,7 @@ import type {
   StatementKind,
 } from "ast-types/lib/gen/kinds.js";
 import { EmitConflict } from "../errors.js";
-import type { ImportRef } from "./file-builder.js";
+import type { ImportRef, SymbolImportRef } from "./file-builder.js";
 import type { SymbolRegistry } from "./symbols.js";
 
 /**
@@ -46,6 +46,17 @@ export interface AstEmissionEntry {
   readonly header?: string;
   /** Import requests to resolve during serialization */
   readonly imports?: readonly ImportRef[];
+}
+
+/**
+ * Unresolved symbol reference - tracked during import resolution
+ */
+export interface UnresolvedRef {
+  readonly capability: string;
+  readonly entity: string;
+  readonly shape?: string;
+  readonly plugin: string;
+  readonly file: string;
 }
 
 /**
@@ -98,6 +109,11 @@ export interface EmissionBuffer {
   readonly validate: () => Effect.Effect<void, EmitConflict>;
 
   /**
+   * Get unresolved symbol references (populated during serializeAst)
+   */
+  readonly getUnresolvedRefs: () => readonly UnresolvedRef[];
+
+  /**
    * Clear all emissions
    */
   readonly clear: () => void;
@@ -115,6 +131,50 @@ export class Emissions extends Context.Tag("Emissions")<Emissions, EmissionBuffe
 import recast from "recast";
 const b = recast.types.builders;
 
+/** Normalize path for comparison (remove leading ./) */
+const normalizePath = (path: string): string => path.replace(/^\.\//, "");
+
+/** Callback for tracking unresolved symbol references */
+type OnUnresolvedRef = (ref: SymbolImportRef, file: string) => void;
+
+/** Resolve an ImportRef to source/named/types/default */
+function resolveImportRef(
+  ref: ImportRef,
+  forFile: string,
+  symbols: SymbolRegistry,
+  onUnresolved?: OnUnresolvedRef,
+): { source: string; named: string[]; types: string[]; defaultImport?: string } | undefined {
+  switch (ref.kind) {
+    case "symbol": {
+      const symbol = symbols.resolve(ref.ref);
+      if (!symbol) {
+        onUnresolved?.(ref, forFile);
+        return undefined;
+      }
+      // Skip import if symbol is in the same file (already declared locally)
+      if (normalizePath(symbol.file) === normalizePath(forFile)) return undefined;
+      const importStmt = symbols.importFor(symbol, forFile);
+      const base = {
+        source: importStmt.from,
+        named: [...importStmt.named],
+        types: [...importStmt.types],
+      };
+      return importStmt.default !== undefined
+        ? { ...base, defaultImport: importStmt.default }
+        : base;
+    }
+    case "package":
+    case "relative": {
+      const base = {
+        source: ref.from,
+        named: ref.names ? [...ref.names] : [],
+        types: ref.types ? [...ref.types] : [],
+      };
+      return ref.default !== undefined ? { ...base, defaultImport: ref.default } : base;
+    }
+  }
+}
+
 /**
  * Resolve imports and prepend import statements to AST
  */
@@ -123,6 +183,7 @@ function prependImports(
   imports: readonly ImportRef[],
   forFile: string,
   symbols: SymbolRegistry,
+  onUnresolved?: OnUnresolvedRef,
 ): n.Program {
   // Group imports by source path for merging
   const bySource = pipe(
@@ -130,7 +191,7 @@ function prependImports(
     Arr.reduce(
       new Map<string, { named: Set<string>; types: Set<string>; default?: string }>(),
       (map, ref) => {
-        const resolved = resolveImportRef(ref, forFile, symbols);
+        const resolved = resolveImportRef(ref, forFile, symbols, onUnresolved);
         if (!resolved) return map;
 
         const { source, named, types, defaultImport } = resolved;
@@ -185,43 +246,6 @@ function prependImports(
   return b.program([...statements, ...ast.body]);
 }
 
-/** Normalize path for comparison (remove leading ./) */
-const normalizePath = (path: string): string => path.replace(/^\.\//, "");
-
-/** Resolve an ImportRef to source/named/types/default */
-function resolveImportRef(
-  ref: ImportRef,
-  forFile: string,
-  symbols: SymbolRegistry,
-): { source: string; named: string[]; types: string[]; defaultImport?: string } | undefined {
-  switch (ref.kind) {
-    case "symbol": {
-      const symbol = symbols.resolve(ref.ref);
-      if (!symbol) return undefined;
-      // Skip import if symbol is in the same file (already declared locally)
-      if (normalizePath(symbol.file) === normalizePath(forFile)) return undefined;
-      const importStmt = symbols.importFor(symbol, forFile);
-      const base = {
-        source: importStmt.from,
-        named: [...importStmt.named],
-        types: [...importStmt.types],
-      };
-      return importStmt.default !== undefined
-        ? { ...base, defaultImport: importStmt.default }
-        : base;
-    }
-    case "package":
-    case "relative": {
-      const base = {
-        source: ref.from,
-        named: ref.names ? [...ref.names] : [],
-        types: ref.types ? [...ref.types] : [],
-      };
-      return ref.default !== undefined ? { ...base, defaultImport: ref.default } : base;
-    }
-  }
-}
-
 // =============================================================================
 // AST Emission Merging (Pure Functions)
 // =============================================================================
@@ -266,6 +290,21 @@ const mergeAstEntries = (
   );
 
 // =============================================================================
+// Output Formatting (Pure Functions)
+// =============================================================================
+
+/** Ensure exactly one blank line before each export statement */
+const ensureBlankLinesBeforeExports = (code: string): string =>
+  code.split("\n").reduce<string[]>((acc, line) => {
+    const prevLine = acc[acc.length - 1];
+    const needsBlankLine =
+      line.startsWith("export ") &&
+      prevLine !== undefined &&
+      prevLine !== "";
+    return needsBlankLine ? [...acc, "", line] : [...acc, line];
+  }, []).join("\n");
+
+// =============================================================================
 // Emission Buffer Implementation
 // =============================================================================
 
@@ -277,6 +316,8 @@ export function createEmissionBuffer(): EmissionBuffer {
   const astEmissions = MutableHashMap.empty<string, AstEmissionEntry>();
   // Track plugins per path for string emission conflict detection
   const stringEmitPlugins = MutableHashMap.empty<string, MutableHashSet.MutableHashSet<string>>();
+  // Track unresolved symbol references during import resolution
+  const unresolvedRefs: UnresolvedRef[] = [];
 
   return {
     emit: (path, content, plugin) => {
@@ -356,15 +397,26 @@ export function createEmissionBuffer(): EmissionBuffer {
                   entry.imports,
                   entry.path,
                   symbols,
+                  // Track unresolved refs with plugin context
+                  (ref, file) => {
+                    unresolvedRefs.push({
+                      capability: ref.ref.capability,
+                      entity: ref.ref.entity,
+                      shape: ref.ref.shape,
+                      plugin: entry.plugin,
+                      file,
+                    });
+                  },
                 ),
               ) + "\n\n"
             : "";
 
-        // Serialize the main AST body
+        // Serialize the main AST body and ensure blank lines before exports
         const bodyCode = serialize(entry.ast);
+        const formattedBody = ensureBlankLinesBeforeExports(bodyCode);
 
-        // Order: imports → header → body
-        const content = importCode + (entry.header ? entry.header + bodyCode : bodyCode);
+        // Order: header → imports → body
+        const content = (entry.header ? entry.header + "\n" : "") + importCode + formattedBody;
         MutableHashMap.set(emissions, entry.path, {
           path: entry.path,
           content,
@@ -393,10 +445,13 @@ export function createEmissionBuffer(): EmissionBuffer {
         }),
       ),
 
+    getUnresolvedRefs: () => [...unresolvedRefs],
+
     clear: () => {
       MutableHashMap.clear(emissions);
       MutableHashMap.clear(astEmissions);
       MutableHashMap.clear(stringEmitPlugins);
+      unresolvedRefs.length = 0;
     },
   };
 }

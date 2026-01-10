@@ -118,8 +118,12 @@ export interface Plugin<TConfig = unknown, TEncoded = TConfig> {
   /** Capabilities this plugin requires (must be provided by earlier plugins) */
   readonly requires?: readonly CapabilityKey[]
 
-  /** Capabilities this plugin provides */
-  readonly provides: readonly CapabilityKey[]
+  /**
+   * Capabilities this plugin provides.
+   * Can be a static array or a function that computes capabilities from config.
+   * When a function, it receives the decoded config (with defaults applied).
+   */
+  readonly provides: readonly CapabilityKey[] | ((config: TConfig) => readonly CapabilityKey[])
 
   /** Configuration schema (Effect Schema) - Schema<TConfig, Encoded> with TConfig as decoded type */
   readonly configSchema: S.Schema<TConfig, TEncoded, never>
@@ -280,8 +284,12 @@ export interface SimplePluginDef<TConfig = unknown, TEncoded = TConfig> {
   /** Capabilities this plugin requires */
   readonly requires?: readonly CapabilityKey[]
 
-  /** Capabilities this plugin provides */
-  readonly provides: readonly CapabilityKey[]
+  /**
+   * Capabilities this plugin provides.
+   * Can be a static array or a function that computes capabilities from config.
+   * When a function, it receives the decoded config (with defaults applied).
+   */
+  readonly provides: readonly CapabilityKey[] | ((config: TConfig) => readonly CapabilityKey[])
 
   /** Configuration schema - Type is the decoded config, Encoded can differ (e.g., with defaults) */
   readonly configSchema: S.Schema<TConfig, TEncoded, never>

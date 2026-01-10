@@ -72,8 +72,23 @@ describe("Effect Model Plugin", () => {
     })
 
     it("provides model capabilities", () => {
-      expect(effectModelPlugin.plugin.provides).toContain("models:effect")
-      expect(effectModelPlugin.plugin.provides).toContain("models")
+      // provides is a function that depends on config - call with exportTypes to test
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides
+      expect(capabilities).toContain("models")
+      expect(capabilities).toContain("models")
+    })
+
+    it("provides types capability when exportTypes is true", () => {
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: true } as any) : provides
+      expect(capabilities).toContain("types")
+    })
+
+    it("does not provide types capability when exportTypes is false", () => {
+      const provides = effectModelPlugin.plugin.provides
+      const capabilities = typeof provides === "function" ? provides({ exportTypes: false } as any) : provides
+      expect(capabilities).not.toContain("types")
     })
 
     it("has no requirements", () => {
@@ -468,7 +483,7 @@ describe("Effect Model Plugin", () => {
           (s) => s.name === "User" && !s.isType
         )
         expect(userSymbol).toBeDefined()
-        expect(userSymbol?.capability).toBe("models:effect")
+        expect(userSymbol?.capability).toBe("models")
       })
     )
   })
@@ -760,7 +775,7 @@ describe("Effect Model Plugin", () => {
           s => (s.entity === "UsernameSearch" || s.entity === "TagSearchResult") && !s.isType
         )
         expect(compositeSymbol).toBeDefined()
-        expect(compositeSymbol?.capability).toBe("models:effect")
+        expect(compositeSymbol?.capability).toBe("models")
       })
     )
 

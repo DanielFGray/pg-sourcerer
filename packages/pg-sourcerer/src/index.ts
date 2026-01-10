@@ -129,6 +129,7 @@ export {
   type TypeMappingResult,
   type TypeMapper,
   type EnumLookupResult,
+  type CompositeLookupResult,
   ExtensionTypeMap,
   defaultPgToTs,
   getExtensionTypeMapping,
@@ -136,6 +137,7 @@ export {
   wrapArrayType,
   wrapNullable,
   findEnumByPgName,
+  findCompositeByPgName,
 } from "./services/pg-types.js"
 
 // Services - Symbols
@@ -220,7 +222,6 @@ export {
   buildFirstRowDecl,
   buildAllRowsDecl,
   buildReturnQuery,
-  asyncFn,
 } from "./lib/hex.js"
 
 // Plugins

@@ -43,6 +43,7 @@ import {
   PluginExecutionFailed,
   EmitConflict,
   SymbolConflict,
+  UndefinedReference,
   WriteError,
   FormatError,
 } from "./errors.js"
@@ -89,6 +90,7 @@ export type GenerateError =
   | PluginExecutionFailed
   | EmitConflict
   | SymbolConflict
+  | UndefinedReference
   | WriteError
   | FormatError
 

@@ -19,6 +19,9 @@ import { conjure } from "../lib/conjure.js";
 
 import { sqlQueriesPlugin } from "../plugins/sql-queries.js";
 
+/** Default header for tests - user must provide this in real config */
+const TEST_HEADER = `import { sql } from "../db";`;
+
 const introspection = loadIntrospectionFixture();
 
 function buildTestIR(schemas: readonly string[]) {
@@ -120,7 +123,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -136,7 +139,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -155,7 +158,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -168,20 +171,20 @@ describe("SQL Queries Plugin", () => {
       }),
     );
 
-    it.effect("imports pool instead of sql", () =>
+    it.effect("uses user-provided header for imports", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR(["app_public"]);
         const testLayer = createTestLayer(ir);
 
+        const customHeader = `import { pool } from "./my-db-client";`;
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: customHeader, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
         const userFile = all.find(e => e.path.includes("User.ts"));
 
-        expect(userFile?.content).toMatch(/import.*pool.*from/);
-        expect(userFile?.content).not.toMatch(/import.*\bsql\b.*from/);
+        expect(userFile?.content).toMatch(/import.*pool.*from.*my-db-client/);
       }),
     );
 
@@ -191,7 +194,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -208,7 +211,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -226,7 +229,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -243,14 +246,14 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
         const userFile = all.find(e => e.path.includes("User.ts"));
 
         // Should pass array of params as second argument
-        expect(userFile?.content).toMatch(/pool\.query<[^>]+>\([^,]+,\s*\[/);
+        expect(userFile?.content).toMatch(/pool\.query<[^>]+>\(\s*"[^"]+",\s*\[/);
       }),
     );
 
@@ -260,7 +263,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", sqlStyle: "string" })
+          .run({ header: TEST_HEADER, outputDir: "queries", sqlStyle: "string" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -279,7 +282,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -295,7 +298,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -312,7 +315,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -331,7 +334,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -341,20 +344,20 @@ describe("SQL Queries Plugin", () => {
       }),
     );
 
-    it.effect("uses EntityInsert type for insert parameter", () =>
+    it.effect("uses destructured Pick<EntityInsert, ...> for insert parameter", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR(["app_public"]);
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
         const postFile = all.find(e => e.path.includes("Post.ts"));
 
-        // Should use data: PostInsert parameter
-        expect(postFile?.content).toMatch(/insertPost\(data:\s*PostInsert\)/);
+        // Should use destructured Pick<PostInsert, ...> parameter
+        expect(postFile?.content).toMatch(/insertPost\(\s*\{[\s\S]*?\}:\s*Pick<\s*PostInsert/);
       }),
     );
 
@@ -364,7 +367,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -381,7 +384,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayerWithTypeSymbols(ir, ["Post"]);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -400,7 +403,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -418,7 +421,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -435,7 +438,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -454,7 +457,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -473,14 +476,14 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
         const postFile = all.find(e => e.path.includes("Post.ts"));
 
-        // FK-based lookup with semantic param name uses Post["user_id"] type (snake_case field names)
-        expect(postFile?.content).toMatch(/getPostsByUser\(user:\s*Post\["user_id"\]/);
+        // FK-based lookup with semantic param name uses destructured { user }: { user: Post["user_id"] }
+        expect(postFile?.content).toMatch(/getPostsByUser\([\s\S]*?\{\s*user\s*\}[\s\S]*?:\s*\{[\s\S]*?user:\s*Post\["user_id"\]/);
       }),
     );
   });
@@ -493,7 +496,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -509,7 +512,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -527,7 +530,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -545,7 +548,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         // This test just verifies no errors - expression indexes filtered in shouldGenerateLookup
@@ -560,7 +563,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -580,7 +583,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -602,7 +605,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -620,7 +623,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -638,7 +641,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -657,7 +660,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries", generateFunctions: false })
+          .run({ header: TEST_HEADER, outputDir: "queries", generateFunctions: false })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -673,7 +676,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -690,7 +693,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -707,7 +710,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayer(ir);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -724,7 +727,7 @@ describe("SQL Queries Plugin", () => {
         const testLayer = createTestLayerWithTypeSymbols(ir, ["User"]);
 
         yield* sqlQueriesPlugin.plugin
-          .run({ outputDir: "queries" })
+          .run({ header: TEST_HEADER, outputDir: "queries" })
           .pipe(Effect.provide(testLayer));
 
         const all = yield* runPluginAndGetEmissions(testLayer);
@@ -732,6 +735,173 @@ describe("SQL Queries Plugin", () => {
 
         // Should import User type for currentUser return type
         expect(userFile?.content).toMatch(/import.*User.*from/);
+      }),
+    );
+  });
+
+  describe("namespace export style", () => {
+    it.effect("generates single object export with entity name", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should export single object with entity name
+        expect(userFile?.content).toContain("export const User = {");
+        // Should NOT have flat exports
+        expect(userFile?.content).not.toMatch(/export async function find/);
+      }),
+    );
+
+    it.effect("includes methods as object properties with function expressions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Methods should be object properties with async function expressions
+        expect(userFile?.content).toMatch(/findUserById:\s*async function/);
+        expect(userFile?.content).toMatch(/insertUser:\s*async function/);
+      }),
+    );
+
+    it.effect("flat style (default) generates individual export functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", exportStyle: "flat" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should have individual exported functions
+        expect(userFile?.content).toMatch(/export async function findUserById/);
+        expect(userFile?.content).toMatch(/export async function insertUser/);
+        // Should NOT have namespace object
+        expect(userFile?.content).not.toContain("export const User = {");
+      }),
+    );
+  });
+
+  describe("custom exportName function", () => {
+    it.effect("uses custom exportName function to generate method names", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        // Custom export name that uses snake_case style
+        const customExportName = (entityName: string, methodName: string) =>
+          `${entityName.toLowerCase()}_${methodName.toLowerCase()}`;
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", exportName: customExportName })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use custom naming
+        expect(userFile?.content).toMatch(/export async function user_findbyid/);
+        expect(userFile?.content).toMatch(/export async function user_insert/);
+      }),
+    );
+
+    it.effect("custom exportName works with namespace export style", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayerWithTypeSymbols(ir, ["User", "Post"]);
+
+        // Custom export name that keeps entity separate
+        const customExportName = (_entityName: string, methodName: string) =>
+          methodName.toLowerCase();
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", exportStyle: "namespace", exportName: customExportName })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use custom naming as property names in namespace object
+        expect(userFile?.content).toContain("export const User = {");
+        expect(userFile?.content).toMatch(/findbyid:\s*async function/);
+        expect(userFile?.content).toMatch(/insert:\s*async function/);
+      }),
+    );
+  });
+
+  describe("explicitColumns config", () => {
+    it.effect("uses explicit column list by default (explicitColumns: true)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use explicit column list, not SELECT *
+        expect(userFile?.content).not.toMatch(/select \* from app_public\.users where/);
+        expect(userFile?.content).toMatch(/select id, username.*from app_public\.users where/);
+      }),
+    );
+
+    it.effect("uses SELECT * when explicitColumns: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", explicitColumns: false })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use SELECT *
+        expect(userFile?.content).toMatch(/select \* from app_public\.users where/);
+        expect(userFile?.content).not.toMatch(/select id, username.*from app_public\.users where/);
+      }),
+    );
+
+    it.effect("explicit columns only includes row shape fields (omitted fields excluded)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", explicitColumns: true })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Verify the column list matches the row shape fields
+        // (fields omitted from row shape won't appear in column list)
+        const content = userFile?.content ?? "";
+        // Check for explicit column list in findById
+        expect(content).toMatch(/select id, username.*from app_public\.users where id/);
+        // The column list should contain expected fields
+        expect(content).toContain("username");
+        expect(content).toContain("created_at");
       }),
     );
   });

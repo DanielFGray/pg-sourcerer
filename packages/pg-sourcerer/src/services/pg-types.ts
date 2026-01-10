@@ -378,3 +378,49 @@ export function findEnumByPgName(
     }))
   )
 }
+
+// ============================================================================
+// Composite Lookup
+// ============================================================================
+
+/**
+ * Result of looking up a composite in the IR
+ */
+export interface CompositeLookupResult {
+  /** The inflected TypeScript type name */
+  readonly name: string
+  /** The original PostgreSQL composite type name */
+  readonly pgName: string
+}
+
+/**
+ * Find a composite type in the IR by its PostgreSQL type name.
+ *
+ * @param composites - Iterable of composite entities
+ * @param pgTypeName - The PostgreSQL type name (e.g., "username_search")
+ * @returns The composite definition if found, None otherwise
+ *
+ * @example
+ * ```typescript
+ * const pgType = field.pgAttribute.getType()
+ * if (pgType?.typtype === 'c') {
+ *   const compositeDef = findCompositeByPgName(getCompositeEntities(ir), pgType.typname)
+ *   if (Option.isSome(compositeDef)) {
+ *     return compositeDef.value.name // Use inflected name like "UsernameSearch"
+ *   }
+ * }
+ * ```
+ */
+export function findCompositeByPgName(
+  composites: Iterable<{ readonly pgName: string; readonly name: string }>,
+  pgTypeName: string
+): Option.Option<CompositeLookupResult> {
+  return pipe(
+    Array.from(composites),
+    Arr.findFirst(composite => composite.pgName === pgTypeName),
+    Option.map(composite => ({
+      name: composite.name,
+      pgName: composite.pgName,
+    }))
+  )
+}

@@ -85,6 +85,18 @@ export class WriteError extends Data.TaggedError("WriteError")<
   ErrorBase & { readonly path: string; readonly cause: unknown }
 > {}
 
+export class UndefinedReference extends Data.TaggedError("UndefinedReference")<
+  ErrorBase & {
+    readonly references: readonly {
+      readonly capability: string
+      readonly entity: string
+      readonly shape?: string
+      readonly requestedBy: string
+      readonly inFile: string
+    }[]
+  }
+> {}
+
 export class FormatError extends Data.TaggedError("FormatError")<
   ErrorBase & { readonly path: string; readonly cause: unknown }
 > {}
@@ -105,4 +117,5 @@ export type SourcererError =
   | EmitConflict
   | SymbolConflict
   | WriteError
+  | UndefinedReference
   | FormatError

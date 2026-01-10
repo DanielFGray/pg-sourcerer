@@ -13,14 +13,15 @@
 import { Array as Arr, Option, pipe, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
 import { definePlugin } from "../services/plugin.js"
-import { findEnumByPgName, PgTypeOid } from "../services/pg-types.js"
+import { findEnumByPgName, findCompositeByPgName, PgTypeOid } from "../services/pg-types.js"
 import type {
   Field,
   TableEntity,
   EnumEntity,
+  CompositeEntity,
   ExtensionInfo,
 } from "../ir/semantic-ir.js"
-import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js"
+import { getEnumEntities, getTableEntities, getCompositeEntities } from "../ir/semantic-ir.js"
 import { conjure } from "../lib/conjure.js"
 import type { SymbolStatement } from "../lib/conjure.js"
 import type { ImportRef } from "../services/file-builder.js"
@@ -55,6 +56,7 @@ interface FieldContext {
   readonly schemaName: string
   readonly tableName: string
   readonly enums: readonly EnumEntity[]
+  readonly composites: readonly CompositeEntity[]
   readonly extensions: readonly ExtensionInfo[]
   readonly typeHints: TypeHintRegistry
   readonly defaultSchemas: readonly string[]
@@ -328,7 +330,21 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
     }
   }
   
-  // 3. Check complex types (need ColumnType wrapper)
+  // 3. Check if it's a composite type
+  if (pgType?.typtype === "c") {
+    const compositeName = getPgTypeName(field)
+    if (compositeName) {
+      const compositeDef = findCompositeByPgName(ctx.composites, compositeName)
+      if (Option.isSome(compositeDef)) {
+        return {
+          selectType: ts.ref(compositeDef.value.name),
+          needsColumnType: false,
+        }
+      }
+    }
+  }
+  
+  // 4. Check complex types (need ColumnType wrapper)
   const complexType = COMPLEX_TYPES[typeName]
   if (complexType) {
     return {
@@ -340,7 +356,7 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
     }
   }
   
-  // 4. Check simple scalar types
+  // 5. Check simple scalar types
   const scalarBuilder = SCALAR_TYPES[typeName]
   if (scalarBuilder) {
     return {
@@ -349,7 +365,7 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
     }
   }
   
-  // 5. Check extension types (citext, etc.)
+  // 6. Check extension types (citext, etc.)
   if (pgType) {
     const extType = getExtensionTypeMapping(
       typeName,
@@ -364,7 +380,7 @@ function resolveFieldType(field: Field, ctx: FieldContext): KyselyType {
     }
   }
   
-  // 6. Default to string (PostgreSQL sends unknown types as strings)
+  // 7. Default to string (PostgreSQL sends unknown types as strings)
   return {
     selectType: ts.string(),
     needsColumnType: false,
@@ -534,6 +550,36 @@ function generateTableInterface(
 }
 
 /**
+ * Generate composite type interface.
+ * 
+ * Composite types are simpler than tables - they just have fields,
+ * no shapes, no Generated wrapping (composites can't have defaults).
+ */
+function generateCompositeInterface(
+  composite: CompositeEntity,
+  ctx: FieldContext
+): SymbolStatement {
+  const properties: Array<{ name: string; type: n.TSType; optional?: boolean }> = []
+  
+  for (const field of composite.fields) {
+    const kyselyType = resolveFieldType(field, ctx)
+    // Composites don't have Generated wrapping - they're just data structures
+    const fieldType = buildFieldType(field, kyselyType, false)
+    
+    properties.push({
+      name: field.name,
+      type: fieldType,
+    })
+  }
+  
+  return exp.interface(
+    composite.name,
+    { capability: "types:kysely", entity: composite.name },
+    properties
+  )
+}
+
+/**
  * Generate DB interface: `export interface DB { 'schema.table': Table }`
  */
 function generateDBInterface(
@@ -582,6 +628,7 @@ interface CollectedImports {
 
 function collectImports(
   entities: readonly TableEntity[],
+  composites: readonly CompositeEntity[],
   ctx: FieldContext
 ): CollectedImports {
   const kyselyImports = new Set<string>()
@@ -591,58 +638,75 @@ function collectImports(
   let needsArrayType = false
   let needsGenerated = false
   
+  // Helper to process a single field
+  const processField = (
+    field: Field,
+    schemaName: string,
+    tableName: string,
+    checkGenerated: boolean
+  ) => {
+    const kyselyType = resolveFieldType(field, {
+      ...ctx,
+      schemaName,
+      tableName,
+    })
+    
+    // Check for ColumnType usage
+    if (kyselyType.needsColumnType) {
+      kyselyImports.add("ColumnType")
+    }
+    
+    // Check for external imports
+    if (kyselyType.externalImport) {
+      const { name, from } = kyselyType.externalImport
+      if (!externalImports.has(from)) {
+        externalImports.set(from, new Set())
+      }
+      externalImports.get(from)!.add(name)
+    }
+    
+    // Check for enum usage
+    if (isEnumType(field)) {
+      const enumName = getPgTypeName(field)
+      if (enumName) {
+        const enumDef = findEnumByPgName(ctx.enums, enumName)
+        if (Option.isSome(enumDef)) {
+          usedEnums.add(enumDef.value.name)
+        }
+      }
+    }
+    
+    // Check for JSON types
+    const pgType = field.pgAttribute.getType()
+    if (pgType?.typname === "json" || pgType?.typname === "jsonb") {
+      needsJsonTypes = true
+    }
+    
+    // Check for complex array types
+    if (field.isArray && kyselyType.needsColumnType) {
+      needsArrayType = true
+    }
+    
+    // Check for Generated (only for table fields)
+    if (checkGenerated && isGeneratedField(field)) {
+      needsGenerated = true
+    }
+  }
+  
+  // Process table entity fields
   for (const entity of entities) {
     if (!entity.permissions.canSelect) continue
     
     for (const field of entity.shapes.row.fields) {
       if (!field.permissions.canSelect) continue
-      
-      const kyselyType = resolveFieldType(field, {
-        ...ctx,
-        schemaName: entity.schemaName,
-        tableName: entity.pgName,
-      })
-      
-      // Check for ColumnType usage
-      if (kyselyType.needsColumnType) {
-        kyselyImports.add("ColumnType")
-      }
-      
-      // Check for external imports
-      if (kyselyType.externalImport) {
-        const { name, from } = kyselyType.externalImport
-        if (!externalImports.has(from)) {
-          externalImports.set(from, new Set())
-        }
-        externalImports.get(from)!.add(name)
-      }
-      
-      // Check for enum usage
-      if (isEnumType(field)) {
-        const enumName = getPgTypeName(field)
-        if (enumName) {
-          const enumDef = findEnumByPgName(ctx.enums, enumName)
-          if (Option.isSome(enumDef)) {
-            usedEnums.add(enumDef.value.name)
-          }
-        }
-      }
-      
-      // Check for JSON types
-      const pgType = field.pgAttribute.getType()
-      if (pgType?.typname === "json" || pgType?.typname === "jsonb") {
-        needsJsonTypes = true
-      }
-      
-      // Check for complex array types
-      if (field.isArray && kyselyType.needsColumnType) {
-        needsArrayType = true
-      }
-      
-      // Check for Generated
-      if (isGeneratedField(field)) {
-        needsGenerated = true
-      }
+      processField(field, entity.schemaName, entity.pgName, true)
+    }
+  }
+  
+  // Process composite entity fields
+  for (const composite of composites) {
+    for (const field of composite.fields) {
+      processField(field, composite.schemaName, composite.pgName, false)
     }
   }
   
@@ -697,6 +761,7 @@ export const kyselyTypesPlugin = definePlugin({
   run: (ctx, config) => {
     const { ir, typeHints } = ctx
     const enumEntities = getEnumEntities(ir)
+    const compositeEntities = getCompositeEntities(ir).filter(e => e.tags.omit !== true)
     const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true)
     const defaultSchemas = ir.schemas
     
@@ -705,13 +770,14 @@ export const kyselyTypesPlugin = definePlugin({
       schemaName: "",  // Will be set per-entity
       tableName: "",
       enums: enumEntities,
+      composites: compositeEntities,
       extensions: ir.extensions,
       typeHints,
       defaultSchemas,
     }
     
     // Collect what imports we need
-    const imports = collectImports(tableEntities, fieldCtx)
+    const imports = collectImports(tableEntities, compositeEntities, fieldCtx)
     
     // Build statements
     const statements: SymbolStatement[] = []
@@ -720,6 +786,15 @@ export const kyselyTypesPlugin = definePlugin({
     for (const enumEntity of enumEntities) {
       if (enumEntity.tags.omit === true) continue
       statements.push(generateEnumStatement(enumEntity))
+    }
+    
+    // Generate composite type interfaces
+    for (const composite of compositeEntities) {
+      statements.push(generateCompositeInterface(composite, {
+        ...fieldCtx,
+        schemaName: composite.schemaName,
+        tableName: composite.pgName,
+      }))
     }
     
     // Generate table interfaces

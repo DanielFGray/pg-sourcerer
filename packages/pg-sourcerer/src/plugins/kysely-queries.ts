@@ -15,7 +15,7 @@ import { conjure, cast } from "../lib/conjure.js"
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js"
 import { inflect } from "../services/inflection.js"
 
-const { ts, b } = conjure
+const { ts, b, param } = conjure
 const { toExpr } = cast
 
 // ============================================================================
@@ -30,18 +30,9 @@ const { toExpr } = cast
  */
 export type ExportNameFn = (entityName: string, methodName: string) => string
 
-/**
- * Function to generate export names for stored function wrappers.
- * @param pgFunctionName - PostgreSQL function name in snake_case (e.g., "current_user", "verify_email")
- * @returns The export name (e.g., "currentUser", "verifyEmail")
- */
-export type FunctionExportNameFn = (pgFunctionName: string) => string
-
-/** Default export name: entityName + methodName (e.g., "UserFindById") */
-const defaultExportName: ExportNameFn = (entityName, methodName) => `${entityName}${methodName}`
-
-/** Default function export name: camelCase of pg function name */
-const defaultFunctionExportName: FunctionExportNameFn = (pgFunctionName) => inflect.camelCase(pgFunctionName)
+/** Default export name: camelCase method name (e.g., "findById") */
+const defaultExportName: ExportNameFn = (_entityName, methodName) => 
+  methodName.charAt(0).toLowerCase() + methodName.slice(1)
 
 /**
  * Schema for serializable config options (JSON/YAML compatible).
@@ -81,9 +72,30 @@ const KyselyQueriesPluginConfigSchema = S.Struct({
    */
   exportName: S.optional(S.Any),
   /**
-   * Function export name function (validated as Any, properly typed in KyselyQueriesConfigInput)
+   * Export style for generated query functions.
+   * - "flat": Individual exports (e.g., `export const findById = ...`)
+   * - "namespace": Single object export (e.g., `export const User = { findById: ... }`)
    */
-  functionExportName: S.optional(S.Any),
+  exportStyle: S.optionalWith(S.Literal("flat", "namespace"), { default: () => "flat" as const }),
+  /**
+   * Use explicit column lists instead of .selectAll().
+   * When true, generates .select(['col1', 'col2']) which excludes omitted fields at runtime.
+   * Defaults to true.
+   */
+  explicitColumns: S.optionalWith(S.Boolean, { default: () => true }),
+  /**
+   * Whether to pass db as first parameter to each function.
+   * When true (default), functions take `db: Kysely<DB>` as first arg.
+   * When false, functions use a module-level `db` variable - use `header`
+   * to provide the import statement.
+   */
+  dbAsParameter: S.optionalWith(S.Boolean, { default: () => true }),
+  /**
+   * Header content to prepend to each generated file.
+   * Use this to provide imports when dbAsParameter is false.
+   * Example: `import { db } from "../db.js"`
+   */
+  header: S.optional(S.String),
 })
 
 type KyselyQueriesPluginConfigSchema = S.Schema.Type<typeof KyselyQueriesPluginConfigSchema>
@@ -100,26 +112,42 @@ export interface KyselyQueriesConfigInput {
   readonly functionsFile?: string
   /**
    * Custom export name function for CRUD/lookup methods.
-   * @default (entityName, methodName) => entityName + methodName
+   * @default (_entityName, methodName) => camelCase(methodName)
    * @example
-   * // Unprefixed: "FindById", "Create"
-   * exportName: (_entity, method) => method
+   * // PascalCase prefix: "UserFindById", "UserCreate"
+   * exportName: (entity, method) => entity + method
    * 
    * // camelCase prefix: "userFindById", "userCreate"  
    * exportName: (entity, method) => entity.toLowerCase() + method
    */
   readonly exportName?: ExportNameFn
   /**
-   * Custom export name function for stored function wrappers.
-   * @default (pgFunctionName) => camelCase(pgFunctionName)
-   * @example
-   * // PascalCase: "CurrentUser", "VerifyEmail"
-   * functionExportName: (fn) => pascalCase(fn)
-   * 
-   * // Prefixed: "fnCurrentUser", "fnVerifyEmail"
-   * functionExportName: (fn) => "fn" + pascalCase(fn)
+   * Export style for generated query functions.
+   * - "flat": Individual exports (e.g., `export const findById = ...`)
+   * - "namespace": Single object export (e.g., `export const User = { findById: ... }`)
+   * @default "flat"
    */
-  readonly functionExportName?: FunctionExportNameFn
+  readonly exportStyle?: "flat" | "namespace"
+  /**
+   * Use explicit column lists instead of .selectAll().
+   * When true, generates .select(['col1', 'col2']) which excludes omitted fields at runtime.
+   * @default true
+   */
+  readonly explicitColumns?: boolean
+  /**
+   * Whether to pass db as first parameter to each function.
+   * When true (default), functions take `db: Kysely<DB>` as first arg.
+   * When false, functions use a module-level `db` variable - use `header`
+   * to provide the import statement.
+   * @default true
+   */
+  readonly dbAsParameter?: boolean
+  /**
+   * Header content to prepend to each generated file.
+   * Use this to provide imports when dbAsParameter is false.
+   * Example: `import { db } from "../db.js"`
+   */
+  readonly header?: string
 }
 
 /**
@@ -127,7 +155,6 @@ export interface KyselyQueriesConfigInput {
  */
 interface KyselyQueriesPluginConfig extends KyselyQueriesPluginConfigSchema {
   readonly exportName: ExportNameFn
-  readonly functionExportName: FunctionExportNameFn
 }
 
 // ============================================================================
@@ -146,6 +173,19 @@ interface GenerationContext {
   readonly entityName: string
   /** Function to generate export names */
   readonly exportName: ExportNameFn
+  /** Use explicit column lists instead of .selectAll() */
+  readonly explicitColumns: boolean
+  /** Whether to include db as first parameter */
+  readonly dbAsParameter: boolean
+}
+
+/**
+ * A generated method definition (name + arrow function).
+ * Used to support both flat exports and namespace object exports.
+ */
+interface MethodDef {
+  readonly name: string
+  readonly fn: n.ArrowFunctionExpression
 }
 
 /**
@@ -260,6 +300,15 @@ const selectFrom = (tableRef: string): n.CallExpression =>
   call(id("db"), "selectFrom", [str(tableRef)])
 
 /**
+ * Build column selection: .selectAll() or .select(['col1', 'col2'])
+ * When explicitColumns is true, uses explicit column list from row shape.
+ */
+const selectColumns = (base: n.Expression, entity: TableEntity, explicitColumns: boolean): n.CallExpression =>
+  explicitColumns
+    ? call(base, "select", [b.arrayExpression(entity.shapes.row.fields.map(f => str(f.columnName)))])
+    : call(base, "selectAll")
+
+/**
  * Build Kysely query chain: db.insertInto('table')
  */
 const insertInto = (tableRef: string): n.CallExpression =>
@@ -283,8 +332,8 @@ const deleteFrom = (tableRef: string): n.CallExpression =>
 const chain = (expr: n.Expression, method: string, args: n.Expression[] = []): n.CallExpression =>
   call(expr, method, args)
 
-/** Arrow function parameter - identifier or assignment pattern (for defaults) */
-type ArrowParam = n.Identifier | n.AssignmentPattern
+/** Arrow function parameter - identifier, assignment pattern (for defaults), or object pattern (destructuring) */
+type ArrowParam = n.Identifier | n.AssignmentPattern | n.ObjectPattern
 
 /**
  * Build arrow function expression: (params) => body
@@ -629,34 +678,24 @@ const resolveArgs = (fn: FunctionEntity, ir: SemanticIR): ResolvedArg[] =>
 // ============================================================================
 
 /**
- * Generate a typed parameter with explicit type annotation from type string.
+ * Convert a type string to a TSType AST node.
  */
-const typedParamFromString = (name: string, typeStr: string): n.Identifier => {
-  const param = id(name)
-  // Map type string to AST
-  let typeAst: n.TSType
+const typeStringToAst = (typeStr: string): n.TSType => {
   switch (typeStr) {
     case "string":
-      typeAst = ts.string()
-      break
+      return ts.string()
     case "number":
-      typeAst = ts.number()
-      break
+      return ts.number()
     case "boolean":
-      typeAst = ts.boolean()
-      break
+      return ts.boolean()
     case "Date":
-      typeAst = ts.ref("Date")
-      break
+      return ts.ref("Date")
     case "Buffer":
-      typeAst = ts.ref("Buffer")
-      break
+      return ts.ref("Buffer")
     case "unknown":
-      typeAst = ts.unknown()
-      break
+      return ts.unknown()
     case "void":
-      typeAst = ts.void()
-      break
+      return ts.void()
     default:
       // Handle array types like "string[]"
       if (typeStr.endsWith("[]")) {
@@ -665,25 +704,22 @@ const typedParamFromString = (name: string, typeStr: string): n.Identifier => {
           : elemType === "number" ? ts.number()
           : elemType === "boolean" ? ts.boolean()
           : ts.ref(elemType)
-        typeAst = ts.array(elemAst)
+        return ts.array(elemAst)
       } else {
         // Assume it's a type reference (composite, enum, etc.)
-        typeAst = ts.ref(typeStr)
+        return ts.ref(typeStr)
       }
   }
-  param.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(typeAst))
-  return param
 }
 
 /**
- * Generate an optional typed parameter with explicit type annotation.
+ * Generate a typed parameter with explicit type annotation from type string.
  */
-const optionalTypedParamFromString = (name: string, typeStr: string): n.Identifier => {
-  const param = typedParamFromString(name, typeStr)
-  param.optional = true
-  return param
+const typedParamFromString = (name: string, typeStr: string): n.Identifier => {
+  const p = id(name)
+  p.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(typeStringToAst(typeStr)))
+  return p
 }
-
 /**
  * Get the fully qualified function name for use in eb.fn call.
  */
@@ -691,7 +727,7 @@ const getFunctionQualifiedName = (fn: FunctionEntity): string =>
   `${fn.schemaName}.${fn.pgName}`
 
 /**
- * Generate a function wrapper method as an object property.
+ * Generate a function wrapper method.
  * 
  * Patterns:
  * - SETOF/table return: db.selectFrom(eb => eb.fn<Type>(...).as('f')).selectAll().execute()
@@ -702,8 +738,8 @@ const generateFunctionWrapper = (
   fn: FunctionEntity,
   ir: SemanticIR,
   executeQueries: boolean,
-  functionExportName: FunctionExportNameFn
-): n.Statement => {
+  dbAsParameter: boolean,
+): MethodDef => {
   const resolvedReturn = resolveReturnType(fn, ir)
   const resolvedArgs = resolveArgs(fn, ir)
   const qualifiedName = getFunctionQualifiedName(fn)
@@ -763,23 +799,31 @@ const generateFunctionWrapper = (
     }
   }
 
-  // Build the parameters: (db: Kysely<DB>, arg1: Type1, arg2?: Type2, ...)
-  const params: ArrowParam[] = [
-    typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
-    ...resolvedArgs.map(arg =>
-      arg.isOptional
-        ? optionalTypedParamFromString(arg.name, arg.tsType)
-        : typedParamFromString(arg.name, arg.tsType)
+  // Build the parameters using destructured object pattern
+  // When dbAsParameter is true: ({ arg1, arg2 }: { arg1: Type1; arg2?: Type2 }, db: Kysely<DB>) => ...
+  // When dbAsParameter is false: ({ arg1, arg2 }: { arg1: Type1; arg2?: Type2 }) => ...
+  const params: ArrowParam[] = []
+  
+  // Add destructured options param if there are any args
+  if (resolvedArgs.length > 0) {
+    const optionsParam = param.destructured(
+      resolvedArgs.map(arg => ({
+        name: arg.name,
+        type: typeStringToAst(arg.tsType),
+        optional: arg.isOptional,
+      }))
     )
-  ]
+    params.push(optionsParam)
+  }
+  
+  // Add db param last if enabled
+  if (dbAsParameter) {
+    params.push(typedParam("db", ts.ref("Kysely", [ts.ref("DB")])))
+  }
 
   const wrapperFn = arrowFn(params, query)
 
-  const exportName = functionExportName(fn.pgName)
-  const constDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(id(exportName), wrapperFn)
-  ])
-  return b.exportNamedDeclaration(constDecl, []) as n.Statement
+  return { name: fn.name, fn: wrapperFn }
 }
 
 /**
@@ -812,11 +856,11 @@ const collectFunctionTypeImports = (
 // ============================================================================
 
 /**
- * Generate findById method:
- * export const UserFindById = (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
+ * Generate findById method if entity has a primary key and canSelect permission:
+ * export const findById = ({ id }: { id: number }, db: Kysely<DB>) => db.selectFrom('table').select([...]).where('id', '=', id).executeTakeFirst()
  */
-const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns, dbAsParameter } = ctx
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -827,9 +871,9 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
   const fieldName = pkField.name
   const fieldType = getFieldTypeAst(pkField, ctx)
 
-  // db.selectFrom('table').selectAll().where('col', '=', id)
+  // db.selectFrom('table').select([...]).where('col', '=', id)
   let query: n.Expression = chain(
-    chain(selectFrom(tableRef), "selectAll"),
+    selectColumns(selectFrom(tableRef), entity, explicitColumns),
     "where",
     [str(pkColName), str("="), id(fieldName)]
   )
@@ -838,12 +882,16 @@ const generateFindById = (ctx: GenerationContext): n.Statement | undefined => {
     query = chain(query, "executeTakeFirst")
   }
 
-  const fn = arrowFn(
-    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
-    query
-  )
+  // Destructured param: { id }: { id: number }
+  const optionsParam = param.destructured([{ name: fieldName, type: fieldType }])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
 
-  return conjure.export.const(exportName(entityName, "FindById"), fn)
+  // Options first, db last
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
+
+  return { name: exportName(entityName, "FindById"), fn }
 }
 
 /** Default limit for findMany queries */
@@ -853,27 +901,19 @@ const DEFAULT_LIMIT = 50
 const DEFAULT_OFFSET = 0
 
 /**
- * Create a parameter with a default value: name = defaultValue
- * Type is inferred from the default value, no explicit annotation.
- */
-const paramWithDefault = (name: string, defaultValue: n.Expression): n.AssignmentPattern =>
-  b.assignmentPattern(id(name), toExpr(defaultValue))
-
-/**
  * Generate listMany method with pagination defaults:
- * export const UserListMany = (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
- *   .limit(limit).offset(offset).execute()
+ * export const listMany = ({ limit = 50, offset = 0 }: { limit?: number; offset?: number }, db: Kysely<DB>) => ...
  */
-const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateListMany = (ctx: GenerationContext): MethodDef | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns, dbAsParameter } = ctx
   if (!entity.permissions.canSelect) return undefined
 
   const tableRef = getTableRef(entity, defaultSchemas)
 
-  // Build query: db.selectFrom('table').selectAll().limit(limit).offset(offset)
+  // Build query: db.selectFrom('table').select([...]).limit(limit).offset(offset)
   let query: n.Expression = chain(
     chain(
-      chain(selectFrom(tableRef), "selectAll"),
+      selectColumns(selectFrom(tableRef), entity, explicitColumns),
       "limit",
       [id("limit")]
     ),
@@ -886,24 +926,26 @@ const generateListMany = (ctx: GenerationContext): n.Statement | undefined => {
     query = chain(query, "execute")
   }
 
-  const fn = arrowFn(
-    [
-      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
-      paramWithDefault("limit", b.numericLiteral(DEFAULT_LIMIT)),
-      paramWithDefault("offset", b.numericLiteral(DEFAULT_OFFSET)),
-    ],
-    query
-  )
+  // Destructured param with defaults: { limit = 50, offset = 0 }: { limit?: number; offset?: number }
+  const optionsParam = param.destructured([
+    { name: "limit", type: ts.number(), optional: true, defaultValue: b.numericLiteral(DEFAULT_LIMIT) },
+    { name: "offset", type: ts.number(), optional: true, defaultValue: b.numericLiteral(DEFAULT_OFFSET) },
+  ])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
 
-  return conjure.export.const(exportName(entityName, "ListMany"), fn)
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
+
+  return { name: exportName(entityName, "ListMany"), fn }
 }
 
 /**
  * Generate create method:
- * export const UserCreate = (db, data) => db.insertInto('table').values(data).returningAll().executeTakeFirstOrThrow()
+ * export const create = ({ data }: { data: Insertable<Users> }, db: Kysely<DB>) => ...
  */
-const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateCreate = (ctx: GenerationContext): MethodDef | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, dbAsParameter } = ctx
   if (!entity.permissions.canInsert) return undefined
 
   const tableRef = getTableRef(entity, defaultSchemas)
@@ -919,24 +961,25 @@ const generateCreate = (ctx: GenerationContext): n.Statement | undefined => {
     query = chain(query, "executeTakeFirstOrThrow")
   }
 
-  // Use Insertable<TableTypeName> for the data parameter
-  const fn = arrowFn(
-    [
-      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
-      typedParam("data", ts.ref("Insertable", [ts.ref(tableTypeName)])),
-    ],
-    query
-  )
+  // Destructured param: { data }: { data: Insertable<Users> }
+  const optionsParam = param.destructured([
+    { name: "data", type: ts.ref("Insertable", [ts.ref(tableTypeName)]) },
+  ])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
 
-  return conjure.export.const(exportName(entityName, "Create"), fn)
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
+
+  return { name: exportName(entityName, "Create"), fn }
 }
 
 /**
  * Generate update method:
- * export const UserUpdate = (db, id, data) => db.updateTable('table').set(data).where('id', '=', id).returningAll().executeTakeFirstOrThrow()
+ * export const update = ({ id, data }: { id: number; data: Updateable<Users> }, db: Kysely<DB>) => ...
  */
-const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateUpdate = (ctx: GenerationContext): MethodDef | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, dbAsParameter } = ctx
   if (!entity.primaryKey || !entity.permissions.canUpdate) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -962,25 +1005,26 @@ const generateUpdate = (ctx: GenerationContext): n.Statement | undefined => {
     query = chain(query, "executeTakeFirstOrThrow")
   }
 
-  // Use Updateable<TableTypeName> for the data parameter
-  const fn = arrowFn(
-    [
-      typedParam("db", ts.ref("Kysely", [ts.ref("DB")])),
-      typedParam(fieldName, fieldType),
-      typedParam("data", ts.ref("Updateable", [ts.ref(tableTypeName)])),
-    ],
-    query
-  )
+  // Destructured param: { id, data }: { id: number; data: Updateable<Users> }
+  const optionsParam = param.destructured([
+    { name: fieldName, type: fieldType },
+    { name: "data", type: ts.ref("Updateable", [ts.ref(tableTypeName)]) },
+  ])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
 
-  return conjure.export.const(exportName(entityName, "Update"), fn)
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
+
+  return { name: exportName(entityName, "Update"), fn }
 }
 
 /**
  * Generate delete method:
- * export const UserRemove = (db, id) => db.deleteFrom('table').where('id', '=', id).execute()
+ * export const remove = ({ id }: { id: number }, db: Kysely<DB>) => ...
  */
-const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateDelete = (ctx: GenerationContext): MethodDef | undefined => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, dbAsParameter } = ctx
   if (!entity.primaryKey || !entity.permissions.canDelete) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -1002,23 +1046,26 @@ const generateDelete = (ctx: GenerationContext): n.Statement | undefined => {
     query = chain(query, "execute")
   }
 
-  const fn = arrowFn(
-    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(fieldName, fieldType)],
-    query
-  )
+  // Destructured param: { id }: { id: number }
+  const optionsParam = param.destructured([{ name: fieldName, type: fieldType }])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
 
-  return conjure.export.const(exportName(entityName, "Remove"), fn)
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
+
+  return { name: exportName(entityName, "Remove"), fn }
 }
 
 /** Generate all CRUD methods for an entity */
-const generateCrudMethods = (ctx: GenerationContext): readonly n.Statement[] =>
+const generateCrudMethods = (ctx: GenerationContext): readonly MethodDef[] =>
   [
     generateFindById(ctx),
     ctx.generateListMany ? generateListMany(ctx) : undefined,
     generateCreate(ctx),
     generateUpdate(ctx),
     generateDelete(ctx),
-  ].filter((p): p is n.Statement => p != null)
+  ].filter((p): p is MethodDef => p != null)
 
 // ============================================================================
 // Index-based Lookup Functions
@@ -1058,8 +1105,8 @@ const generateLookupMethodName = (
  * Generate a lookup method for a single-column index.
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
-const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statement => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDef => {
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns, dbAsParameter } = ctx
   const tableRef = getTableRef(entity, defaultSchemas)
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
@@ -1086,9 +1133,9 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statem
       )
     : getFieldTypeAst(field, ctx)
 
-  // db.selectFrom('table').selectAll().where('col', '=', value)
+  // db.selectFrom('table').select([...]).where('col', '=', value)
   let query: n.Expression = chain(
-    chain(selectFrom(tableRef), "selectAll"),
+    selectColumns(selectFrom(tableRef), entity, explicitColumns),
     "where",
     [str(columnName), str("="), id(paramName)]
   )
@@ -1097,13 +1144,16 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): n.Statem
     query = chain(query, isUnique ? "executeTakeFirst" : "execute")
   }
 
-  const fn = arrowFn(
-    [typedParam("db", ts.ref("Kysely", [ts.ref("DB")])), typedParam(paramName, paramType)],
-    query
-  )
+  // Destructured param: { author }: { author: Selectable<Posts>["authorId"] }
+  const optionsParam = param.destructured([{ name: paramName, type: paramType }])
+  const dbParam = param.typed("db", ts.ref("Kysely", [ts.ref("DB")]))
+
+  const params = dbAsParameter ? [optionsParam, dbParam] : [optionsParam]
+
+  const fn = arrowFn(params, query)
 
   const methodName = generateLookupMethodName(entity, index, relation)
-  return conjure.export.const(exportName(entityName, methodName), fn)
+  return { name: exportName(entityName, methodName), fn }
 }
 
 /**
@@ -1138,7 +1188,7 @@ const isUniqueLookup = (entity: TableEntity, index: IndexDef): boolean => {
 }
 
 /** Generate lookup methods for all eligible indexes, deduplicating by column */
-const generateLookupMethods = (ctx: GenerationContext): readonly n.Statement[] => {
+const generateLookupMethods = (ctx: GenerationContext): readonly MethodDef[] => {
   const eligibleIndexes = ctx.entity.indexes
     .filter(index => shouldGenerateLookup(index) && !index.isPrimary && ctx.entity.permissions.canSelect)
 
@@ -1162,6 +1212,43 @@ const generateLookupMethods = (ctx: GenerationContext): readonly n.Statement[] =
 }
 
 // ============================================================================
+// Export Style Helpers
+// ============================================================================
+
+/**
+ * Convert MethodDef array to flat export statements.
+ * Each method becomes: export const methodName = (db, ...) => ...
+ */
+const toFlatExports = (methods: readonly MethodDef[]): n.Statement[] =>
+  methods.map(m => conjure.export.const(m.name, m.fn))
+
+/**
+ * Convert MethodDef array to a single namespace object export.
+ * All methods become: export const EntityName = { methodName: (db, ...) => ..., ... }
+ */
+const toNamespaceExport = (entityName: string, methods: readonly MethodDef[]): n.Statement => {
+  const properties = methods.map(m =>
+    b.objectProperty(id(m.name), m.fn)
+  )
+  const obj = b.objectExpression(properties)
+  return conjure.export.const(entityName, obj)
+}
+
+/**
+ * Convert MethodDef array to statements based on export style.
+ */
+const toStatements = (
+  methods: readonly MethodDef[],
+  exportStyle: "flat" | "namespace",
+  entityName: string
+): n.Statement[] => {
+  if (methods.length === 0) return []
+  return exportStyle === "namespace"
+    ? [toNamespaceExport(entityName, methods)]
+    : toFlatExports(methods)
+}
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -1180,12 +1267,11 @@ export const kyselyQueriesPlugin = definePlugin({
     const config: KyselyQueriesPluginConfig = {
       ...rawConfig,
       exportName: rawConfig.exportName ?? defaultExportName,
-      functionExportName: rawConfig.functionExportName ?? defaultFunctionExportName,
     }
 
     const enums = getEnumEntities(ctx.ir)
     const defaultSchemas = ctx.ir.schemas
-    const { dbTypesPath, executeQueries, generateListMany, exportName, functionExportName } = config
+    const { dbTypesPath, executeQueries, generateListMany, exportName, explicitColumns, dbAsParameter, header } = config
 
     // Pre-compute function groupings by return entity name
     // Functions returning entities go in that entity's file; scalars go in functions.ts
@@ -1212,14 +1298,21 @@ export const kyselyQueriesPlugin = definePlugin({
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName }
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName, explicitColumns, dbAsParameter }
         
-        const crudStatements = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)]
+        // Collect all methods for this entity
+        const methods: MethodDef[] = [
+          ...generateCrudMethods(genCtx),
+          ...generateLookupMethods(genCtx),
+        ]
 
         // Get functions that return this entity
         const entityFunctions = functionsByEntity.get(entity.name) ?? []
+        for (const fn of entityFunctions) {
+          methods.push(generateFunctionWrapper(fn, ctx.ir, executeQueries, dbAsParameter))
+        }
 
-        if (crudStatements.length === 0 && entityFunctions.length === 0) return
+        if (methods.length === 0) return
 
         const fileNameCtx: FileNameContext = {
           entityName,
@@ -1230,20 +1323,22 @@ export const kyselyQueriesPlugin = definePlugin({
         }
         const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
 
-        // All statements for the file: CRUD methods + function wrappers
-        const statements: n.Statement[] = [...crudStatements]
-
-        // Add function wrappers as flat exports
-        for (const fn of entityFunctions) {
-          statements.push(generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName))
-        }
+        // Convert methods to statements based on export style
+        const statements = toStatements(methods, config.exportStyle, entityName)
 
         const file = ctx
           .file(filePath)
 
-        // Import Kysely type and DB from kysely-codegen output
-        file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
-        file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+        // Add user-provided header if specified
+        if (header) {
+          file.header(header)
+        }
+
+        // Import Kysely type only when db is passed as parameter
+        if (dbAsParameter) {
+          file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+          file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+        }
 
         // Import Insertable/Updateable helper types and table type if we generate create/update
         const tableTypeName = getTableTypeName(entity)
@@ -1299,13 +1394,23 @@ export const kyselyQueriesPlugin = definePlugin({
         if (compositeFunctions.length === 0) continue
 
         const filePath = `${config.outputDir}/${composite.name}.ts`
-        const statements = compositeFunctions.map(fn =>
-          generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+        const methods = compositeFunctions.map(fn =>
+          generateFunctionWrapper(fn, ctx.ir, executeQueries, dbAsParameter)
         )
+        const statements = toStatements(methods, config.exportStyle, composite.name)
 
         const file = ctx.file(filePath)
-        file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
-        file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+
+        // Add user-provided header if specified
+        if (header) {
+          file.header(header)
+        }
+
+        // Import Kysely type only when db is passed as parameter
+        if (dbAsParameter) {
+          file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+          file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+        }
 
         // Import the composite type and any types needed by function args
         const fnTypeImports = collectFunctionTypeImports(compositeFunctions, ctx.ir)
@@ -1320,15 +1425,24 @@ export const kyselyQueriesPlugin = definePlugin({
     if (config.generateFunctions && scalarFunctions.length > 0) {
       const filePath = `${config.outputDir}/${config.functionsFile}`
 
-      const statements = scalarFunctions.map(fn =>
-        generateFunctionWrapper(fn, ctx.ir, executeQueries, config.functionExportName)
+      const methods = scalarFunctions.map(fn =>
+        generateFunctionWrapper(fn, ctx.ir, executeQueries, dbAsParameter)
       )
+      // For scalar functions, use "functions" as the namespace name
+      const statements = toStatements(methods, config.exportStyle, "functions")
 
       const file = ctx.file(filePath)
 
-      // Import Kysely type and DB
-      file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
-      file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+      // Add user-provided header if specified
+      if (header) {
+        file.header(header)
+      }
+
+      // Import Kysely type only when db is passed as parameter
+      if (dbAsParameter) {
+        file.import({ kind: "package", types: ["Kysely"], from: "kysely" })
+        file.import({ kind: "relative", types: ["DB"], from: dbTypesPath })
+      }
 
       // Import any types needed for function args (scalars don't need return type imports)
       const typeImports = collectFunctionTypeImports(scalarFunctions, ctx.ir)

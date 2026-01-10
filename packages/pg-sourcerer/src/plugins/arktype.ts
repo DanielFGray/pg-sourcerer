@@ -47,9 +47,13 @@ const ArkTypePluginConfig = S.Struct({
   /** Export inferred types alongside schemas */
   exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
   /** How to represent enum values: 'strings' uses union literals, 'enum' uses TS enum */
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
+    default: () => "strings" as const,
+  }),
   /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
+  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
+    default: () => "separate" as const,
+  }),
 });
 
 type ArkTypePluginConfig = S.Schema.Type<typeof ArkTypePluginConfig>;
@@ -239,10 +243,10 @@ const generateShapeStatements = (
   ctx: FieldContext,
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:arktype", entity: entityName, shape: shapeKind };
+  const schemaSymbolCtx = { capability: "schemas", entity: entityName, shape: shapeKind };
   const schemaExpr = buildShapeArkTypeObject(shape, ctx);
 
-  const schemaStatement = exp.const(shape.name, symbolCtx, schemaExpr);
+  const schemaStatement = exp.const(shape.name, schemaSymbolCtx, schemaExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
@@ -250,8 +254,10 @@ const generateShapeStatements = (
 
   // Generate: export type ShapeName = typeof ShapeName.infer
   // ArkType uses Schema.infer for the inferred type
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
   const inferType = ts.typeof(`${shape.name}.infer`);
-  const typeStatement = exp.type(shape.name, symbolCtx, inferType);
+  const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
 };
@@ -319,18 +325,20 @@ const generateCompositeStatements = (
   ctx: FieldContext,
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:arktype", entity: composite.name };
+  const schemaSymbolCtx = { capability: "schemas", entity: composite.name };
   const schemaExpr = buildCompositeArkTypeObject(composite, ctx);
 
-  const schemaStatement = exp.const(composite.name, symbolCtx, schemaExpr);
+  const schemaStatement = exp.const(composite.name, schemaSymbolCtx, schemaExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
   }
 
   // Generate: export type CompositeName = typeof CompositeName.infer
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: composite.name };
   const inferType = ts.typeof(`${composite.name}.infer`);
-  const typeStatement = exp.type(composite.name, symbolCtx, inferType);
+  const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
 };
@@ -347,8 +355,9 @@ const generateCompositeStatements = (
 const generateEnumStatement = (
   enumEntity: EnumEntity,
   enumStyle: "strings" | "enum",
+  exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:arktype", entity: enumEntity.name };
+  const schemaSymbolCtx = { capability: "schemas", entity: enumEntity.name };
 
   if (enumStyle === "enum") {
     // Generate: export enum EnumName { A = 'a', B = 'b', ... }
@@ -361,12 +370,13 @@ const generateEnumStatement = (
         ),
       ),
     );
+    // The enum itself is a type - register under "types" capability
     const enumStatement: SymbolStatement = {
       _tag: "SymbolStatement",
       node: conjure.b.exportNamedDeclaration(enumDecl, []),
       symbol: {
         name: enumEntity.name,
-        capability: "schemas:arktype",
+        capability: "types",
         entity: enumEntity.name,
         isType: true,
       },
@@ -383,7 +393,7 @@ const generateEnumStatement = (
       .id("type")
       .call([conjure.str("keyof"), typeofExpr as n.Expression])
       .build();
-    const schemaStatement = exp.const(schemaName, symbolCtx, schemaExpr);
+    const schemaStatement = exp.const(schemaName, schemaSymbolCtx, schemaExpr);
 
     return [enumStatement, schemaStatement];
   }
@@ -394,7 +404,19 @@ const generateEnumStatement = (
     .id("type")
     .call([conjure.str(enumString)])
     .build();
-  return [exp.const(enumEntity.name, symbolCtx, schemaExpr)];
+  const schemaStatement = exp.const(enumEntity.name, schemaSymbolCtx, schemaExpr);
+
+  if (!exportTypes) {
+    return [schemaStatement];
+  }
+
+  // Generate: export type EnumName = typeof EnumName.infer
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
+  const inferType = ts.typeof(`${enumEntity.name}.infer`);
+  const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
+
+  return [schemaStatement, typeStatement];
 };
 
 /** Collect enum names used by fields */
@@ -415,7 +437,7 @@ const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]
 const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   Arr.fromIterable(usedEnums).map(enumName => ({
     kind: "symbol" as const,
-    ref: { capability: "schemas:arktype", entity: enumName },
+    ref: { capability: "schemas", entity: enumName },
   }));
 
 // ============================================================================
@@ -430,7 +452,10 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
  */
 export const arktypePlugin = definePlugin({
   name: "arktype",
-  provides: ["schemas:arktype", "schemas"],
+  provides: config =>
+    config.exportTypes
+      ? ["schemas", "types"]
+      : ["schemas"],
   configSchema: ArkTypePluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,
@@ -461,7 +486,7 @@ export const arktypePlugin = definePlugin({
             entity: enumEntity,
           };
           const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-          const statements = generateEnumStatement(enumEntity, enumStyle);
+          const statements = generateEnumStatement(enumEntity, enumStyle, config.exportTypes);
 
           ctx
             .file(filePath)

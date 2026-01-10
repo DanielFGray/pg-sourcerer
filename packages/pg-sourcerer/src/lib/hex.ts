@@ -237,27 +237,6 @@ export function buildReturnQuery(
 }
 
 // =============================================================================
-// Function Builders
-// =============================================================================
-
-/**
- * Create an async function declaration with inferred return type.
- */
-export function asyncFn(
-  name: string,
-  params: (n.Identifier | n.ObjectPattern)[],
-  body: n.Statement[]
-): n.FunctionDeclaration {
-  const fn = b.functionDeclaration(
-    b.identifier(name),
-    params,
-    b.blockStatement(body.map(cast.toStmt))
-  )
-  fn.async = true
-  return fn
-}
-
-// =============================================================================
 // Main API
 // =============================================================================
 
@@ -283,9 +262,6 @@ export const hex = {
   firstRowDecl: buildFirstRowDecl,
   allRowsDecl: buildAllRowsDecl,
   returnQuery: buildReturnQuery,
-
-  // Function builders
-  asyncFn,
 } as const
 
 export default hex

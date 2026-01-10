@@ -144,8 +144,8 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // Flat exports with entity prefix: UserFindById (PascalCase default)
-        expect(userFile?.content).toContain("export const UserFindById")
+        // Flat exports with camelCase method names (default)
+        expect(userFile?.content).toContain("export const findById")
         expect(userFile?.content).toContain("executeTakeFirst()")
       })
     )
@@ -161,7 +161,7 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        expect(userFile?.content).toContain("export const UserListMany")
+        expect(userFile?.content).toContain("export const listMany")
         expect(userFile?.content).toContain("limit = 50")
         expect(userFile?.content).toContain("offset = 0")
         expect(userFile?.content).toContain(".limit(limit)")
@@ -195,7 +195,7 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        expect(postFile?.content).toContain("export const PostCreate")
+        expect(postFile?.content).toContain("export const create")
         expect(postFile?.content).toContain("insertInto(")
         expect(postFile?.content).toContain(".values(data)")
         expect(postFile?.content).toContain("returningAll()")
@@ -213,14 +213,14 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
-        expect(postFile?.content).toContain("export const PostRemove")
+        expect(postFile?.content).toContain("export const remove")
         expect(postFile?.content).toContain("deleteFrom(")
       })
     )
   })
 
   describe("flat export style", () => {
-    it.effect("exports flat constants with entity prefix", () =>
+    it.effect("exports flat constants with camelCase method names", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR(["app_public"])
         const testLayer = createTestLayer(ir)
@@ -231,9 +231,9 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // Should export flat constants like UserFindById, UserCreate, etc. (PascalCase default)
-        expect(userFile?.content).toContain("export const UserFindById")
-        expect(userFile?.content).toContain("export const UserCreate")
+        // Should export flat constants like findById, create, etc. (camelCase default)
+        expect(userFile?.content).toContain("export const findById")
+        expect(userFile?.content).toContain("export const create")
       })
     )
 
@@ -248,8 +248,79 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
-        // All methods should have db: Kysely<DB> as first param
-        expect(userFile?.content).toMatch(/UserFindById\s*=\s*\(db:\s*Kysely<DB>/)
+        // All methods should have destructured options first, db: Kysely<DB> as last param
+        expect(userFile?.content).toMatch(/findById\s*=\s*\(/)
+      })
+    )
+  })
+
+  describe("namespace export style", () => {
+    it.effect("generates single object export with entity name", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Should export single object with entity name
+        expect(userFile?.content).toContain("export const User = {")
+        // Should NOT have flat exports
+        expect(userFile?.content).not.toMatch(/export const findById\s*=/)
+      })
+    )
+
+    it.effect("includes methods as object properties", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Methods should be object properties with destructured params first, db last
+        expect(userFile?.content).toMatch(/findById:\s*\(/)
+        expect(userFile?.content).toMatch(/create:\s*\(/)
+      })
+    )
+
+    it.effect("includes function wrappers in namespace object", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // current_user function should be in the User namespace
+        expect(userFile?.content).toContain("export const User = {")
+        expect(userFile?.content).toMatch(/currentUser:\s*\(db:\s*Kysely<DB>/)
+      })
+    )
+
+    it.effect("generates namespace export for scalar functions", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public", "app_private"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", exportStyle: "namespace" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+
+        // Scalar functions should be in a "functions" namespace
+        expect(functionsFile?.content).toContain("export const functions = {")
+        expect(functionsFile?.content).toMatch(/currentSessionId:\s*\(db:\s*Kysely<DB>/)
       })
     )
   })
@@ -267,7 +338,7 @@ describe("Kysely Queries Plugin", () => {
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
         // users table has unique index on username
-        expect(userFile?.content).toContain("export const UserFindOneByUsername")
+        expect(userFile?.content).toContain("export const findOneByUsername")
       })
     )
 
@@ -283,10 +354,10 @@ describe("Kysely Queries Plugin", () => {
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
         // posts table has index on user_id (FK to users)
-        // Uses semantic naming: PostFindManyByUser instead of PostFindManyByUserId
-        expect(postFile?.content).toContain("export const PostFindManyByUser")
+        // Uses semantic naming: findManyByUser instead of findManyByUserId
+        expect(postFile?.content).toContain("export const findManyByUser")
         // Non-unique should use execute() not executeTakeFirst()
-        expect(postFile?.content).toMatch(/PostFindManyByUser[\s\S]*?\.execute\(\)/)
+        expect(postFile?.content).toMatch(/findManyByUser[\s\S]*?\.execute\(\)/)
       })
     )
   })
@@ -503,8 +574,10 @@ describe("Kysely Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer)
         const functionsFile = all.find((e) => e.path.includes("functions.ts"))
 
-        // verify_email has user_email_id: uuid and token: text
-        expect(functionsFile?.content).toMatch(/verifyEmail.*user_email_id:\s*string.*token:\s*string/)
+        // verify_email has user_email_id: uuid and token: text in destructured object
+        expect(functionsFile?.content).toMatch(/verifyEmail\s*=\s*\(/)
+        expect(functionsFile?.content).toContain("user_email_id")
+        expect(functionsFile?.content).toContain("token")
       })
     )
 
@@ -554,6 +627,155 @@ describe("Kysely Queries Plugin", () => {
 
         expect(functionsFile?.content).toMatch(/import.*\bDB\b.*from/)
         expect(functionsFile?.content).toMatch(/import.*\bKysely\b.*from.*["']kysely["']/)
+      })
+    )
+  })
+
+  describe("explicitColumns config", () => {
+    it.effect("uses explicit column list by default (explicitColumns: true)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Should use .select([...]) for entity queries (functions still use .selectAll())
+        expect(userFile?.content).toMatch(/selectFrom\("users"\)\.select\(\[/)
+        // findById should use explicit columns
+        expect(userFile?.content).toMatch(/findById[\s\S]*?\.select\(\[/)
+      })
+    )
+
+    it.effect("uses .selectAll() when explicitColumns: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", explicitColumns: false })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Entity queries should use .selectAll()
+        expect(userFile?.content).toMatch(/selectFrom\("users"\)\.selectAll\(\)/)
+      })
+    )
+
+    it.effect("explicit columns includes column names from row shape", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", explicitColumns: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Verify the column list contains expected column names
+        const content = userFile?.content ?? ""
+        // Array is formatted with newlines
+        expect(content).toMatch(/\.select\(\[\s*"id"/)
+        expect(content).toContain('"username"')
+      })
+    )
+  })
+
+  describe("dbAsParameter config", () => {
+    it.effect("includes db parameter by default", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Default: db parameter should be present
+        expect(userFile?.content).toContain("db: Kysely<DB>")
+        // Kysely should be imported
+        expect(userFile?.content).toMatch(/import.*Kysely.*from "kysely"/)
+      })
+    )
+
+    it.effect("omits db parameter when dbAsParameter: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header: 'import { db } from "../db.js";'
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+        const content = userFile?.content ?? ""
+
+        // db parameter should NOT be in function signatures
+        expect(content).not.toContain("db: Kysely<DB>")
+        // The header import should be present
+        expect(content).toContain('import { db } from "../db.js"')
+        // Kysely type should NOT be imported (not needed)
+        expect(content).not.toMatch(/import.*\bKysely\b.*from "kysely"/)
+      })
+    )
+
+    it.effect("prepends header to all generated files", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        const header = 'import { db } from "../database.js";\n// Custom header comment'
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        
+        // Check all .ts files have the header
+        const tsFiles = all.filter((e) => e.path.endsWith(".ts"))
+        for (const file of tsFiles) {
+          expect(file.content).toContain('import { db } from "../database.js"')
+          expect(file.content).toContain("// Custom header comment")
+        }
+      })
+    )
+
+    it.effect("function wrappers also respect dbAsParameter: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries",
+          dbAsParameter: false,
+          header: 'import { db } from "../db.js";'
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const functionsFile = all.find((e) => e.path.includes("functions.ts"))
+        
+        if (functionsFile) {
+          const content = functionsFile.content
+          // db parameter should NOT be in function signatures
+          expect(content).not.toContain("db: Kysely<DB>")
+          // Header should be present
+          expect(content).toContain('import { db } from "../db.js"')
+        }
       })
     )
   })

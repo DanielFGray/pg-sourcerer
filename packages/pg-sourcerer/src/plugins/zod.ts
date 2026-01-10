@@ -195,18 +195,20 @@ const generateShapeStatements = (
   ctx: FieldContext,
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:zod", entity: entityName, shape: shapeKind };
+  const schemaSymbolCtx = { capability: "schemas", entity: entityName, shape: shapeKind };
   const schemaExpr = buildShapeZodObject(shape, ctx);
 
-  const schemaStatement = exp.const(shape.name, symbolCtx, schemaExpr);
+  const schemaStatement = exp.const(shape.name, schemaSymbolCtx, schemaExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
   }
 
   // Generate: export type ShapeName = z.infer<typeof ShapeName>
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
   const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shape.name)]);
-  const typeStatement = exp.type(shape.name, symbolCtx, inferType);
+  const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
 };
@@ -262,18 +264,20 @@ const generateCompositeStatements = (
   ctx: FieldContext,
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:zod", entity: composite.name };
+  const schemaSymbolCtx = { capability: "schemas", entity: composite.name };
   const schemaExpr = buildCompositeZodObject(composite, ctx);
 
-  const schemaStatement = exp.const(composite.name, symbolCtx, schemaExpr);
+  const schemaStatement = exp.const(composite.name, schemaSymbolCtx, schemaExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
   }
 
   // Generate: export type CompositeName = z.infer<typeof CompositeName>
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: composite.name };
   const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(composite.name)]);
-  const typeStatement = exp.type(composite.name, symbolCtx, inferType);
+  const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
 };
@@ -289,8 +293,9 @@ const generateCompositeStatements = (
 const generateEnumStatement = (
   enumEntity: EnumEntity,
   enumStyle: "strings" | "enum",
+  exportTypes: boolean,
 ): readonly SymbolStatement[] => {
-  const symbolCtx = { capability: "schemas:zod", entity: enumEntity.name };
+  const schemaSymbolCtx = { capability: "schemas", entity: enumEntity.name };
 
   if (enumStyle === "enum") {
     // Generate: export enum EnumName { A = 'a', B = 'b', ... }
@@ -304,12 +309,13 @@ const generateEnumStatement = (
         ),
       ),
     );
+    // The enum itself is a type - register under "types" capability
     const enumStatement: SymbolStatement = {
       _tag: "SymbolStatement",
       node: conjure.b.exportNamedDeclaration(enumDecl, []),
       symbol: {
         name: enumEntity.name,
-        capability: "schemas:zod",
+        capability: "types",
         entity: enumEntity.name,
         isType: true,
       },
@@ -320,14 +326,26 @@ const generateEnumStatement = (
       .id("z")
       .method("nativeEnum", [conjure.id(enumEntity.name).build()])
       .build();
-    const schemaStatement = exp.const(schemaName, symbolCtx, schemaExpr);
+    const schemaStatement = exp.const(schemaName, schemaSymbolCtx, schemaExpr);
 
     return [enumStatement, schemaStatement];
   }
 
   // strings style: export const EnumName = z.enum(['a', 'b', ...])
   const schemaExpr = buildZodEnum(enumEntity.values);
-  return [exp.const(enumEntity.name, symbolCtx, schemaExpr)];
+  const schemaStatement = exp.const(enumEntity.name, schemaSymbolCtx, schemaExpr);
+
+  if (!exportTypes) {
+    return [schemaStatement];
+  }
+
+  // Generate: export type EnumName = z.infer<typeof EnumName>
+  // Register under "types" capability so other plugins can import
+  const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
+  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(enumEntity.name)]);
+  const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
+
+  return [schemaStatement, typeStatement];
 };
 
 /** Collect enum names used by fields */
@@ -348,7 +366,7 @@ const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]
 const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   Arr.fromIterable(usedEnums).map(enumName => ({
     kind: "symbol" as const,
-    ref: { capability: "schemas:zod", entity: enumName },
+    ref: { capability: "schemas", entity: enumName },
   }));
 
 // ============================================================================
@@ -363,7 +381,10 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
  */
 export const zodPlugin = definePlugin({
   name: "zod",
-  provides: ["schemas:zod", "schemas"],
+  provides: config =>
+    config.exportTypes
+      ? ["schemas", "types"]
+      : ["schemas"],
   configSchema: ZodPluginConfig,
   inflection: {
     outputFile: ctx => `${ctx.entityName}.ts`,
@@ -393,7 +414,7 @@ export const zodPlugin = definePlugin({
             entity: enumEntity,
           };
           const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-          const statements = generateEnumStatement(enumEntity, config.enumStyle);
+          const statements = generateEnumStatement(enumEntity, config.enumStyle, config.exportTypes);
 
           ctx
             .file(filePath)
