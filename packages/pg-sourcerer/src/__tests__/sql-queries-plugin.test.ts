@@ -253,7 +253,7 @@ describe("SQL Queries Plugin", () => {
         const userFile = all.find(e => e.path.includes("User.ts"));
 
         // Should pass array of params as second argument
-        expect(userFile?.content).toMatch(/pool\.query<[^>]+>\([^,]+,\s*\[/);
+        expect(userFile?.content).toMatch(/pool\.query<[^>]+>\(\s*"[^"]+",\s*\[/);
       }),
     );
 
@@ -841,6 +841,67 @@ describe("SQL Queries Plugin", () => {
         expect(userFile?.content).toContain("export const User = {");
         expect(userFile?.content).toMatch(/findbyid:\s*async function/);
         expect(userFile?.content).toMatch(/insert:\s*async function/);
+      }),
+    );
+  });
+
+  describe("explicitColumns config", () => {
+    it.effect("uses explicit column list by default (explicitColumns: true)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use explicit column list, not SELECT *
+        expect(userFile?.content).not.toMatch(/select \* from app_public\.users where/);
+        expect(userFile?.content).toMatch(/select id, username.*from app_public\.users where/);
+      }),
+    );
+
+    it.effect("uses SELECT * when explicitColumns: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", explicitColumns: false })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Should use SELECT *
+        expect(userFile?.content).toMatch(/select \* from app_public\.users where/);
+        expect(userFile?.content).not.toMatch(/select id, username.*from app_public\.users where/);
+      }),
+    );
+
+    it.effect("explicit columns only includes row shape fields (omitted fields excluded)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const testLayer = createTestLayer(ir);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries", explicitColumns: true })
+          .pipe(Effect.provide(testLayer));
+
+        const all = yield* runPluginAndGetEmissions(testLayer);
+        const userFile = all.find(e => e.path.includes("User.ts"));
+
+        // Verify the column list matches the row shape fields
+        // (fields omitted from row shape won't appear in column list)
+        const content = userFile?.content ?? "";
+        // Check for explicit column list in findById
+        expect(content).toMatch(/select id, username.*from app_public\.users where id/);
+        // The column list should contain expected fields
+        expect(content).toContain("username");
+        expect(content).toContain("created_at");
       }),
     );
   });

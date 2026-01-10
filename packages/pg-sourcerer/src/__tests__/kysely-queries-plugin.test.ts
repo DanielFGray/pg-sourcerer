@@ -628,4 +628,59 @@ describe("Kysely Queries Plugin", () => {
       })
     )
   })
+
+  describe("explicitColumns config", () => {
+    it.effect("uses explicit column list by default (explicitColumns: true)", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Should use .select([...]) for entity queries (functions still use .selectAll())
+        expect(userFile?.content).toMatch(/selectFrom\("users"\)\.select\(\[/)
+        // findById should use explicit columns
+        expect(userFile?.content).toMatch(/findById[\s\S]*?\.select\(\[/)
+      })
+    )
+
+    it.effect("uses .selectAll() when explicitColumns: false", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", explicitColumns: false })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Entity queries should use .selectAll()
+        expect(userFile?.content).toMatch(/selectFrom\("users"\)\.selectAll\(\)/)
+      })
+    )
+
+    it.effect("explicit columns includes column names from row shape", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", explicitColumns: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Verify the column list contains expected column names
+        const content = userFile?.content ?? ""
+        // Array is formatted with newlines
+        expect(content).toMatch(/\.select\(\[\s*"id"/)
+        expect(content).toContain('"username"')
+      })
+    )
+  })
 })

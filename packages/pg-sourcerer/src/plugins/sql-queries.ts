@@ -51,6 +51,12 @@ const SqlQueriesPluginConfigSchema = S.Struct({
   header: S.String,
   /** SQL query style. Defaults to "tag" (tagged template literals) */
   sqlStyle: S.optionalWith(S.Union(S.Literal("tag"), S.Literal("string")), { default: () => "tag" as const }),
+  /** 
+   * Use explicit column lists instead of SELECT *. 
+   * When true, generates "SELECT col1, col2" which excludes omitted fields at runtime.
+   * Defaults to true.
+   */
+  explicitColumns: S.optionalWith(S.Boolean, { default: () => true }),
   /** Generate wrappers for PostgreSQL functions. Defaults to true. */
   generateFunctions: S.optionalWith(S.Boolean, { default: () => true }),
   /** Output file for scalar-returning functions. Defaults to "functions.ts". */
@@ -94,11 +100,21 @@ interface GenerationContext {
   readonly entityName: string;
   /** Function to generate export names */
   readonly exportName: ExportNameFn;
+  /** Use explicit column lists instead of SELECT * */
+  readonly explicitColumns: boolean;
 }
 
 /** Find a field in the row shape by column name */
 const findRowField = (entity: TableEntity, columnName: string): Field | undefined =>
   entity.shapes.row.fields.find(f => f.columnName === columnName);
+
+/** Build comma-separated column list from row shape fields */
+const buildColumnList = (entity: TableEntity): string =>
+  entity.shapes.row.fields.map(f => f.columnName).join(", ");
+
+/** Build SELECT clause - explicit columns or * based on config */
+const buildSelectClause = (entity: TableEntity, explicitColumns: boolean): string =>
+  explicitColumns ? `select ${buildColumnList(entity)}` : "select *";
 
 /** Get the TypeScript type AST for a field */
 const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TSType => {
@@ -162,7 +178,7 @@ const toPascalCase = (s: string): string => inflect.pascalCase(s);
 
 /** Generate findById method if entity has a primary key and canSelect permission */
 const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
-  const { entity, sqlStyle, entityName, exportName } = ctx;
+  const { entity, sqlStyle, entityName, exportName, explicitColumns } = ctx;
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined;
 
   const pkColName = entity.primaryKey.columns[0]!;
@@ -171,9 +187,10 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
 
   const rowType = entity.shapes.row.name;
   const fieldName = pkField.name; // JS property name (e.g., "id")
+  const selectClause = buildSelectClause(entity, explicitColumns);
 
   const parts: QueryParts = {
-    templateParts: [`select * from ${entity.schemaName}.${entity.pgName} where ${pkColName} = `, ""],
+    templateParts: [`${selectClause} from ${entity.schemaName}.${entity.pgName} where ${pkColName} = `, ""],
     params: [b.identifier(fieldName)],
   };
 
@@ -192,13 +209,14 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
 
 /** Generate findMany method with pagination if entity has canSelect permission */
 const generateFindMany = (ctx: GenerationContext): MethodDef | undefined => {
-  const { entity, sqlStyle, entityName, exportName } = ctx;
+  const { entity, sqlStyle, entityName, exportName, explicitColumns } = ctx;
   if (!entity.permissions.canSelect) return undefined;
 
   const rowType = entity.shapes.row.name;
+  const selectClause = buildSelectClause(entity, explicitColumns);
 
   const parts: QueryParts = {
-    templateParts: [`select * from ${entity.schemaName}.${entity.pgName} limit `, ` offset `, ""],
+    templateParts: [`${selectClause} from ${entity.schemaName}.${entity.pgName} limit `, ` offset `, ""],
     params: [b.identifier("limit"), b.identifier("offset")],
   };
 
@@ -333,7 +351,7 @@ const generateLookupMethodName = (
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
 const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDef => {
-  const { entity, sqlStyle, entityName, exportName } = ctx;
+  const { entity, sqlStyle, entityName, exportName, explicitColumns } = ctx;
   const rowType = entity.shapes.row.name;
   const columnName = index.columnNames[0]!;
   const field = findRowField(entity, columnName);
@@ -351,9 +369,10 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   // For semantic naming, use indexed access type (Post["userId"])
   // For regular naming, use Pick<Post, "fieldName">
   const useSemanticNaming = relation !== undefined && paramName !== fieldName;
+  const selectClause = buildSelectClause(entity, explicitColumns);
 
   const parts: QueryParts = {
-    templateParts: [`select * from ${entity.schemaName}.${entity.pgName} where ${columnName} = `, ""],
+    templateParts: [`${selectClause} from ${entity.schemaName}.${entity.pgName} where ${columnName} = `, ""],
     params: [b.identifier(paramName)],
   };
 
@@ -864,7 +883,7 @@ export const sqlQueriesPlugin = definePlugin({
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, sqlStyle, entityName, exportName };
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, sqlStyle, entityName, exportName, explicitColumns: config.explicitColumns };
 
         // Generate CRUD and lookup methods
         const crudMethods = [...generateCrudMethods(genCtx), ...generateLookupMethods(genCtx)];

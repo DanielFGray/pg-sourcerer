@@ -77,6 +77,12 @@ const KyselyQueriesPluginConfigSchema = S.Struct({
    * - "namespace": Single object export (e.g., `export const User = { findById: ... }`)
    */
   exportStyle: S.optionalWith(S.Literal("flat", "namespace"), { default: () => "flat" as const }),
+  /**
+   * Use explicit column lists instead of .selectAll().
+   * When true, generates .select(['col1', 'col2']) which excludes omitted fields at runtime.
+   * Defaults to true.
+   */
+  explicitColumns: S.optionalWith(S.Boolean, { default: () => true }),
 })
 
 type KyselyQueriesPluginConfigSchema = S.Schema.Type<typeof KyselyQueriesPluginConfigSchema>
@@ -109,6 +115,12 @@ export interface KyselyQueriesConfigInput {
    * @default "flat"
    */
   readonly exportStyle?: "flat" | "namespace"
+  /**
+   * Use explicit column lists instead of .selectAll().
+   * When true, generates .select(['col1', 'col2']) which excludes omitted fields at runtime.
+   * @default true
+   */
+  readonly explicitColumns?: boolean
 }
 
 /**
@@ -134,6 +146,8 @@ interface GenerationContext {
   readonly entityName: string
   /** Function to generate export names */
   readonly exportName: ExportNameFn
+  /** Use explicit column lists instead of .selectAll() */
+  readonly explicitColumns: boolean
 }
 
 /**
@@ -255,6 +269,15 @@ const optionalTypedParam = (name: string, type: n.TSType): n.Identifier => {
  */
 const selectFrom = (tableRef: string): n.CallExpression =>
   call(id("db"), "selectFrom", [str(tableRef)])
+
+/**
+ * Build column selection: .selectAll() or .select(['col1', 'col2'])
+ * When explicitColumns is true, uses explicit column list from row shape.
+ */
+const selectColumns = (base: n.Expression, entity: TableEntity, explicitColumns: boolean): n.CallExpression =>
+  explicitColumns
+    ? call(base, "select", [b.arrayExpression(entity.shapes.row.fields.map(f => str(f.columnName)))])
+    : call(base, "selectAll")
 
 /**
  * Build Kysely query chain: db.insertInto('table')
@@ -804,11 +827,11 @@ const collectFunctionTypeImports = (
 // ============================================================================
 
 /**
- * Generate findById method:
- * export const findById = (db, id) => db.selectFrom('table').selectAll().where('id', '=', id).executeTakeFirst()
+ * Generate findById method if entity has a primary key and canSelect permission:
+ * export const findById = (db, id) => db.selectFrom('table').select([...]).where('id', '=', id).executeTakeFirst()
  */
 const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns } = ctx
   if (!entity.primaryKey || !entity.permissions.canSelect) return undefined
 
   const pkColName = entity.primaryKey.columns[0]!
@@ -819,9 +842,9 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
   const fieldName = pkField.name
   const fieldType = getFieldTypeAst(pkField, ctx)
 
-  // db.selectFrom('table').selectAll().where('col', '=', id)
+  // db.selectFrom('table').select([...]).where('col', '=', id)
   let query: n.Expression = chain(
-    chain(selectFrom(tableRef), "selectAll"),
+    selectColumns(selectFrom(tableRef), entity, explicitColumns),
     "where",
     [str(pkColName), str("="), id(fieldName)]
   )
@@ -853,19 +876,19 @@ const paramWithDefault = (name: string, defaultValue: n.Expression): n.Assignmen
 
 /**
  * Generate listMany method with pagination defaults:
- * export const listMany = (db, limit = 50, offset = 0) => db.selectFrom('table').selectAll()
+ * export const listMany = (db, limit = 50, offset = 0) => db.selectFrom('table').select([...])
  *   .limit(limit).offset(offset).execute()
  */
 const generateListMany = (ctx: GenerationContext): MethodDef | undefined => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns } = ctx
   if (!entity.permissions.canSelect) return undefined
 
   const tableRef = getTableRef(entity, defaultSchemas)
 
-  // Build query: db.selectFrom('table').selectAll().limit(limit).offset(offset)
+  // Build query: db.selectFrom('table').select([...]).limit(limit).offset(offset)
   let query: n.Expression = chain(
     chain(
-      chain(selectFrom(tableRef), "selectAll"),
+      selectColumns(selectFrom(tableRef), entity, explicitColumns),
       "limit",
       [id("limit")]
     ),
@@ -1051,7 +1074,7 @@ const generateLookupMethodName = (
  * Uses semantic parameter naming when the column corresponds to an FK relation.
  */
 const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDef => {
-  const { entity, executeQueries, defaultSchemas, entityName, exportName } = ctx
+  const { entity, executeQueries, defaultSchemas, entityName, exportName, explicitColumns } = ctx
   const tableRef = getTableRef(entity, defaultSchemas)
   const columnName = index.columnNames[0]!
   const field = findRowField(entity, columnName)
@@ -1078,9 +1101,9 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
       )
     : getFieldTypeAst(field, ctx)
 
-  // db.selectFrom('table').selectAll().where('col', '=', value)
+  // db.selectFrom('table').select([...]).where('col', '=', value)
   let query: n.Expression = chain(
-    chain(selectFrom(tableRef), "selectAll"),
+    selectColumns(selectFrom(tableRef), entity, explicitColumns),
     "where",
     [str(columnName), str("="), id(paramName)]
   )
@@ -1213,7 +1236,7 @@ export const kyselyQueriesPlugin = definePlugin({
 
     const enums = getEnumEntities(ctx.ir)
     const defaultSchemas = ctx.ir.schemas
-    const { dbTypesPath, executeQueries, generateListMany, exportName } = config
+    const { dbTypesPath, executeQueries, generateListMany, exportName, explicitColumns } = config
 
     // Pre-compute function groupings by return entity name
     // Functions returning entities go in that entity's file; scalars go in functions.ts
@@ -1240,7 +1263,7 @@ export const kyselyQueriesPlugin = definePlugin({
       .filter(entity => entity.tags.omit !== true)
       .forEach(entity => {
         const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
-        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName }
+        const genCtx: GenerationContext = { entity, enums, ir: ctx.ir, defaultSchemas, dbTypesPath, executeQueries, generateListMany, entityName, exportName, explicitColumns }
         
         // Collect all methods for this entity
         const methods: MethodDef[] = [
