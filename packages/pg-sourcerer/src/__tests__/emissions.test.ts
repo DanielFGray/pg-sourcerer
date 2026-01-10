@@ -423,7 +423,7 @@ describe("Emission Buffer", () => {
       expect(all[0]!.content).toContain("useEffect")
     })
 
-    it("skips unresolved symbol imports", () => {
+    it("tracks unresolved symbol imports", () => {
       const buffer = createEmissionBuffer()
       const symbols = createSymbolRegistry()
       const program = b.program([
@@ -443,9 +443,127 @@ describe("Emission Buffer", () => {
 
       const all = buffer.getAll()
       expect(all).toHaveLength(1)
-      // Should not fail, just skip the unresolved import
+      // Should not fail, just skip the unresolved import in the output
       expect(all[0]!.content).toContain("const x = 1")
       expect(all[0]!.content).not.toContain("import")
+
+      // But should track the unresolved reference
+      const unresolved = buffer.getUnresolvedRefs()
+      expect(unresolved).toHaveLength(1)
+      expect(unresolved[0]).toEqual({
+        capability: "nonexistent",
+        entity: "Missing",
+        shape: undefined,
+        plugin: "test-plugin",
+        file: "output/test.ts",
+      })
+    })
+
+    it("tracks multiple unresolved references across files", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+
+      // File 1 with one missing import
+      buffer.emitAst(
+        "output/a.ts",
+        b.program([]),
+        "plugin-a",
+        undefined,
+        [{ kind: "symbol", ref: { capability: "types", entity: "User" } }]
+      )
+
+      // File 2 with two missing imports
+      buffer.emitAst(
+        "output/b.ts",
+        b.program([]),
+        "plugin-b",
+        undefined,
+        [
+          { kind: "symbol", ref: { capability: "types", entity: "Post" } },
+          { kind: "symbol", ref: { capability: "schemas", entity: "User", shape: "insert" } },
+        ]
+      )
+
+      buffer.serializeAst(serialize, symbols)
+
+      const unresolved = buffer.getUnresolvedRefs()
+      expect(unresolved).toHaveLength(3)
+      expect(unresolved).toContainEqual({
+        capability: "types",
+        entity: "User",
+        shape: undefined,
+        plugin: "plugin-a",
+        file: "output/a.ts",
+      })
+      expect(unresolved).toContainEqual({
+        capability: "types",
+        entity: "Post",
+        shape: undefined,
+        plugin: "plugin-b",
+        file: "output/b.ts",
+      })
+      expect(unresolved).toContainEqual({
+        capability: "schemas",
+        entity: "User",
+        shape: "insert",
+        plugin: "plugin-b",
+        file: "output/b.ts",
+      })
+    })
+
+    it("clear() resets unresolved refs", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+
+      buffer.emitAst(
+        "output/test.ts",
+        b.program([]),
+        "test-plugin",
+        undefined,
+        [{ kind: "symbol", ref: { capability: "missing", entity: "Thing" } }]
+      )
+      buffer.serializeAst(serialize, symbols)
+
+      expect(buffer.getUnresolvedRefs()).toHaveLength(1)
+
+      buffer.clear()
+
+      expect(buffer.getUnresolvedRefs()).toHaveLength(0)
+    })
+
+    it("does not track resolved symbol imports as unresolved", () => {
+      const buffer = createEmissionBuffer()
+      const symbols = createSymbolRegistry()
+
+      // Register a symbol
+      symbols.register(
+        {
+          name: "User",
+          file: "generated/types/User.ts",
+          capability: "types",
+          entity: "User",
+          isType: true,
+          isDefault: false,
+        },
+        "types-plugin"
+      )
+
+      buffer.emitAst(
+        "generated/schemas/User.ts",
+        b.program([]),
+        "zod-plugin",
+        undefined,
+        [{ kind: "symbol", ref: { capability: "types", entity: "User" } }]
+      )
+      buffer.serializeAst(serialize, symbols)
+
+      // Should have the import in output
+      const all = buffer.getAll()
+      expect(all[0]!.content).toContain("import")
+      expect(all[0]!.content).toContain("User")
+
+      // Should NOT track as unresolved
+      expect(buffer.getUnresolvedRefs()).toHaveLength(0)
     })
 
     it("clears AST emissions after serialization", () => {

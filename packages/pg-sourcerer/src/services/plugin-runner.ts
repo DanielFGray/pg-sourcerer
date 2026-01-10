@@ -22,6 +22,7 @@ import {
   PluginConfigInvalid,
   PluginExecutionFailed,
   SymbolConflict,
+  UndefinedReference,
 } from "../errors.js";
 import { type EmissionBuffer, Emissions, createEmissionBuffer } from "./emissions.js";
 import { type SymbolRegistry, Symbols, createSymbolRegistry } from "./symbols.js";
@@ -280,7 +281,7 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
     const run = (
       plugins: readonly ConfiguredPlugin[],
       ir: SemanticIR,
-    ): Effect.Effect<RunResult, PluginExecutionFailed | EmitConflict | SymbolConflict, TypeHints> =>
+    ): Effect.Effect<RunResult, PluginExecutionFailed | EmitConflict | SymbolConflict | UndefinedReference, TypeHints> =>
       Effect.gen(function* () {
         // Create shared state for all plugins in this run
         const emissions = createEmissionBuffer();
@@ -329,6 +330,25 @@ export class PluginRunner extends Effect.Service<PluginRunner>()("PluginRunner",
 
         // Serialize AST emissions to string content (with import resolution)
         emissions.serializeAst(conjure.print, symbols);
+
+        // Check for unresolved symbol references
+        const unresolvedRefs = emissions.getUnresolvedRefs();
+        if (unresolvedRefs.length > 0) {
+          yield* Effect.fail(
+            new UndefinedReference({
+              message: `Undefined symbol references: ${unresolvedRefs.map(r =>
+                `${r.capability}/${r.entity}${r.shape ? `/${r.shape}` : ""} (requested by ${r.plugin} in ${r.file})`
+              ).join(", ")}`,
+              references: unresolvedRefs.map(r => ({
+                capability: r.capability,
+                entity: r.entity,
+                shape: r.shape,
+                requestedBy: r.plugin,
+                inFile: r.file,
+              })),
+            }),
+          );
+        }
 
         // Validate emissions for conflicts
         yield* emissions.validate();
