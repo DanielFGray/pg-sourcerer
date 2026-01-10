@@ -911,6 +911,80 @@ const ts = {
   /** Indexed access type: `T["key"]` or `T[K]` */
   indexedAccess: (objectType: n.TSType, indexType: n.TSType) =>
     b.tsIndexedAccessType(toTSType(objectType), toTSType(indexType)),
+
+  // === Type Modifiers ===
+
+  /** Make type nullable: `T | null` */
+  nullable: (type: n.TSType): n.TSType =>
+    b.tsUnionType([toTSType(type), b.tsNullKeyword()]),
+
+  /** Wrap type in array: `T[]` */
+  asArray: (type: n.TSType): n.TSType => b.tsArrayType(toTSType(type)),
+
+  /**
+   * Apply modifiers to a type.
+   * Order: array first, then nullable (so `T[] | null`, not `(T | null)[]`)
+   */
+  withModifiers: (
+    type: n.TSType,
+    opts: { nullable?: boolean; array?: boolean }
+  ): n.TSType => {
+    let result = type
+    if (opts.array) result = b.tsArrayType(toTSType(result))
+    if (opts.nullable) result = b.tsUnionType([toTSType(result), b.tsNullKeyword()])
+    return result
+  },
+
+  /**
+   * Parse a type string into a TSType AST node.
+   *
+   * Handles:
+   * - Primitives: "string", "number", "boolean", "bigint", "unknown", "void", "null"
+   * - Built-ins: "Date", "Buffer"
+   * - Array suffix: "string[]", "MyType[]"
+   * - References: anything else becomes `ts.ref(typeName)`
+   *
+   * @example
+   * ts.fromString("string")      // TSStringKeyword
+   * ts.fromString("Date")        // TSTypeReference to "Date"
+   * ts.fromString("string[]")    // TSArrayType(TSStringKeyword)
+   * ts.fromString("User")        // TSTypeReference to "User"
+   */
+  fromString(typeName: string): n.TSType {
+    // Handle array suffix first
+    if (typeName.endsWith("[]")) {
+      const elemType = typeName.slice(0, -2)
+      return b.tsArrayType(toTSType(this.fromString(elemType)))
+    }
+
+    switch (typeName) {
+      case "string":
+        return b.tsStringKeyword()
+      case "number":
+        return b.tsNumberKeyword()
+      case "boolean":
+        return b.tsBooleanKeyword()
+      case "bigint":
+        return b.tsBigIntKeyword()
+      case "unknown":
+        return b.tsUnknownKeyword()
+      case "void":
+        return b.tsVoidKeyword()
+      case "null":
+        return b.tsNullKeyword()
+      case "undefined":
+        return b.tsUndefinedKeyword()
+      case "any":
+        return b.tsAnyKeyword()
+      case "never":
+        return b.tsNeverKeyword()
+      case "Date":
+      case "Buffer":
+      default:
+        // Everything else is a type reference
+        return b.tsTypeReference(b.identifier(typeName))
+    }
+  },
 } as const
 
 // =============================================================================
@@ -1232,6 +1306,33 @@ export const exp = {
     const exportDecl = b.exportNamedDeclaration(decl, [])
     return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
   },
+
+  /**
+   * Export TypeScript enum declaration: `export enum Name { A = 'a', B = 'b' }`
+   *
+   * Member names are normalized: uppercase with non-alphanumeric chars replaced by underscore.
+   *
+   * @example
+   * exp.tsEnum("Status", { capability: "types", entity: "Status" }, ["active", "pending"])
+   * // export enum Status { ACTIVE = "active", PENDING = "pending" }
+   */
+  tsEnum: (
+    name: string,
+    ctx: SymbolContext,
+    values: readonly string[]
+  ): SymbolStatement => {
+    const enumDecl = b.tsEnumDeclaration(
+      b.identifier(name),
+      values.map((v) =>
+        b.tsEnumMember(
+          b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
+          b.stringLiteral(v)
+        )
+      )
+    )
+    const exportDecl = b.exportNamedDeclaration(enumDecl, [])
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+  },
 } as const
 
 // =============================================================================
@@ -1295,6 +1396,31 @@ export const conjure = {
 
   /** Start a chain from any expression */
   chain: (expr: n.Expression) => createChain(expr),
+
+  /**
+   * Quick method call: `callee.method(args)`
+   *
+   * More concise than `conjure.chain(callee).method(name, args).build()` for one-shot calls.
+   *
+   * @param callee - The object to call the method on (string or expression)
+   * @param method - The method name
+   * @param args - Optional arguments to pass
+   *
+   * @example
+   * conjure.call("db", "selectFrom", [conjure.str("users")])
+   * // db.selectFrom("users")
+   */
+  call: (
+    callee: n.Expression | string,
+    method: string,
+    args: n.Expression[] = []
+  ): n.Expression => {
+    const calleeExpr = typeof callee === "string" ? b.identifier(callee) : callee
+    return b.callExpression(
+      b.memberExpression(toExpr(calleeExpr), b.identifier(method)),
+      args.map(toExpr)
+    )
+  },
 
   // === Compound builders ===
 
