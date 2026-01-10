@@ -242,8 +242,15 @@ export interface SimplePluginContext {
   /** Append to an already-emitted file */
   readonly appendEmit: (path: string, content: string) => void
 
-  /** Get an artifact from a previous plugin */
+  /** Get an artifact from a previous plugin by exact capability key */
   readonly getArtifact: (capability: CapabilityKey) => Artifact | undefined
+
+  /** 
+   * Find an artifact by capability prefix.
+   * Returns the first artifact whose capability matches or starts with the prefix.
+   * Useful when you don't care about the specific provider (e.g., "queries" matches "queries:sql" or "queries:kysely").
+   */
+  readonly findArtifact: (capabilityPrefix: string) => Artifact | undefined
 
   /** Store an artifact for downstream plugins */
   readonly setArtifact: (capability: CapabilityKey, data: unknown) => void
@@ -396,6 +403,8 @@ export function definePlugin<TConfig, TEncoded = TConfig>(def: SimplePluginDef<T
           },
 
           getArtifact: (capability) => artifactStore.get(capability),
+
+          findArtifact: (capabilityPrefix) => artifactStore.find(capabilityPrefix),
 
           setArtifact: (capability, data) => {
             artifactStore.set(capability, meta.name, data)

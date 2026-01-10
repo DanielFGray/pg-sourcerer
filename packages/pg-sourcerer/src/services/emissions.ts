@@ -137,13 +137,13 @@ const normalizePath = (path: string): string => path.replace(/^\.\//, "");
 /** Callback for tracking unresolved symbol references */
 type OnUnresolvedRef = (ref: SymbolImportRef, file: string) => void;
 
-/** Resolve an ImportRef to source/named/types/default */
+/** Resolve an ImportRef to source/named/types/default/namespace */
 function resolveImportRef(
   ref: ImportRef,
   forFile: string,
   symbols: SymbolRegistry,
   onUnresolved?: OnUnresolvedRef,
-): { source: string; named: string[]; types: string[]; defaultImport?: string } | undefined {
+): { source: string; named: string[]; types: string[]; defaultImport?: string; namespace?: string } | undefined {
   switch (ref.kind) {
     case "symbol": {
       const symbol = symbols.resolve(ref.ref);
@@ -169,6 +169,7 @@ function resolveImportRef(
         source: ref.from,
         named: ref.names ? [...ref.names] : [],
         types: ref.types ? [...ref.types] : [],
+        namespace: ref.namespace,
       };
       return ref.default !== undefined ? { ...base, defaultImport: ref.default } : base;
     }
@@ -189,16 +190,17 @@ function prependImports(
   const bySource = pipe(
     imports,
     Arr.reduce(
-      new Map<string, { named: Set<string>; types: Set<string>; default?: string }>(),
+      new Map<string, { named: Set<string>; types: Set<string>; default?: string; namespace?: string }>(),
       (map, ref) => {
         const resolved = resolveImportRef(ref, forFile, symbols, onUnresolved);
         if (!resolved) return map;
 
-        const { source, named, types, defaultImport } = resolved;
+        const { source, named, types, defaultImport, namespace } = resolved;
         const existing = map.get(source) ?? { named: new Set<string>(), types: new Set<string>() };
         named.forEach(n => existing.named.add(n));
         types.forEach(t => existing.types.add(t));
         if (defaultImport) existing.default = defaultImport;
+        if (namespace) existing.namespace = namespace;
         map.set(source, existing);
         return map;
       },
@@ -212,19 +214,27 @@ function prependImports(
     | ImportDefaultSpecifierKind;
   const statements: StatementKind[] = pipe(
     [...bySource.entries()],
-    Arr.flatMap(([source, { named, types, default: defaultImport }]) => {
+    Arr.flatMap(([source, { named, types, default: defaultImport, namespace }]) => {
       const result: StatementKind[] = [];
 
-      // Value imports (default + named)
-      const valueSpecifiers: ImportSpecifier[] = [
-        ...(defaultImport ? [b.importDefaultSpecifier(b.identifier(defaultImport))] : []),
-        ...pipe(
-          [...named],
-          Arr.map(name => b.importSpecifier(b.identifier(name), b.identifier(name))),
-        ),
-      ];
-      if (valueSpecifiers.length > 0) {
-        result.push(b.importDeclaration(valueSpecifiers, b.stringLiteral(source)));
+      // Namespace import: import * as foo from "..."
+      if (namespace) {
+        const namespaceSpecifier = b.importNamespaceSpecifier(b.identifier(namespace));
+        result.push(b.importDeclaration([namespaceSpecifier], b.stringLiteral(source)));
+      }
+
+      // Value imports (default + named) - only if no namespace import for this source
+      if (!namespace) {
+        const valueSpecifiers: ImportSpecifier[] = [
+          ...(defaultImport ? [b.importDefaultSpecifier(b.identifier(defaultImport))] : []),
+          ...pipe(
+            [...named],
+            Arr.map(name => b.importSpecifier(b.identifier(name), b.identifier(name))),
+          ),
+        ];
+        if (valueSpecifiers.length > 0) {
+          result.push(b.importDeclaration(valueSpecifiers, b.stringLiteral(source)));
+        }
       }
 
       // Type imports as a separate type-only import declaration
