@@ -338,7 +338,7 @@ describe("Kysely Queries Plugin", () => {
         const userFile = all.find((e) => e.path.includes("User.ts"))
 
         // users table has unique index on username
-        expect(userFile?.content).toContain("export const findOneByUsername")
+        expect(userFile?.content).toContain("export const findByUsername")
       })
     )
 
@@ -354,10 +354,10 @@ describe("Kysely Queries Plugin", () => {
         const postFile = all.find((e) => e.path.includes("Post.ts"))
 
         // posts table has index on user_id (FK to users)
-        // Uses semantic naming: findManyByUser instead of findManyByUserId
-        expect(postFile?.content).toContain("export const findManyByUser")
+        // Uses semantic naming: findByUser instead of findByUserId
+        expect(postFile?.content).toContain("export const findByUser")
         // Non-unique should use execute() not executeTakeFirst()
-        expect(postFile?.content).toMatch(/findManyByUser[\s\S]*?\.execute\(\)/)
+        expect(postFile?.content).toMatch(/findByUser[\s\S]*?\.execute\(\)/)
       })
     )
   })
@@ -776,6 +776,45 @@ describe("Kysely Queries Plugin", () => {
           // Header should be present
           expect(content).toContain('import { db } from "../db.js"')
         }
+      })
+    )
+  })
+
+  describe("defaultLimit config", () => {
+    it.effect("uses default limit of 50", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries", generateListMany: true })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Default limit should be 50
+        expect(userFile?.content).toContain("limit = 50")
+      })
+    )
+
+    it.effect("uses custom defaultLimit from config", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const testLayer = createTestLayer(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ 
+          outputDir: "queries", 
+          generateListMany: true,
+          defaultLimit: 100 
+        })
+          .pipe(Effect.provide(testLayer))
+
+        const all = yield* runPluginAndGetEmissions(testLayer)
+        const userFile = all.find((e) => e.path.includes("User.ts"))
+
+        // Custom limit should be 100
+        expect(userFile?.content).toContain("limit = 100")
+        expect(userFile?.content).not.toContain("limit = 50")
       })
     )
   })
