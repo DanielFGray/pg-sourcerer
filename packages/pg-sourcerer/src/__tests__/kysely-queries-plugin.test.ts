@@ -10,7 +10,7 @@ import { InflectionLive } from "../services/inflection.js"
 import { Emissions, createEmissionBuffer } from "../services/emissions.js"
 import { Symbols, createSymbolRegistry } from "../services/symbols.js"
 import { TypeHintsLive } from "../services/type-hints.js"
-import { ArtifactStoreLive } from "../services/artifact-store.js"
+import { ArtifactStore, ArtifactStoreLive, createArtifactStore, type ArtifactStoreImpl } from "../services/artifact-store.js"
 import { PluginMeta } from "../services/plugin-meta.js"
 import { IR } from "../services/ir.js"
 import { loadIntrospectionFixture } from "./fixtures/index.js"
@@ -39,6 +39,30 @@ function createTestLayer(ir: SemanticIR) {
     TypeHintsLive([]),
     ArtifactStoreLive
   )
+}
+
+/**
+ * Create a test layer with a shared artifact store for inspection.
+ */
+function createTestLayerWithArtifactStore(ir: SemanticIR): {
+  layer: Layer.Layer<any, any, any>
+  artifactStore: ArtifactStoreImpl
+} {
+  const emissions = createEmissionBuffer()
+  const symbols = createSymbolRegistry()
+  const artifactStore = createArtifactStore()
+
+  const layer = Layer.mergeAll(
+    Layer.succeed(IR, ir),
+    Layer.succeed(Emissions, emissions),
+    Layer.succeed(Symbols, symbols),
+    Layer.succeed(PluginMeta, { name: "kysely-queries" }),
+    Layer.succeed(ArtifactStore, artifactStore),
+    InflectionLive,
+    TypeHintsLive([]),
+  )
+
+  return { layer, artifactStore }
 }
 
 function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
@@ -815,6 +839,98 @@ describe("Kysely Queries Plugin", () => {
         // Custom limit should be 100
         expect(userFile?.content).toContain("limit = 100")
         expect(userFile?.content).not.toContain("limit = 50")
+      })
+    )
+  })
+
+  describe("QueryArtifact emission", () => {
+    it.effect("emits QueryArtifact with entity methods metadata", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const artifact = artifactStore.get("queries:kysely")
+
+        expect(artifact).toBeDefined()
+        expect(artifact?.plugin).toBe("kysely-queries")
+        expect(artifact?.data).toMatchObject({
+          sourcePlugin: "kysely-queries",
+          outputDir: "queries",
+        })
+      })
+    )
+
+    it.effect("QueryArtifact includes correct entity metadata", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const artifact = artifactStore.get("queries:kysely")
+        const data = artifact?.data as { entities: Array<{ entityName: string; tableName: string; schemaName: string; methods: Array<{ name: string; kind: string }> }> }
+
+        // Should have entities
+        expect(data.entities.length).toBeGreaterThan(0)
+
+        // Find User entity
+        const userEntity = data.entities.find(e => e.entityName === "User")
+        expect(userEntity).toBeDefined()
+        expect(userEntity?.tableName).toBe("users")
+        expect(userEntity?.schemaName).toBe("app_public")
+
+        // User should have CRUD methods
+        const methodNames = userEntity?.methods.map(m => m.name) ?? []
+        expect(methodNames.some(n => n.includes("findById"))).toBe(true)
+        expect(methodNames.some(n => n.includes("create"))).toBe(true)
+        expect(methodNames.some(n => n.includes("remove"))).toBe(true)
+      })
+    )
+
+    it.effect("QueryArtifact methods have correct metadata structure", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"])
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir)
+
+        yield* kyselyQueriesPlugin.plugin.run({ outputDir: "queries" })
+          .pipe(Effect.provide(testLayer))
+
+        const artifact = artifactStore.get("queries:kysely")
+        const data = artifact?.data as {
+          entities: Array<{
+            entityName: string
+            methods: Array<{
+              name: string
+              kind: string
+              params: Array<{ name: string; type: string; required: boolean; source?: string }>
+              returns: { type: string; nullable: boolean; isArray: boolean }
+            }>
+          }>
+        }
+
+        const userEntity = data.entities.find(e => e.entityName === "User")
+        expect(userEntity).toBeDefined()
+
+        // Find the findById method
+        const findById = userEntity?.methods.find(m => m.kind === "read")
+        expect(findById).toBeDefined()
+        expect(findById?.params[0]?.source).toBe("pk")
+        expect(findById?.returns.nullable).toBe(true)
+        expect(findById?.returns.isArray).toBe(false)
+
+        // Find the create method
+        const create = userEntity?.methods.find(m => m.kind === "create")
+        expect(create).toBeDefined()
+        expect(create?.params[0]?.source).toBe("body")
+
+        // Find the update method
+        const update = userEntity?.methods.find(m => m.kind === "update")
+        expect(update).toBeDefined()
+        expect(update?.params.length).toBe(2) // pk + body
       })
     )
   })

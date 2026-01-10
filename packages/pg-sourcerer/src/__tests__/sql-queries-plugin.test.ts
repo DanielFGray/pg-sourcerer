@@ -10,7 +10,7 @@ import { InflectionLive } from "../services/inflection.js";
 import { Emissions, createEmissionBuffer } from "../services/emissions.js";
 import { Symbols, createSymbolRegistry } from "../services/symbols.js";
 import { TypeHintsLive } from "../services/type-hints.js";
-import { ArtifactStoreLive } from "../services/artifact-store.js";
+import { ArtifactStore, ArtifactStoreLive, createArtifactStore, type ArtifactStoreImpl } from "../services/artifact-store.js";
 import { PluginMeta } from "../services/plugin-meta.js";
 import { IR } from "../services/ir.js";
 import { loadIntrospectionFixture } from "./fixtures/index.js";
@@ -90,6 +90,59 @@ function createTestLayerWithTypeSymbols(ir: SemanticIR, entities: string[]) {
     TypeHintsLive([]),
     ArtifactStoreLive,
   );
+}
+
+/**
+ * Create a test layer with pre-registered type symbols and a shared artifact store.
+ * Returns both the layer and the artifact store for inspection.
+ */
+function createTestLayerWithArtifactStore(ir: SemanticIR, entities: string[]): {
+  layer: Layer.Layer<any, any, any>;
+  artifactStore: ArtifactStoreImpl;
+} {
+  const emissions = createEmissionBuffer();
+  const symbols = createSymbolRegistry();
+  const artifactStore = createArtifactStore();
+
+  // Pre-register Row and Insert type symbols as if types plugin had run
+  for (const entity of entities) {
+    symbols.register(
+      {
+        name: `${entity}Row`,
+        file: `types/${entity}.ts`,
+        capability: "types",
+        entity,
+        shape: "row",
+        isType: true,
+        isDefault: false,
+      },
+      "types",
+    );
+    symbols.register(
+      {
+        name: `${entity}Insert`,
+        file: `types/${entity}.ts`,
+        capability: "types",
+        entity,
+        shape: "insert",
+        isType: true,
+        isDefault: false,
+      },
+      "types",
+    );
+  }
+
+  const layer = Layer.mergeAll(
+    Layer.succeed(IR, ir),
+    Layer.succeed(Emissions, emissions),
+    Layer.succeed(Symbols, symbols),
+    Layer.succeed(PluginMeta, { name: "sql-queries" }),
+    Layer.succeed(ArtifactStore, artifactStore),
+    InflectionLive,
+    TypeHintsLive([]),
+  );
+
+  return { layer, artifactStore };
 }
 
 function runPluginAndGetEmissions(testLayer: Layer.Layer<any, any, any>) {
@@ -482,8 +535,9 @@ describe("SQL Queries Plugin", () => {
         const all = yield* runPluginAndGetEmissions(testLayer);
         const postFile = all.find(e => e.path.includes("Post.ts"));
 
-        // FK-based lookup with semantic param name uses destructured { user }: { user: Post["user_id"] }
-        expect(postFile?.content).toMatch(/getPostsByUser\([\s\S]*?\{\s*user\s*\}[\s\S]*?:\s*\{[\s\S]*?user:\s*Post\["user_id"\]/);
+        // FK-based lookup with semantic param name uses destructured { user }: { user: NonNullable<Post["user_id"]> }
+        // NonNullable wrapper ensures lookup params are required even if the column is nullable
+        expect(postFile?.content).toMatch(/getPostsByUser\([\s\S]*?\{\s*user\s*\}[\s\S]*?:\s*\{[\s\S]*?user:\s*NonNullable<Post\["user_id"\]>/);
       }),
     );
   });
@@ -902,6 +956,102 @@ describe("SQL Queries Plugin", () => {
         // The column list should contain expected fields
         expect(content).toContain("username");
         expect(content).toContain("created_at");
+      }),
+    );
+  });
+
+  describe("QueryArtifact emission", () => {
+    it.effect("emits QueryArtifact with entity methods metadata", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir, ["User", "Post", "Comment"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const artifact = artifactStore.get("queries:sql");
+
+        expect(artifact).toBeDefined();
+        expect(artifact?.plugin).toBe("sql-queries");
+        expect(artifact?.data).toMatchObject({
+          sourcePlugin: "sql-queries",
+          outputDir: "queries",
+        });
+      }),
+    );
+
+    it.effect("QueryArtifact includes correct entity metadata", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir, ["User", "Post", "Comment"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const artifact = artifactStore.get("queries:sql");
+        const data = artifact?.data as { entities: Array<{ entityName: string; tableName: string; schemaName: string; methods: Array<{ name: string; kind: string }> }> };
+
+        // Should have entities
+        expect(data.entities.length).toBeGreaterThan(0);
+
+        // Find User entity
+        const userEntity = data.entities.find(e => e.entityName === "User");
+        expect(userEntity).toBeDefined();
+        expect(userEntity?.tableName).toBe("users");
+        expect(userEntity?.schemaName).toBe("app_public");
+
+        // User should have CRUD methods
+        const methodNames = userEntity?.methods.map(m => m.name) ?? [];
+        expect(methodNames.some(n => n.includes("find") && n.includes("ById"))).toBe(true);
+        expect(methodNames.some(n => n.includes("insert"))).toBe(true);
+        expect(methodNames.some(n => n.includes("delete"))).toBe(true);
+      }),
+    );
+
+    it.effect("QueryArtifact methods have correct metadata structure", () =>
+      Effect.gen(function* () {
+        const ir = yield* buildTestIR(["app_public"]);
+        const { layer: testLayer, artifactStore } = createTestLayerWithArtifactStore(ir, ["User", "Post"]);
+
+        yield* sqlQueriesPlugin.plugin
+          .run({ header: TEST_HEADER, outputDir: "queries" })
+          .pipe(Effect.provide(testLayer));
+
+        const artifact = artifactStore.get("queries:sql");
+        const data = artifact?.data as {
+          entities: Array<{
+            entityName: string;
+            methods: Array<{
+              name: string;
+              kind: string;
+              params: Array<{ name: string; type: string; required: boolean; source?: string }>;
+              returns: { type: string; nullable: boolean; isArray: boolean };
+            }>;
+          }>;
+        };
+
+        const userEntity = data.entities.find(e => e.entityName === "User");
+        expect(userEntity).toBeDefined();
+
+        // Find the findById method
+        const findById = userEntity?.methods.find(m => m.kind === "read");
+        expect(findById).toBeDefined();
+        expect(findById?.params[0]?.source).toBe("pk");
+        expect(findById?.returns.nullable).toBe(true);
+        expect(findById?.returns.isArray).toBe(false);
+
+        // Find the list method
+        const findMany = userEntity?.methods.find(m => m.kind === "list");
+        expect(findMany).toBeDefined();
+        expect(findMany?.params.some(p => p.source === "pagination")).toBe(true);
+        expect(findMany?.returns.isArray).toBe(true);
+
+        // Find the create method
+        const insert = userEntity?.methods.find(m => m.kind === "create");
+        expect(insert).toBeDefined();
+        expect(insert?.params[0]?.source).toBe("body");
       }),
     );
   });

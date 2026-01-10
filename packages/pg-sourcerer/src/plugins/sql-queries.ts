@@ -15,6 +15,92 @@ import { inflect } from "../services/inflection.js";
 const { ts, b, param, asyncFn } = conjure;
 
 // ============================================================================
+// Query Artifact Schema (plugin-defined)
+// ============================================================================
+// This schema defines what sql-queries emits as its artifact.
+// HTTP plugins consuming "queries:sql" should decode using a compatible schema.
+
+/** How to call a query function */
+const CallSignature = S.Struct({
+  /** "named" = fn({ a, b }), "positional" = fn(a, b) */
+  style: S.Union(S.Literal("named"), S.Literal("positional")),
+  /** For named + body: "property" = { data: body }, "spread" = { field1, field2 } */
+  bodyStyle: S.optional(S.Union(S.Literal("property"), S.Literal("spread"))),
+});
+type CallSignature = S.Schema.Type<typeof CallSignature>;
+
+const QueryMethodParam = S.Struct({
+  name: S.String,
+  type: S.String,
+  required: S.Boolean,
+  columnName: S.optional(S.String),
+  source: S.optional(S.Union(
+    S.Literal("pk"),
+    S.Literal("fk"),
+    S.Literal("lookup"),
+    S.Literal("body"),
+    S.Literal("pagination"),
+  )),
+});
+type QueryMethodParam = S.Schema.Type<typeof QueryMethodParam>;
+
+const QueryMethodReturn = S.Struct({
+  type: S.String,
+  nullable: S.Boolean,
+  isArray: S.Boolean,
+});
+
+const QueryMethodKind = S.Union(
+  S.Literal("read"),
+  S.Literal("list"),
+  S.Literal("create"),
+  S.Literal("update"),
+  S.Literal("delete"),
+  S.Literal("lookup"),
+  S.Literal("function"),
+);
+
+const QueryMethod = S.Struct({
+  name: S.String,
+  kind: QueryMethodKind,
+  params: S.Array(QueryMethodParam),
+  returns: QueryMethodReturn,
+  lookupField: S.optional(S.String),
+  isUniqueLookup: S.optional(S.Boolean),
+  callSignature: S.optional(CallSignature),
+});
+type QueryMethod = S.Schema.Type<typeof QueryMethod>;
+
+const EntityQueryMethods = S.Struct({
+  entityName: S.String,
+  tableName: S.String,
+  schemaName: S.String,
+  pkType: S.optional(S.String),
+  hasCompositePk: S.optional(S.Boolean),
+  methods: S.Array(QueryMethod),
+});
+type EntityQueryMethods = S.Schema.Type<typeof EntityQueryMethods>;
+
+const FunctionQueryMethod = S.Struct({
+  functionName: S.String,
+  exportName: S.String,
+  schemaName: S.String,
+  volatility: S.Union(S.Literal("immutable"), S.Literal("stable"), S.Literal("volatile")),
+  params: S.Array(QueryMethodParam),
+  returns: QueryMethodReturn,
+  callSignature: S.optional(CallSignature),
+});
+type FunctionQueryMethod = S.Schema.Type<typeof FunctionQueryMethod>;
+
+const QueryArtifact = S.Struct({
+  entities: S.Array(EntityQueryMethods),
+  functions: S.Array(FunctionQueryMethod),
+  sourcePlugin: S.String,
+  outputDir: S.String,
+});
+type QueryArtifact = S.Schema.Type<typeof QueryArtifact>;
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -83,12 +169,15 @@ interface SqlQueriesPluginConfig extends Omit<SqlQueriesPluginConfigBase, "expor
 // ============================================================================
 
 /**
- * A generated method definition (name + function declaration).
- * Used to support both flat exports and namespace object exports.
+ * A generated method definition (name + function declaration + metadata).
+ * Used to support both flat exports and namespace object exports,
+ * and to emit QueryArtifact for downstream plugins.
  */
 interface MethodDef {
   readonly name: string;
   readonly fn: n.FunctionDeclaration;
+  /** Metadata for QueryArtifact emission */
+  readonly meta: QueryMethod;
 }
 
 interface GenerationContext {
@@ -176,6 +265,13 @@ const toPascalCase = (s: string): string => inflect.pascalCase(s);
 // CRUD Function Generators
 // ============================================================================
 
+/** Get TypeScript type string for a field */
+const getFieldTypeString = (field: Field | undefined, ctx: GenerationContext): string => {
+  if (!field) return "string";
+  const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions);
+  return resolved.enumDef ? resolved.enumDef.name : resolved.tsType;
+};
+
 /** Generate findById method if entity has a primary key and canSelect permission */
 const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
   const { entity, sqlStyle, entityName, exportName, explicitColumns } = ctx;
@@ -204,7 +300,21 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
     b.returnStatement(b.identifier("result")),
   ]);
 
-  return { name, fn };
+  const meta: QueryMethod = {
+    name,
+    kind: "read",
+    params: [{
+      name: fieldName,
+      type: getFieldTypeString(pkField, ctx),
+      required: true,
+      columnName: pkColName,
+      source: "pk",
+    }],
+    returns: { type: rowType, nullable: true, isArray: false },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Generate findMany method with pagination if entity has canSelect permission */
@@ -232,7 +342,18 @@ const generateFindMany = (ctx: GenerationContext): MethodDef | undefined => {
     hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))),
   );
 
-  return { name, fn };
+  const meta: QueryMethod = {
+    name,
+    kind: "list",
+    params: [
+      { name: "limit", type: "number", required: false, source: "pagination" },
+      { name: "offset", type: "number", required: false, source: "pagination" },
+    ],
+    returns: { type: rowType, nullable: false, isArray: true },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Generate delete method if entity has a primary key and canDelete permission */
@@ -259,7 +380,21 @@ const generateDelete = (ctx: GenerationContext): MethodDef | undefined => {
     b.expressionStatement(queryExpr),
   ]);
 
-  return { name, fn };
+  const meta: QueryMethod = {
+    name,
+    kind: "delete",
+    params: [{
+      name: fieldName,
+      type: getFieldTypeString(pkField, ctx),
+      required: true,
+      columnName: pkColName,
+      source: "pk",
+    }],
+    returns: { type: "void", nullable: false, isArray: false },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Generate insert method if entity has canInsert permission */
@@ -277,12 +412,18 @@ const generateInsert = (ctx: GenerationContext): MethodDef | undefined => {
   if (insertableFields.length === 0) return undefined;
 
   const columnNames = insertableFields.map(f => f.columnName);
-  const fieldNames = insertableFields.map(f => f.name);
 
   // Build: insert into schema.table (col1, col2) values ($field1, $field2) returning *
   const columnList = columnNames.join(", ");
-  const valuePlaceholders = fieldNames.map((_, i) => (i === 0 ? "" : ", "));
+  const valuePlaceholders = insertableFields.map((_, i) => (i === 0 ? "" : ", "));
   
+  // For optional fields (nullable or has default), use DEFAULT when undefined
+  // Required fields use the value directly
+  const paramExprs = insertableFields.map(f => {
+    const isOptional = f.optional || f.nullable;
+    return isOptional ? hex.defaultIfUndefined(f.name) : b.identifier(f.name);
+  });
+
   // Template parts: "insert into ... values (" + "" + ", " + ", " + ... + ") returning *"
   const parts: QueryParts = {
     templateParts: [
@@ -290,19 +431,33 @@ const generateInsert = (ctx: GenerationContext): MethodDef | undefined => {
       ...valuePlaceholders.slice(1),
       `) returning *`,
     ],
-    params: fieldNames.map(f => b.identifier(f)),
+    params: paramExprs,
   };
 
   const queryExpr = hex.query(sqlStyle, parts, ts.array(ts.ref(rowType)));
   const varDecl = hex.firstRowDecl(sqlStyle, "result", queryExpr);
 
-  // Destructured parameter with Pick type for consistency
+  // Destructured parameter - use Pick from insert type
+  const fieldNames = insertableFields.map(f => f.name);
   const dataParam = param.pick(fieldNames, insertType);
 
   const name = exportName(entityName, "Insert");
   const fn = asyncFn(name, [dataParam], [varDecl, b.returnStatement(b.identifier("result"))]);
 
-  return { name, fn };
+  const meta: QueryMethod = {
+    name,
+    kind: "create",
+    params: [{
+      name: "data",
+      type: insertType,
+      required: true,
+      source: "body",
+    }],
+    returns: { type: rowType, nullable: false, isArray: false },
+    callSignature: { style: "named", bodyStyle: "spread" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Generate all CRUD methods for an entity */
@@ -380,11 +535,33 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   const name = exportName(entityName, methodName);
 
   // Build the parameter - use destructured style for both cases
-  // Semantic naming: { user }: { user: Post["user_id"] }
-  // Regular naming: { fieldName }: Pick<Post, "fieldName">
-  const paramNode = useSemanticNaming
-    ? param.destructured([{ name: paramName, type: ts.indexedAccess(ts.ref(rowType), ts.literal(fieldName)) }])
-    : param.pick([fieldName], rowType);
+  // Lookup params must be non-nullable (you're searching FOR a value, not handling null)
+  // Semantic naming: { user }: { user: NonNullable<Post["user_id"]> }
+  // Regular naming: { fieldName }: { fieldName: NonNullable<Post["fieldName"]> }
+  const indexedType = ts.indexedAccess(ts.ref(rowType), ts.literal(fieldName));
+  const paramType = ts.ref("NonNullable", [indexedType]);
+  const paramNode = param.destructured([{ name: paramName, type: paramType }]);
+
+  // Build metadata for the lookup method
+  const meta: QueryMethod = {
+    name,
+    kind: "lookup",
+    params: [{
+      name: paramName,
+      type: getFieldTypeString(field, ctx),
+      required: true,
+      columnName,
+      source: relation ? "fk" : "lookup",
+    }],
+    returns: {
+      type: rowType,
+      nullable: isUnique,
+      isArray: !isUnique,
+    },
+    lookupField: fieldName,
+    isUniqueLookup: isUnique,
+    callSignature: { style: "named" },
+  };
 
   if (isUnique) {
     // Extract first row for unique lookups
@@ -396,13 +573,13 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
       b.returnStatement(b.identifier("result")),
     ]);
 
-    return { name, fn };
+    return { name, fn, meta };
   }
 
   // Non-unique: return all matching rows
   const fn = asyncFn(name, [paramNode], hex.returnQuery(sqlStyle, parts, ts.array(ts.ref(rowType))));
 
-  return { name, fn };
+  return { name, fn, meta };
 };
 
 /** Generate lookup methods for all eligible indexes, deduplicating by name */
@@ -759,7 +936,25 @@ const generateFunctionWrapper = (
   }
 
   const fnDecl = asyncFn(name, params, body);
-  return { name, fn: fnDecl };
+
+  // Build metadata for the function wrapper
+  const meta: QueryMethod = {
+    name,
+    kind: "function",
+    params: resolvedArgs.map(arg => ({
+      name: arg.name,
+      type: arg.tsType,
+      required: !arg.isOptional,
+    })),
+    returns: {
+      type: resolvedReturn.tsType,
+      nullable: resolvedReturn.isScalar || !resolvedReturn.isArray, // Scalars and single rows can be null
+      isArray: resolvedReturn.isArray,
+    },
+    callSignature: { style: "positional" },
+  };
+
+  return { name, fn: fnDecl, meta };
 };
 
 /**
@@ -858,6 +1053,10 @@ export const sqlQueriesPlugin = definePlugin({
     const enums = getEnumEntities(ctx.ir);
     const { sqlStyle, generateFunctions, exportName, exportStyle } = config;
 
+    // Collectors for QueryArtifact emission
+    const entityMethodsCollector: EntityQueryMethods[] = [];
+    const functionMethodsCollector: FunctionQueryMethod[] = [];
+
     // Pre-compute function groupings by return entity name
     // Functions returning entities go in that entity's file; scalars go in functions.ts
     const functionsByEntity = new Map<string, FunctionEntity[]>();
@@ -947,6 +1146,27 @@ export const sqlQueriesPlugin = definePlugin({
         }
 
         file.ast(conjure.program(...statements)).emit();
+
+        // Collect metadata for QueryArtifact
+        const pkField = entity.primaryKey?.columns[0]
+          ? findRowField(entity, entity.primaryKey.columns[0])
+          : undefined;
+        const pkType = pkField ? getFieldTypeString(pkField, genCtx) : undefined;
+
+        // Combine CRUD method metadata with entity-function metadata
+        const allMethodMetas = [
+          ...crudMethods.map(m => m.meta),
+          ...entityFunctions.map(fn => generateFunctionWrapper(fn, ctx.ir, sqlStyle).meta),
+        ];
+
+        entityMethodsCollector.push({
+          entityName,
+          tableName: entity.pgName,
+          schemaName: entity.schemaName,
+          pkType,
+          hasCompositePk: (entity.primaryKey?.columns.length ?? 0) > 1,
+          methods: allMethodMetas,
+        });
       });
 
     // Generate files for composite types that have functions returning them
@@ -1007,6 +1227,40 @@ export const sqlQueriesPlugin = definePlugin({
       }
 
       file.ast(conjure.program(...statements)).emit();
+
+      // Collect scalar function metadata for QueryArtifact
+      for (const fn of scalarFunctions) {
+        const wrapper = generateFunctionWrapper(fn, ctx.ir, sqlStyle);
+        const resolvedArgs = resolveArgs(fn, ctx.ir);
+        const resolvedReturn = resolveReturnType(fn, ctx.ir);
+
+        functionMethodsCollector.push({
+          functionName: fn.pgName,
+          exportName: wrapper.name,
+          schemaName: fn.schemaName,
+          volatility: fn.volatility,
+          params: resolvedArgs.map(arg => ({
+            name: arg.name,
+            type: arg.tsType,
+            required: !arg.isOptional,
+          })),
+          returns: {
+            type: resolvedReturn.tsType,
+            nullable: resolvedReturn.isScalar || !resolvedReturn.isArray,
+            isArray: resolvedReturn.isArray,
+          },
+          callSignature: { style: "positional" },
+        });
+      }
     }
+
+    // Emit the QueryArtifact for downstream plugins (e.g., http-elysia)
+    const artifact: QueryArtifact = {
+      entities: entityMethodsCollector,
+      functions: functionMethodsCollector,
+      sourcePlugin: "sql-queries",
+      outputDir: config.outputDir,
+    };
+    ctx.setArtifact("queries:sql", artifact);
   },
 });

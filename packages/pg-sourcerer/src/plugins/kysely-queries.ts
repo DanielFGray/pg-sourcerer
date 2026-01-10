@@ -30,8 +30,94 @@ import { conjure, cast } from "../lib/conjure.js";
 import { resolveFieldType, tsTypeToAst } from "../lib/field-utils.js";
 import { inflect } from "../services/inflection.js";
 
-const { ts, b, param } = conjure;
+const { ts, b, param, str } = conjure;
 const { toExpr } = cast;
+
+// ============================================================================
+// Query Artifact Schema (plugin-defined)
+// ============================================================================
+// This schema defines what kysely-queries emits as its artifact.
+// HTTP plugins consuming "queries:kysely" should decode using a compatible schema.
+
+/** How to call a query function */
+const CallSignature = S.Struct({
+  /** "named" = fn({ a, b }), "positional" = fn(a, b) */
+  style: S.Union(S.Literal("named"), S.Literal("positional")),
+  /** For named + body: "property" = { data: body }, "spread" = { field1, field2 } */
+  bodyStyle: S.optional(S.Union(S.Literal("property"), S.Literal("spread"))),
+});
+type CallSignature = S.Schema.Type<typeof CallSignature>;
+
+const QueryMethodParam = S.Struct({
+  name: S.String,
+  type: S.String,
+  required: S.Boolean,
+  columnName: S.optional(S.String),
+  source: S.optional(S.Union(
+    S.Literal("pk"),
+    S.Literal("fk"),
+    S.Literal("lookup"),
+    S.Literal("body"),
+    S.Literal("pagination"),
+  )),
+});
+type QueryMethodParam = S.Schema.Type<typeof QueryMethodParam>;
+
+const QueryMethodReturn = S.Struct({
+  type: S.String,
+  nullable: S.Boolean,
+  isArray: S.Boolean,
+});
+
+const QueryMethodKind = S.Union(
+  S.Literal("read"),
+  S.Literal("list"),
+  S.Literal("create"),
+  S.Literal("update"),
+  S.Literal("delete"),
+  S.Literal("lookup"),
+  S.Literal("function"),
+);
+
+const QueryMethod = S.Struct({
+  name: S.String,
+  kind: QueryMethodKind,
+  params: S.Array(QueryMethodParam),
+  returns: QueryMethodReturn,
+  lookupField: S.optional(S.String),
+  isUniqueLookup: S.optional(S.Boolean),
+  callSignature: S.optional(CallSignature),
+});
+type QueryMethod = S.Schema.Type<typeof QueryMethod>;
+
+const EntityQueryMethods = S.Struct({
+  entityName: S.String,
+  tableName: S.String,
+  schemaName: S.String,
+  pkType: S.optional(S.String),
+  hasCompositePk: S.optional(S.Boolean),
+  methods: S.Array(QueryMethod),
+});
+type EntityQueryMethods = S.Schema.Type<typeof EntityQueryMethods>;
+
+const FunctionQueryMethod = S.Struct({
+  functionName: S.String,
+  exportName: S.String,
+  schemaName: S.String,
+  volatility: S.Union(S.Literal("immutable"), S.Literal("stable"), S.Literal("volatile")),
+  params: S.Array(QueryMethodParam),
+  returns: QueryMethodReturn,
+  callSignature: S.optional(CallSignature),
+});
+type FunctionQueryMethod = S.Schema.Type<typeof FunctionQueryMethod>;
+
+const QueryArtifact = S.Struct({
+  entities: S.Array(EntityQueryMethods),
+  functions: S.Array(FunctionQueryMethod),
+  sourcePlugin: S.String,
+  outputDir: S.String,
+});
+type QueryArtifact = S.Schema.Type<typeof QueryArtifact>;
 
 // ============================================================================
 // Configuration
@@ -207,12 +293,15 @@ interface GenerationContext {
 }
 
 /**
- * A generated method definition (name + arrow function).
- * Used to support both flat exports and namespace object exports.
+ * A generated method definition (name + arrow function + metadata).
+ * Used to support both flat exports and namespace object exports,
+ * and to emit QueryArtifact for downstream plugins.
  */
 interface MethodDef {
   readonly name: string;
   readonly fn: n.ArrowFunctionExpression;
+  /** Metadata for QueryArtifact emission */
+  readonly meta: QueryMethod;
 }
 
 /**
@@ -240,6 +329,13 @@ const getFieldTypeAst = (field: Field | undefined, ctx: GenerationContext): n.TS
   if (!field) return ts.string();
   const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions);
   return resolved.enumDef ? ts.ref(resolved.enumDef.name) : tsTypeToAst(resolved.tsType);
+};
+
+/** Get TypeScript type string for a field */
+const getFieldTypeString = (field: Field | undefined, ctx: GenerationContext): string => {
+  if (!field) return "string";
+  const resolved = resolveFieldType(field, ctx.enums, ctx.ir.extensions);
+  return resolved.enumDef ? resolved.enumDef.name : resolved.tsType;
 };
 
 // ============================================================================
@@ -292,30 +388,9 @@ const toPascalCase = (s: string): string => inflect.pascalCase(s);
 /** Create identifier */
 const id = (name: string): n.Identifier => b.identifier(name);
 
-/** Create member expression: obj.prop */
-const member = (obj: n.Expression, prop: string): n.MemberExpression =>
-  b.memberExpression(toExpr(obj), id(prop));
-
 /** Create method call: obj.method(args) */
 const call = (obj: n.Expression, method: string, args: n.Expression[] = []): n.CallExpression =>
-  b.callExpression(member(obj, method), args.map(toExpr));
-
-/** Create string literal */
-const str = (value: string): n.StringLiteral => b.stringLiteral(value);
-
-/** Create typed parameter: name: Type */
-const typedParam = (name: string, type: n.TSType): n.Identifier => {
-  const param = id(name);
-  param.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(type));
-  return param;
-};
-
-/** Create optional typed parameter: name?: Type */
-const optionalTypedParam = (name: string, type: n.TSType): n.Identifier => {
-  const param = typedParam(name, type);
-  param.optional = true;
-  return param;
-};
+  b.callExpression(b.memberExpression(toExpr(obj), id(method)), args.map(toExpr));
 
 /**
  * Build Kysely query chain starting with db.selectFrom('table')
@@ -705,52 +780,11 @@ const resolveArgs = (fn: FunctionEntity, ir: SemanticIR): ResolvedArg[] =>
 // ============================================================================
 
 /**
- * Convert a type string to a TSType AST node.
- */
-const typeStringToAst = (typeStr: string): n.TSType => {
-  switch (typeStr) {
-    case "string":
-      return ts.string();
-    case "number":
-      return ts.number();
-    case "boolean":
-      return ts.boolean();
-    case "Date":
-      return ts.ref("Date");
-    case "Buffer":
-      return ts.ref("Buffer");
-    case "unknown":
-      return ts.unknown();
-    case "void":
-      return ts.void();
-    default:
-      // Handle array types like "string[]"
-      if (typeStr.endsWith("[]")) {
-        const elemType = typeStr.slice(0, -2);
-        const elemAst =
-          elemType === "string"
-            ? ts.string()
-            : elemType === "number"
-              ? ts.number()
-              : elemType === "boolean"
-                ? ts.boolean()
-                : ts.ref(elemType);
-        return ts.array(elemAst);
-      } else {
-        // Assume it's a type reference (composite, enum, etc.)
-        return ts.ref(typeStr);
-      }
-  }
-};
-
-/**
  * Generate a typed parameter with explicit type annotation from type string.
  */
-const typedParamFromString = (name: string, typeStr: string): n.Identifier => {
-  const p = id(name);
-  p.typeAnnotation = b.tsTypeAnnotation(cast.toTSType(typeStringToAst(typeStr)));
-  return p;
-};
+const typedParamFromString = (name: string, typeStr: string): n.Identifier =>
+  param.typed(name, ts.fromString(typeStr));
+
 /**
  * Get the fully qualified function name for use in eb.fn call.
  */
@@ -834,7 +868,7 @@ const generateFunctionWrapper = (
     const optionsParam = param.destructured(
       resolvedArgs.map(arg => ({
         name: arg.name,
-        type: typeStringToAst(arg.tsType),
+        type: ts.fromString(arg.tsType),
         optional: arg.isOptional,
       })),
     );
@@ -843,12 +877,29 @@ const generateFunctionWrapper = (
 
   // Add db param last if enabled
   if (dbAsParameter) {
-    params.push(typedParam("db", ts.ref("Kysely", [ts.ref("DB")])));
+    params.push(param.typed("db", ts.ref("Kysely", [ts.ref("DB")])));
   }
 
   const wrapperFn = arrowFn(params, query);
 
-  return { name: fn.name, fn: wrapperFn };
+  // Build metadata for QueryArtifact
+  const meta: QueryMethod = {
+    name: fn.name,
+    kind: "function",
+    params: resolvedArgs.map(arg => ({
+      name: arg.name,
+      type: arg.tsType,
+      required: !arg.isOptional,
+    })),
+    returns: {
+      type: resolvedReturn.tsType,
+      nullable: resolvedReturn.isScalar || !resolvedReturn.isArray,
+      isArray: resolvedReturn.isArray,
+    },
+    callSignature: { style: "named" },
+  };
+
+  return { name: fn.name, fn: wrapperFn, meta };
 };
 
 /**
@@ -924,7 +975,23 @@ const generateFindById = (ctx: GenerationContext): MethodDef | undefined => {
 
   const fn = arrowFn(params, query);
 
-  return { name: exportName(entityName, "FindById"), fn };
+  const name = exportName(entityName, "FindById");
+  const rowType = entity.shapes.row.name;
+  const meta: QueryMethod = {
+    name,
+    kind: "read",
+    params: [{
+      name: fieldName,
+      type: getFieldTypeString(pkField, ctx),
+      required: true,
+      columnName: pkColName,
+      source: "pk",
+    }],
+    returns: { type: rowType, nullable: true, isArray: false },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Default offset for findMany queries */
@@ -982,7 +1049,20 @@ const generateListMany = (ctx: GenerationContext): MethodDef | undefined => {
 
   const fn = arrowFn(params, query);
 
-  return { name: exportName(entityName, "ListMany"), fn };
+  const name = exportName(entityName, "ListMany");
+  const rowType = entity.shapes.row.name;
+  const meta: QueryMethod = {
+    name,
+    kind: "list",
+    params: [
+      { name: "limit", type: "number", required: false, source: "pagination" },
+      { name: "offset", type: "number", required: false, source: "pagination" },
+    ],
+    returns: { type: rowType, nullable: false, isArray: true },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /**
@@ -1016,7 +1096,23 @@ const generateCreate = (ctx: GenerationContext): MethodDef | undefined => {
 
   const fn = arrowFn(params, query);
 
-  return { name: exportName(entityName, "Create"), fn };
+  const name = exportName(entityName, "Create");
+  const rowType = entity.shapes.row.name;
+  const insertType = `Insertable<${tableTypeName}>`;
+  const meta: QueryMethod = {
+    name,
+    kind: "create",
+    params: [{
+      name: "data",
+      type: insertType,
+      required: true,
+      source: "body",
+    }],
+    returns: { type: rowType, nullable: false, isArray: false },
+    callSignature: { style: "named", bodyStyle: "property" },
+  };
+
+  return { name, fn, meta };
 };
 
 /**
@@ -1061,7 +1157,32 @@ const generateUpdate = (ctx: GenerationContext): MethodDef | undefined => {
 
   const fn = arrowFn(params, query);
 
-  return { name: exportName(entityName, "Update"), fn };
+  const name = exportName(entityName, "Update");
+  const rowType = entity.shapes.row.name;
+  const updateType = `Updateable<${tableTypeName}>`;
+  const meta: QueryMethod = {
+    name,
+    kind: "update",
+    params: [
+      {
+        name: fieldName,
+        type: getFieldTypeString(pkField, ctx),
+        required: true,
+        columnName: pkColName,
+        source: "pk",
+      },
+      {
+        name: "data",
+        type: updateType,
+        required: true,
+        source: "body",
+      },
+    ],
+    returns: { type: rowType, nullable: false, isArray: false },
+    callSignature: { style: "named", bodyStyle: "property" },
+  };
+
+  return { name, fn, meta };
 };
 
 /**
@@ -1099,7 +1220,22 @@ const generateDelete = (ctx: GenerationContext): MethodDef | undefined => {
 
   const fn = arrowFn(params, query);
 
-  return { name: exportName(entityName, "Remove"), fn };
+  const name = exportName(entityName, "Remove");
+  const meta: QueryMethod = {
+    name,
+    kind: "delete",
+    params: [{
+      name: fieldName,
+      type: getFieldTypeString(pkField, ctx),
+      required: true,
+      columnName: pkColName,
+      source: "pk",
+    }],
+    returns: { type: "void", nullable: false, isArray: false },
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /** Generate all CRUD methods for an entity */
@@ -1169,11 +1305,15 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   // For FK columns, use indexed access on Selectable<TableType> to get the unwrapped type
   // (Kysely's Generated<T> types need Selectable to unwrap for use in where clauses)
   // For regular columns, use the field's type directly
+  // Both cases wrap in NonNullable since lookups require a concrete value
   const useSemanticNaming = relation !== undefined && paramName !== fieldName;
   const tableTypeName = getTableTypeName(entity);
-  const paramType = useSemanticNaming
-    ? ts.indexedAccess(ts.ref("Selectable", [ts.ref(tableTypeName)]), ts.literal(fieldName))
-    : getFieldTypeAst(field, ctx);
+  const selectableType = ts.ref("Selectable", [ts.ref(tableTypeName)]);
+  const indexedType = ts.indexedAccess(selectableType, ts.literal(fieldName));
+  // Lookup params must be non-nullable (you're searching FOR a value, not handling null)
+  const paramType = ts.ref("NonNullable", [
+    useSemanticNaming ? indexedType : getFieldTypeAst(field, ctx),
+  ]);
 
   // db.selectFrom('table').select([...]).where('col', '=', value)
   let query: n.Expression = chain(
@@ -1195,7 +1335,30 @@ const generateLookupMethod = (index: IndexDef, ctx: GenerationContext): MethodDe
   const fn = arrowFn(params, query);
 
   const methodName = generateLookupMethodName(entity, index, relation);
-  return { name: exportName(entityName, methodName), fn };
+  const name = exportName(entityName, methodName);
+  const rowType = entity.shapes.row.name;
+
+  const meta: QueryMethod = {
+    name,
+    kind: "lookup",
+    params: [{
+      name: paramName,
+      type: getFieldTypeString(field, ctx),
+      required: true,
+      columnName,
+      source: relation ? "fk" : "lookup",
+    }],
+    returns: {
+      type: rowType,
+      nullable: isUnique,
+      isArray: !isUnique,
+    },
+    lookupField: fieldName,
+    isUniqueLookup: isUnique,
+    callSignature: { style: "named" },
+  };
+
+  return { name, fn, meta };
 };
 
 /**
@@ -1322,6 +1485,10 @@ export const kyselyQueriesPlugin = definePlugin({
       header,
     } = config;
 
+    // Collectors for QueryArtifact emission
+    const entityMethodsCollector: EntityQueryMethods[] = [];
+    const functionMethodsCollector: FunctionQueryMethod[] = [];
+
     // Pre-compute function groupings by return entity name
     // Functions returning entities go in that entity's file; scalars go in functions.ts
     const functionsByEntity = new Map<string, FunctionEntity[]>();
@@ -1446,6 +1613,21 @@ export const kyselyQueriesPlugin = definePlugin({
         }
 
         file.ast(conjure.program(...statements)).emit();
+
+        // Collect metadata for QueryArtifact
+        const pkField = entity.primaryKey?.columns[0]
+          ? findRowField(entity, entity.primaryKey.columns[0])
+          : undefined;
+        const pkType = pkField ? getFieldTypeString(pkField, genCtx) : undefined;
+
+        entityMethodsCollector.push({
+          entityName,
+          tableName: entity.pgName,
+          schemaName: entity.schemaName,
+          pkType,
+          hasCompositePk: (entity.primaryKey?.columns.length ?? 0) > 1,
+          methods: methods.map(m => m.meta),
+        });
       });
 
     // Generate files for composite types that have functions returning them
@@ -1513,6 +1695,39 @@ export const kyselyQueriesPlugin = definePlugin({
       }
 
       file.ast(conjure.program(...statements)).emit();
+
+      // Collect scalar function metadata for QueryArtifact
+      for (const fn of scalarFunctions) {
+        const resolvedArgs = resolveArgs(fn, ctx.ir);
+        const resolvedReturn = resolveReturnType(fn, ctx.ir);
+
+        functionMethodsCollector.push({
+          functionName: fn.pgName,
+          exportName: fn.name,
+          schemaName: fn.schemaName,
+          volatility: fn.volatility,
+          params: resolvedArgs.map(arg => ({
+            name: arg.name,
+            type: arg.tsType,
+            required: !arg.isOptional,
+          })),
+          returns: {
+            type: resolvedReturn.tsType,
+            nullable: resolvedReturn.isScalar || !resolvedReturn.isArray,
+            isArray: resolvedReturn.isArray,
+          },
+          callSignature: { style: "named" },
+        });
+      }
     }
+
+    // Emit the QueryArtifact for downstream plugins (e.g., http-elysia)
+    const artifact: QueryArtifact = {
+      entities: entityMethodsCollector,
+      functions: functionMethodsCollector,
+      sourcePlugin: "kysely-queries",
+      outputDir: config.outputDir,
+    };
+    ctx.setArtifact("queries:kysely", artifact);
   },
 });
