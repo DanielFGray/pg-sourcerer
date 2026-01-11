@@ -143,7 +143,9 @@ function resolveImportRef(
   forFile: string,
   symbols: SymbolRegistry,
   onUnresolved?: OnUnresolvedRef,
-): { source: string; named: string[]; types: string[]; defaultImport?: string; namespace?: string } | undefined {
+):
+  | { source: string; named: string[]; types: string[]; defaultImport?: string; namespace?: string }
+  | undefined {
   switch (ref.kind) {
     case "symbol": {
       const symbol = symbols.resolve(ref.ref);
@@ -190,7 +192,10 @@ function prependImports(
   const bySource = pipe(
     imports,
     Arr.reduce(
-      new Map<string, { named: Set<string>; types: Set<string>; default?: string; namespace?: string }>(),
+      new Map<
+        string,
+        { named: Set<string>; types: Set<string>; default?: string; namespace?: string }
+      >(),
       (map, ref) => {
         const resolved = resolveImportRef(ref, forFile, symbols, onUnresolved);
         if (!resolved) return map;
@@ -305,14 +310,15 @@ const mergeAstEntries = (
 
 /** Ensure exactly one blank line before each export statement */
 const ensureBlankLinesBeforeExports = (code: string): string =>
-  code.split("\n").reduce<string[]>((acc, line) => {
-    const prevLine = acc[acc.length - 1];
-    const needsBlankLine =
-      line.startsWith("export ") &&
-      prevLine !== undefined &&
-      prevLine !== "";
-    return needsBlankLine ? [...acc, "", line] : [...acc, line];
-  }, []).join("\n");
+  code
+    .split("\n")
+    .reduce<string[]>((acc, line) => {
+      const prevLine = acc[acc.length - 1];
+      const needsBlankLine =
+        line.startsWith("export ") && prevLine !== undefined && prevLine !== "";
+      return needsBlankLine ? [...acc, "", line] : [...acc, line];
+    }, [])
+    .join("\n");
 
 // =============================================================================
 // Emission Buffer Implementation
@@ -426,7 +432,7 @@ export function createEmissionBuffer(): EmissionBuffer {
         const formattedBody = ensureBlankLinesBeforeExports(bodyCode);
 
         // Order: header → imports → body
-        const content = (entry.header ? entry.header + "\n" : "") + importCode + formattedBody;
+        const content = (entry.header ? entry.header : "") + importCode + formattedBody;
         MutableHashMap.set(emissions, entry.path, {
           path: entry.path,
           content,

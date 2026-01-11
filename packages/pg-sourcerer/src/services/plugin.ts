@@ -1,485 +1,593 @@
 /**
- * Plugin Types
+ * Plugin System
  *
- * Defines the Effect-native plugin interface where plugins are Effects
- * that yield the services they need from context.
+ * A generic request/plugin coordination system. Core routes requests to plugins
+ * without understanding what resources represent (schemas, queries, routes, etc.).
+ *
+ * Key concepts:
+ * - Plugin: Handles requests for a resource kind
+ * - Request: A need for a resource with specific params
+ * - DeferredResource: A placeholder resolved after plugin execution
+ *
+ * Execution phases:
+ * 1. Registration - Plugins registered, singletons identified
+ * 2. Collection - Requests collected via ctx.request()
+ * 3. Resolution - Match requests to plugins, build DAG
+ * 4. Execution - Run plugins in topological order
+ * 5. Finalization - Emit files, resolve imports
  */
-import { Effect, Schema as S, ParseResult } from "effect"
-import type { namedTypes as n } from "ast-types"
-import type { Artifact, CapabilityKey, SemanticIR, Entity } from "../ir/semantic-ir.js"
-import { PluginExecutionFailed } from "../errors.js"
-import type { CoreInflection, InflectionConfig } from "./inflection.js"
-import type { SymbolRegistry } from "./symbols.js"
-import type { TypeHintRegistry } from "./type-hints.js"
+import { Context, Data, Layer, MutableHashMap, MutableList, Option, pipe, Schema as S } from "effect"
 import type { FileBuilder } from "./file-builder.js"
-import { createFileBuilder } from "./file-builder.js"
-
-// Import service tags for yielding in definePlugin
-import { IR } from "./ir.js"
-import { ArtifactStore } from "./artifact-store.js"
-import { PluginMeta } from "./plugin-meta.js"
-import { Inflection } from "./inflection.js"
-import { Emissions } from "./emissions.js"
-import { Symbols } from "./symbols.js"
-import { TypeHints } from "./type-hints.js"
-
-/**
- * Context provided to fileName function for output file path generation.
- * 
- * This gives plugins full programmatic control over file naming,
- * with access to entity info and inflection utilities.
- */
-export interface FileNameContext {
-  /** Already-inflected entity name */
-  readonly entityName: string
-  /** Raw PostgreSQL object name (table, view, or type name) */
-  readonly pgName: string
-  /** Schema name */
-  readonly schema: string
-  /** Inflection utilities (singularize, pluralize, etc.) */
-  readonly inflection: CoreInflection
-  /** Full entity from IR for advanced use cases */
-  readonly entity: Entity
-}
-
-/**
- * Plugin-specific inflection for output file and symbol naming
- */
-export interface PluginInflection {
-  /**
-   * Generate output file path for an entity.
-   * 
-   * @param ctx - Context with entity info and inflection utilities
-   * @returns File path relative to outputDir (include extension)
-   * 
-   * @example
-   * ```typescript
-   * // Default: entity name as file
-   * fileName: (ctx) => `${ctx.entityName}.ts`
-   * 
-   * // Lowercase files
-   * fileName: (ctx) => `${ctx.entityName.toLowerCase()}.ts`
-   * 
-   * // Singular lowercase
-   * fileName: (ctx) => `${ctx.inflection.singularize(ctx.entityName).toLowerCase()}.ts`
-   * 
-   * // Schema-scoped
-   * fileName: (ctx) => `${ctx.schema}/${ctx.entityName}.ts`
-   * 
-   * // Single file for all entities
-   * fileName: () => `all-models.ts`
-   * ```
-   */
-  readonly outputFile: (ctx: FileNameContext) => string
-  readonly symbolName: (entityName: string, artifactKind: string) => string
-}
-
-/**
- * Union of all service tags available to plugins.
- *
- * Plugins can yield any of these from Effect context:
- * ```typescript
- * const ir = yield* IR
- * const inflection = yield* Inflection
- * ```
- */
-export type PluginServices = IR | Inflection | Emissions | Symbols | TypeHints | ArtifactStore | PluginMeta
-
-/**
- * Effect-native Plugin interface
- *
- * Plugins are Effects that yield the services they need from context.
- * The PluginRunner provides all services via layers.
- *
- * @example
- * ```typescript
- * const myPlugin: Plugin<MyConfig> = {
- *   name: "my-plugin",
- *   provides: ["types:row"],
- *   configSchema: MyConfigSchema,
- *   inflection: { ... },
- *
- *   run: (config) => Effect.gen(function* () {
- *     const ir = yield* IR
- *     const emissions = yield* Emissions
- *     const meta = yield* PluginMeta
- *
- *     for (const entity of ir.entities.values()) {
- *       emissions.emit(`types/${entity.name}.ts`, generateType(entity), meta.name)
- *     }
- *   })
- * }
- * ```
- */
-export interface Plugin<TConfig = unknown, TEncoded = TConfig> {
-  /** Unique plugin name */
-  readonly name: string
-
-  /** Capabilities this plugin requires (must be provided by earlier plugins) */
-  readonly requires?: readonly CapabilityKey[]
-
-  /**
-   * Capabilities this plugin provides.
-   * Can be a static array or a function that computes capabilities from config.
-   * When a function, it receives the decoded config (with defaults applied).
-   */
-  readonly provides: readonly CapabilityKey[] | ((config: TConfig) => readonly CapabilityKey[])
-
-  /** Configuration schema (Effect Schema) - Schema<TConfig, Encoded> with TConfig as decoded type */
-  readonly configSchema: S.Schema<TConfig, TEncoded, never>
-
-  /** Plugin-specific inflection for file and symbol naming */
-  readonly inflection: PluginInflection
-
-  /**
-   * Plugin's default inflection transforms.
-   * 
-   * These are applied BEFORE user-configured inflection, allowing composition:
-   * - Plugin sets baseline (e.g., entityName: inflect.pascalCase → "users" → "Users")
-   * - User config refines (e.g., entityName: inflect.singularize → "Users" → "User")
-   * 
-   * @example
-   * ```typescript
-   * import { inflect } from "pg-sourcerer"
-   * 
-   * inflectionDefaults: {
-   *   entityName: inflect.pascalCase,  // Plugin wants PascalCase class names
-   *   // fieldName not set = plugin preserves field names as-is
-   * }
-   * ```
-   */
-  readonly inflectionDefaults?: InflectionConfig
-
-  /**
-   * Plugin execution - returns Effect that yields services from context.
-   *
-   * Accepts the encoded/partial config type. The run function decodes through
-   * the schema, applying defaults to produce the full TConfig.
-   *
-   * Services available:
-   * - IR: SemanticIR (read-only)
-   * - Inflection: CoreInflection (composed: plugin defaults + user config)
-   * - Emissions: EmissionBuffer
-   * - Symbols: SymbolRegistry
-   * - TypeHints: TypeHintRegistry
-   * - ArtifactStore: plugin-to-plugin data
-   * - PluginMeta: current plugin name
-   */
-  readonly run: (config: TEncoded) => Effect.Effect<
-    void,
-    PluginExecutionFailed,
-    // Service requirements via Context.Tag types
-    IR | Inflection | Emissions | Symbols | TypeHints | ArtifactStore | PluginMeta
-  >
-}
-
-/**
- * A plugin factory function that creates ConfiguredPlugin instances.
- * 
- * The factory also exposes the underlying plugin for inspection:
- * - `factory.plugin` - The Plugin object with name, provides, requires, etc.
- */
-export interface PluginFactory<TConfig, TEncoded = TConfig> {
-  (config?: TEncoded): ConfiguredPlugin
-  /** The underlying plugin definition */
-  readonly plugin: Plugin<TConfig, TEncoded>
-}
-
-/**
- * A plugin with its validated configuration
- */
-export interface ConfiguredPlugin {
-  readonly plugin: Plugin<unknown>
-  readonly config: unknown
-}
+import type { SymbolRegistry } from "./symbols.js"
+import type { SemanticIR } from "../ir/semantic-ir.js"
+import type { TypeHintRegistry } from "./type-hints.js"
+import type { CoreInflection } from "./inflection.js"
 
 // ============================================================================
-// Simple Plugin API
+// Core Types - Domain Agnostic
 // ============================================================================
 
 /**
- * Logger interface for simple plugins
+ * A request for a resource of a specific kind with arbitrary params.
+ *
+ * Core does not interpret the params - they are opaque data passed to providers.
  */
-export interface SimplePluginLogger {
-  readonly debug: (message: string) => void
-  readonly info: (message: string) => void
-  readonly warn: (message: string) => void
+export interface ResourceRequest {
+  /** The resource kind (e.g., "validation-schema", "query-functions") */
+  readonly kind: string
+  /** Opaque params interpreted by the provider */
+  readonly params: unknown
 }
 
 /**
- * Context object provided to simple plugins.
+ * A service handler function that processes requests for a specific kind.
  *
- * This is a convenience wrapper around the Effect services,
- * providing a plain object API for plugins that don't need
- * full Effect capabilities.
+ * Registered by plugins via ctx.registerHandler() and invoked by ctx.request().
+ * This enables on-demand generation where a later plugin can request resources
+ * from an earlier plugin's handler.
+ *
+ * @typeParam TParams - The request params shape
+ * @typeParam TResult - The result shape
  */
-export interface SimplePluginContext {
-  /** Read-only access to the IR */
+export type ServiceHandler<TParams = unknown, TResult = unknown> = (
+  params: TParams,
+  ctx: PluginContext
+) => TResult
+
+/**
+ * A deferred resource reference.
+ *
+ * Created when a provider calls ctx.request(). The result is populated
+ * after the resolution and execution phases complete.
+ */
+export interface DeferredResource<T = unknown> {
+  /** The resource kind this request is for */
+  readonly kind: string
+  /** The params used for this request */
+  readonly params: unknown
+  /**
+   * The resolved result. Accessing before resolution throws.
+   * After resolution, contains the provider's return value.
+   */
+  readonly result: T
+}
+
+/**
+ * Context provided to plugins during the provide() call.
+ *
+ * Allows plugins to:
+ * - Access the semantic IR
+ * - Access type hints and inflection
+ * - Register service handlers for on-demand requests
+ * - Make requests to other plugins' handlers
+ * - Emit files
+ * - Register symbols
+ */
+export interface PluginContext {
+  /**
+   * The semantic IR containing all entities, enums, relations, etc.
+   */
   readonly ir: SemanticIR
 
-  /** Core inflection service */
-  readonly inflection: CoreInflection
-
-  /** Symbol registry for cross-file imports */
-  readonly symbols: SymbolRegistry
-
-  /** Type hints registry */
+  /**
+   * Type hint registry for user-configured type overrides.
+   */
   readonly typeHints: TypeHintRegistry
 
-  /** Emit string content to a file (buffered) */
-  readonly emit: (path: string, content: string) => void
+  /**
+   * Inflection service for naming transformations.
+   */
+  readonly inflection: CoreInflection
 
   /**
-   * Emit an AST program to a file (buffered).
-   * The plugin runner handles serialization after all plugins run.
-   * 
-   * @param path - Output file path
-   * @param ast - The AST program node to emit
-   * @param header - Optional header to prepend (e.g., imports that can't be in AST)
+   * Register a service handler for a resource kind.
+   *
+   * Other plugins can then call ctx.request(kind, params) to invoke this handler.
+   * This enables on-demand generation patterns where consumers drive what gets generated.
+   *
+   * @example
+   * ```typescript
+   * // In zod plugin:
+   * ctx.registerHandler("schemas", (params, ctx) => {
+   *   if (params.variant === "params") {
+   *     return generateParamSchema(params.entity, params.method)
+   *   }
+   *   return generateEntitySchema(params.entity, params.shape)
+   * })
+   *
+   * // In http-elysia plugin:
+   * const schema = ctx.request("schemas", { entity: "User", method: "findById", variant: "params" })
+   * ```
+   *
+   * @param kind - Resource kind this handler provides
+   * @param handler - Function to handle requests
    */
-  readonly emitAst: (path: string, ast: n.Program, header?: string) => void
+  readonly registerHandler: <TParams = unknown, TResult = unknown>(
+    kind: string,
+    handler: ServiceHandler<TParams, TResult>
+  ) => void
 
-  /** Append to an already-emitted file */
-  readonly appendEmit: (path: string, content: string) => void
-
-  /** Get an artifact from a previous plugin by exact capability key */
-  readonly getArtifact: (capability: CapabilityKey) => Artifact | undefined
-
-  /** 
-   * Find an artifact by capability prefix.
-   * Returns the first artifact whose capability matches or starts with the prefix.
-   * Useful when you don't care about the specific provider (e.g., "queries" matches "queries:sql" or "queries:kysely").
+  /**
+   * Request a resource from a registered handler.
+   *
+   * Invokes the handler registered for the given kind with the provided params.
+   * If no handler is registered, falls back to the result cache (for static dependencies).
+   *
+   * @param kind - Resource kind to request
+   * @param params - Opaque params for the handler
+   * @returns The result from the handler
+   * @throws If no handler is registered and no cached result exists
    */
-  readonly findArtifact: (capabilityPrefix: string) => Artifact | undefined
-
-  /** Store an artifact for downstream plugins */
-  readonly setArtifact: (capability: CapabilityKey, data: unknown) => void
-
-  /** Logging */
-  readonly log: SimplePluginLogger
-
-  /** Current plugin name */
-  readonly pluginName: string
-
-  /** Plugin's inflection for file and symbol naming */
-  readonly pluginInflection: PluginInflection
+  readonly request: <T = unknown>(kind: string, params: unknown) => T
 
   /**
    * Create a FileBuilder for structured file emission.
-   * 
-   * Use this for AST-based code generation with automatic symbol registration:
-   * 
-   * @example
-   * ```typescript
-   * ctx.file("types/User.ts")
-   *   .header("// Auto-generated")
-   *   .import({ kind: "package", names: ["z"], from: "zod" })
-   *   .ast(symbolProgram(...))
-   *   .emit()
-   * ```
+   *
+   * @param path - Output file path relative to outputDir
    */
   readonly file: (path: string) => FileBuilder
+
+  /**
+   * Symbol registry for cross-file imports.
+   * Also used for method symbol registration (plugin-to-plugin coordination).
+   */
+  readonly symbols: SymbolRegistry
 }
 
 /**
- * Definition for a simple plugin (no Effect knowledge required)
+ * A plugin handles requests for a specific resource kind.
+ *
+ * Core calls canProvide() to match requests to plugins, then calls
+ * provide() to generate the resource.
+ *
+ * @typeParam TParams - The expected params shape (opaque to core)
+ * @typeParam TResult - The result shape (opaque to core)
  */
-export interface SimplePluginDef<TConfig = unknown, TEncoded = TConfig> {
-  /** Unique plugin name */
+export interface Plugin<TParams = unknown, TResult = unknown> {
+  /**
+   * Unique plugin name for identification and error messages.
+   */
   readonly name: string
 
-  /** Capabilities this plugin requires */
-  readonly requires?: readonly CapabilityKey[]
+  /**
+   * The resource kind this plugin handles.
+   * Multiple plugins can handle the same kind - first match wins.
+   */
+  readonly kind: string
 
   /**
-   * Capabilities this plugin provides.
-   * Can be a static array or a function that computes capabilities from config.
-   * When a function, it receives the decoded config (with defaults applied).
+   * If true, this plugin runs once automatically without explicit request.
+   * The result is shared by all dependents.
+   *
+   * Typical singletons: introspection, semantic-ir
    */
-  readonly provides: readonly CapabilityKey[] | ((config: TConfig) => readonly CapabilityKey[])
-
-  /** Configuration schema - Type is the decoded config, Encoded can differ (e.g., with defaults) */
-  readonly configSchema: S.Schema<TConfig, TEncoded, never>
-
-  /** Plugin-specific inflection for file and symbol naming */
-  readonly inflection: PluginInflection
+  readonly singleton?: boolean
 
   /**
-   * Plugin's default inflection transforms.
-   * 
-   * These are applied BEFORE user-configured inflection, allowing composition:
-   * - Plugin sets baseline (e.g., entityName: inflect.pascalCase → "users" → "Users")
-   * - User config refines (e.g., entityName: inflect.singularize → "Users" → "User")
+   * Params to use for singleton execution.
+   * Only meaningful when singleton is true.
    */
-  readonly inflectionDefaults?: InflectionConfig
+  readonly singletonParams?: TParams
 
   /**
-   * Plugin execution function.
-   * Can be sync or async (return void or Promise<void>).
+   * Check if this plugin can handle a request with the given params.
+   *
+   * Called during resolution to match requests to plugins.
+   * First plugin that returns true wins.
+   *
+   * @param params - The request params (opaque to core)
+   * @returns true if this plugin can handle the request
    */
-  readonly run: (ctx: SimplePluginContext, config: TConfig) => void | Promise<void>
+  readonly canProvide: (params: TParams) => boolean
+
+  /**
+   * Declare what resources this plugin needs before it can run.
+   *
+   * Used to build the dependency DAG. The results are passed to provide().
+   *
+   * @param params - The request params
+   * @returns Array of resource requests that must be resolved first
+   */
+  readonly requires?: (params: TParams) => readonly ResourceRequest[]
+
+  /**
+   * Declare optional dependencies that enhance this plugin if available.
+   *
+   * Unlike `requires`, missing optional dependencies don't cause errors.
+   * If a provider exists, the dependency is resolved and ordering is enforced.
+   * If no provider exists, the dependency is silently skipped.
+   *
+   * Useful for plugins that have fallback behavior when an optional dependency
+   * isn't available (e.g., http-elysia falling back to TypeBox when no schema
+   * plugin is registered).
+   *
+   * @param params - The request params
+   * @returns Array of optional resource requests
+   */
+  readonly optionalRequires?: (params: TParams) => readonly ResourceRequest[]
+
+  /**
+   * Generate the resource.
+   *
+   * Called during execution phase after all dependencies are resolved.
+   *
+   * @param params - The request params
+   * @param deps - Resolved results from requires() in same order
+   * @param ctx - Plugin context for sub-requests and emission
+   * @returns The resource result (shape is plugin-defined)
+   */
+  readonly provide: (params: TParams, deps: readonly unknown[], ctx: PluginContext) => TResult
+}
+
+// ============================================================================
+// Plugin Errors - Domain Agnostic
+// ============================================================================
+
+/**
+ * No plugin could handle a request.
+ */
+export class PluginNotFound extends Data.TaggedError("PluginNotFound")<{
+  readonly message: string
+  readonly kind: string
+  readonly params: unknown
+  readonly requestedBy?: string
+}> {}
+
+/**
+ * A cycle was detected in plugin dependencies.
+ */
+export class PluginCycle extends Data.TaggedError("PluginCycle")<{
+  readonly message: string
+  readonly cycle: readonly string[]
+}> {}
+
+/**
+ * A plugin failed during execution.
+ */
+export class PluginExecutionFailed extends Data.TaggedError("PluginExecutionFailed")<{
+  readonly message: string
+  readonly plugin: string
+  readonly kind: string
+  readonly params: unknown
+  readonly cause: unknown
+}> {}
+
+/**
+ * Attempted to access a deferred resource before resolution.
+ */
+export class ResourceNotResolved extends Data.TaggedError("ResourceNotResolved")<{
+  readonly message: string
+  readonly kind: string
+  readonly params: unknown
+}> {}
+
+/**
+ * Union of all plugin-related errors.
+ */
+export type PluginError =
+  | PluginNotFound
+  | PluginCycle
+  | PluginExecutionFailed
+  | ResourceNotResolved
+
+// ============================================================================
+// Internal Types for Registry/Resolution
+// ============================================================================
+
+/**
+ * A pending request tracked by the registry.
+ * @internal
+ */
+export interface PendingRequest {
+  readonly kind: string
+  readonly params: unknown
+  readonly requestedBy: string
+  readonly deferred: MutableDeferredResource
 }
 
 /**
- * Create a plugin factory from a simple function-based definition.
+ * A mutable deferred resource used during resolution.
+ * @internal
+ */
+export interface MutableDeferredResource<T = unknown> {
+  readonly kind: string
+  readonly params: unknown
+  resolved: boolean
+  value: T | undefined
+}
+
+/**
+ * Create a mutable deferred resource.
+ * @internal
+ */
+export const createDeferredResource = <T = unknown>(
+  kind: string,
+  params: unknown
+): MutableDeferredResource<T> => ({
+  kind,
+  params,
+  resolved: false,
+  value: undefined,
+})
+
+/**
+ * Create a read-only deferred resource view.
+ * Throws if accessed before resolution.
+ * @internal
+ */
+export const asDeferredResource = <T>(mutable: MutableDeferredResource<T>): DeferredResource<T> => ({
+  kind: mutable.kind,
+  params: mutable.params,
+  get result(): T {
+    if (!mutable.resolved) {
+      throw new ResourceNotResolved({
+        message: `Resource "${mutable.kind}" has not been resolved yet`,
+        kind: mutable.kind,
+        params: mutable.params,
+      })
+    }
+    return mutable.value as T
+  },
+})
+
+// ============================================================================
+// Service Registry - On-demand request handling
+// ============================================================================
+
+/**
+ * Registry for service handlers.
  *
- * Returns a curried function that accepts config and returns a ConfiguredPlugin.
+ * Plugins register handlers during their provide() call.
+ * Other plugins can then invoke these handlers via ctx.request().
+ */
+export interface ServiceRegistry {
+  /**
+   * Register a handler for a resource kind.
+   * Multiple handlers can be registered for the same kind - they're tried in order.
+   *
+   * @param kind - Resource kind this handler provides
+   * @param handler - Function to handle requests
+   * @param pluginName - Name of the plugin registering (for error messages)
+   */
+  readonly register: (kind: string, handler: ServiceHandler, pluginName: string) => void
+
+  /**
+   * Invoke a handler for the given kind and params.
+   *
+   * @param kind - Resource kind to request
+   * @param params - Opaque params for the handler
+   * @param ctx - Plugin context to pass to handler
+   * @returns The handler result, or undefined if no handler matched
+   */
+  readonly invoke: <T = unknown>(kind: string, params: unknown, ctx: PluginContext) => T | undefined
+
+  /**
+   * Check if any handler is registered for a kind.
+   */
+  readonly hasHandler: (kind: string) => boolean
+}
+
+/**
+ * Create a service registry for handler registration and invocation.
+ */
+export const createServiceRegistry = (): ServiceRegistry => {
+  const handlers = MutableHashMap.empty<string, MutableList.MutableList<{ handler: ServiceHandler; plugin: string }>>()
+
+  return {
+    register: (kind, handler, pluginName) => {
+      pipe(
+        MutableHashMap.get(handlers, kind),
+        Option.match({
+          onNone: () => {
+            MutableHashMap.set(handlers, kind, MutableList.make({ handler, plugin: pluginName }))
+          },
+          onSome: (list) => {
+            MutableList.append(list, { handler, plugin: pluginName })
+          },
+        })
+      )
+    },
+
+    invoke: <T>(kind: string, params: unknown, ctx: PluginContext): T | undefined => {
+      return pipe(
+        MutableHashMap.get(handlers, kind),
+        Option.flatMap((list) => {
+          // Try each handler until one returns a result
+          for (const { handler } of list) {
+            try {
+              const result = handler(params, ctx)
+              if (result !== undefined) {
+                return Option.some(result as T)
+              }
+            } catch {
+              // Handler threw - try next one
+              continue
+            }
+          }
+          return Option.none()
+        }),
+        Option.getOrUndefined
+      )
+    },
+
+    hasHandler: (kind) => MutableHashMap.has(handlers, kind),
+  }
+}
+
+/**
+ * Effect service tag for ServiceRegistry.
+ */
+export class Services extends Context.Tag("Services")<Services, ServiceRegistry>() {}
+
+// ============================================================================
+// Service Tag for DI
+// ============================================================================
+
+/**
+ * Plugin registry service interface.
+ *
+ * Manages plugin registration and request collection during execution.
+ */
+export interface PluginRegistry {
+  /**
+   * Register a plugin for a resource kind.
+   *
+   * @param plugin - The plugin to register
+   */
+  readonly register: (plugin: Plugin) => void
+
+  /**
+   * Request a resource. Returns a deferred reference.
+   *
+   * The deferred is populated after resolution and execution phases.
+   *
+   * @param kind - Resource kind to request
+   * @param params - Opaque params for the plugin
+   * @param requestedBy - Name of the requester (for error messages)
+   * @returns A deferred resource reference
+   */
+  readonly request: <T = unknown>(kind: string, params: unknown, requestedBy: string) => DeferredResource<T>
+
+  /**
+   * Get all registered plugins.
+   * @internal Used by resolution phase.
+   */
+  readonly getPlugins: () => readonly Plugin[]
+
+  /**
+   * Get all pending requests.
+   * @internal Used by resolution phase.
+   */
+  readonly getPendingRequests: () => readonly PendingRequest[]
+
+  /**
+   * Get singleton plugins.
+   * @internal Used by resolution phase to create implicit requests.
+   */
+  readonly getSingletons: () => readonly Plugin[]
+}
+
+/**
+ * Effect service tag for PluginRegistry.
+ */
+export class Plugins extends Context.Tag("Plugins")<Plugins, PluginRegistry>() {}
+
+// ============================================================================
+// Schema for Serialization (if needed)
+// ============================================================================
+
+/**
+ * Schema for ResourceRequest (for artifact serialization if needed).
+ */
+export const ResourceRequestSchema = S.Struct({
+  kind: S.String,
+  params: S.Unknown,
+})
+
+// ============================================================================
+// Helper: definePlugin
+// ============================================================================
+
+/**
+ * Define a plugin with type inference.
  *
  * @example
  * ```typescript
- * const myPlugin = definePlugin({
- *   name: "my-plugin",
- *   provides: ["types:row"],
- *   configSchema: S.Struct({ outputDir: S.String }),
- *   inflection: { ... },
- *
- *   run: (ctx, config) => {
- *     for (const entity of ctx.ir.entities.values()) {
- *       ctx.emit(`${config.outputDir}/${entity.name}.ts`, generateType(entity))
- *     }
- *   }
+ * const zodSchemas = definePlugin({
+ *   name: "zod-schemas",
+ *   kind: "validation-schema",
+ *   canProvide: (p) => !p.format || p.format === "zod",
+ *   requires: () => [{ kind: "semantic-ir", params: {} }],
+ *   provide: (params, [ir], ctx) => {
+ *     // Generate schema, return symbol ref
+ *   },
  * })
- *
- * // Usage in config:
- * plugins: [
- *   myPlugin({ outputDir: "types" }),
- * ]
  * ```
  */
-export function definePlugin<TConfig, TEncoded = TConfig>(def: SimplePluginDef<TConfig, TEncoded>): PluginFactory<TConfig, TEncoded> {
-  // Build the internal plugin object
-  const plugin: Plugin<TConfig, TEncoded> = {
-    name: def.name,
-    provides: def.provides,
-    configSchema: def.configSchema,
-    inflection: def.inflection,
-
-    run: (config: TEncoded) =>
-      Effect.gen(function* () {
-        // Apply schema defaults to config (supports direct run() calls in tests)
-        const validatedConfig = yield* S.decodeUnknown(def.configSchema)(config).pipe(
-          Effect.mapError(parseError => {
-            const formatted = ParseResult.ArrayFormatter.formatErrorSync(parseError)
-            const errors = formatted.map(e => {
-              const path = e.path.length > 0 ? `${e.path.join(".")}: ` : ""
-              return `${path}${e.message}`
-            })
-            return new PluginExecutionFailed({
-              message: `Invalid config for plugin "${def.name}": ${errors.join("; ")}`,
-              plugin: def.name,
-              cause: new Error(errors.join("; ")),
-            })
-          })
-        )
-        
-        // Yield all services from context
-        const ir = yield* IR
-        const inflection = yield* Inflection
-        const emissions = yield* Emissions
-        const symbols = yield* Symbols
-        const typeHints = yield* TypeHints
-        const artifactStore = yield* ArtifactStore
-        const meta = yield* PluginMeta
-
-        // Build the simple context object
-        const ctx: SimplePluginContext = {
-          ir,
-          inflection,
-          symbols,
-          typeHints,
-          pluginName: meta.name,
-          pluginInflection: def.inflection,
-
-          emit: (path, content) => {
-            emissions.emit(path, content, meta.name)
-          },
-
-          emitAst: (path, ast, header) => {
-            emissions.emitAst(path, ast, meta.name, header)
-          },
-
-          appendEmit: (path, content) => {
-            emissions.appendEmit(path, content, meta.name)
-          },
-
-          getArtifact: (capability) => artifactStore.get(capability),
-
-          findArtifact: (capabilityPrefix) => artifactStore.find(capabilityPrefix),
-
-          setArtifact: (capability, data) => {
-            artifactStore.set(capability, meta.name, data)
-          },
-
-          file: (path) => createFileBuilder(path, meta.name, emissions, symbols),
-
-          log: {
-            // Use Effect logging with plugin name annotation
-            // These run synchronously since logging is side-effect only
-            debug: (message) => {
-              Effect.runSync(
-                Effect.logDebug(message).pipe(
-                  Effect.annotateLogs("plugin", meta.name)
-                )
-              )
-            },
-            info: (message) => {
-              Effect.runSync(
-                Effect.logInfo(message).pipe(
-                  Effect.annotateLogs("plugin", meta.name)
-                )
-              )
-            },
-            warn: (message) => {
-              Effect.runSync(
-                Effect.logWarning(message).pipe(
-                  Effect.annotateLogs("plugin", meta.name)
-                )
-              )
-            },
-          },
-        }
-
-        // Call the user's run function, handling sync/async errors
-        const result = yield* Effect.try({
-          try: () => def.run(ctx, validatedConfig),
-          catch: (error) =>
-            new PluginExecutionFailed({
-              message: `Plugin ${def.name} failed`,
-              plugin: def.name,
-              cause: error instanceof Error ? error : new Error(String(error)),
-            }),
-        })
-
-        // If it returned a promise, await it
-        if (result instanceof Promise) {
-          yield* Effect.tryPromise({
-            try: () => result,
-            catch: (error) =>
-              new PluginExecutionFailed({
-                message: `Plugin ${def.name} failed`,
-                plugin: def.name,
-                cause: error instanceof Error ? error : new Error(String(error)),
-              }),
-          })
-        }
-      }),
-  }
-
-  // Add optional properties only if defined (exactOptionalPropertyTypes)
-  let finalPlugin: Plugin<TConfig, TEncoded> = plugin
-  if (def.requires !== undefined) {
-    finalPlugin = { ...finalPlugin, requires: def.requires }
-  }
-  if (def.inflectionDefaults !== undefined) {
-    finalPlugin = { ...finalPlugin, inflectionDefaults: def.inflectionDefaults }
-  }
-
-  // Return the curried factory function with plugin attached for inspection
-  return Object.assign(
-    (config?: TEncoded): ConfiguredPlugin => ({
-      plugin: finalPlugin as Plugin<unknown>,
-      config: config ?? {},
-    }),
-    { plugin: finalPlugin }
-  )
+export function definePlugin<TParams = unknown, TResult = unknown>(
+  plugin: Plugin<TParams, TResult>
+): Plugin<TParams, TResult> {
+  return plugin
 }
+
+// ============================================================================
+// Plugin Registry Implementation
+// ============================================================================
+
+/**
+ * Create a plugin registry for collecting plugins and requests.
+ *
+ * Used during generation to:
+ * 1. Collect plugin registrations
+ * 2. Collect requests during plugin execution
+ * 3. Provide data to resolution phase
+ */
+export const createPluginRegistry = (): PluginRegistry => {
+  const pluginsByKind = MutableHashMap.empty<string, MutableList.MutableList<Plugin>>()
+  const allPlugins = MutableList.empty<Plugin>()
+  const pendingRequests = MutableList.empty<PendingRequest>()
+
+  return {
+    register: (plugin) => {
+      MutableList.append(allPlugins, plugin)
+
+      pipe(
+        MutableHashMap.get(pluginsByKind, plugin.kind),
+        Option.match({
+          onNone: () => {
+            MutableHashMap.set(pluginsByKind, plugin.kind, MutableList.make(plugin))
+          },
+          onSome: (list) => {
+            MutableList.append(list, plugin)
+          },
+        })
+      )
+    },
+
+    request: <T>(kind: string, params: unknown, requestedBy: string) => {
+      const mutable = createDeferredResource<T>(kind, params)
+      MutableList.append(pendingRequests, {
+        kind,
+        params,
+        requestedBy,
+        deferred: mutable,
+      })
+      return asDeferredResource(mutable)
+    },
+
+    getPlugins: () => Array.from(allPlugins),
+
+    getPendingRequests: () => Array.from(pendingRequests),
+
+    getSingletons: () =>
+      pipe(
+        Array.from(allPlugins),
+        (plugins) => plugins.filter((p) => p.singleton === true)
+      ),
+  }
+}
+
+/**
+ * Layer providing a fresh plugin registry.
+ */
+export const PluginsLive = Layer.sync(Plugins, createPluginRegistry)
