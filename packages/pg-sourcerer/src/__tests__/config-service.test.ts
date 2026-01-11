@@ -38,7 +38,7 @@ const testConfig: ResolvedConfig = {
   schemas: ["public"],
   outputDir: "src/generated",
   typeHints: [],
-  plugins: [],
+  generators: [],
 }
 
 // ============================================================================
@@ -185,7 +185,7 @@ describe("ConfigService", () => {
       schemas: ["public"],
       outputDir: "src/generated",
       typeHints: [],
-      plugins: [],
+      generators: [],
     }
 
     it.effect("provides config when file exists (no fallback needed)", () =>

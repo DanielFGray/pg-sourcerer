@@ -73,6 +73,21 @@ export {
 
 export { SmartTags, ShapeKind } from "./ir/index.js"
 
+// IR Extensions - Contracts between providers
+export {
+  type ParamSource,
+  type QueryMethodKind,
+  type QueryMethodParam,
+  type QueryMethodReturn,
+  type CallSignature,
+  type QueryMethod,
+  type EntityQueriesExtension,
+  type StandaloneFunction,
+  type FunctionsExtension,
+  EntityQueriesExtension as EntityQueriesExtensionSchema,
+  FunctionsExtension as FunctionsExtensionSchema,
+} from "./ir/extensions/queries.js"
+
 // Services - IR
 export { IR } from "./services/ir.js"
 
@@ -82,18 +97,22 @@ export { ArtifactStore, type ArtifactStoreImpl, createArtifactStore, ArtifactSto
 // Services - Plugin Meta
 export { PluginMeta, type PluginMetaInfo } from "./services/plugin-meta.js"
 
-// Services - Plugin Types (Effect-native plugin interface)
+// Services - Plugin Types (new plugin API)
 export {
   type Plugin,
-  type PluginFactory,
-  type PluginInflection,
-  type PluginServices,
-  type ConfiguredPlugin,
-  // Simple plugin API
-  type SimplePluginContext,
-  type SimplePluginDef,
-  type SimplePluginLogger,
+  type PluginContext,
+  type PluginRegistry,
+  type PluginError,
+  type ResourceRequest,
+  type DeferredResource,
+  PluginNotFound,
+  PluginCycle,
+  PluginExecutionFailed,
+  ResourceNotResolved,
+  Plugins,
+  PluginsLive,
   definePlugin,
+  createPluginRegistry,
 } from "./services/plugin.js"
 
 // Services - Inflection
@@ -147,10 +166,20 @@ export {
   type SymbolRef,
   type ImportStatement,
   type SymbolCollision,
+  type MethodSymbol,
+  type EntityMethods,
   Symbols,
   createSymbolRegistry,
   SymbolsLive,
 } from "./services/symbols.js"
+
+// Services - Service Registry (plugin-to-plugin communication)
+export {
+  type ServiceRegistry,
+  Services,
+  createServiceRegistry,
+  ServicesLive,
+} from "./services/service-registry.js"
 
 // Services - Emissions
 export {
@@ -162,7 +191,12 @@ export {
 } from "./services/emissions.js"
 
 // Services - Plugin Runner
-export { PluginRunner } from "./services/plugin-runner.js"
+export {
+  runPlugins,
+  type PluginRunContext,
+  type PluginRunResult,
+  type PluginRunError,
+} from "./services/plugin-runner.js"
 
 // Services - File Writer
 export {
@@ -224,18 +258,25 @@ export {
   buildReturnQuery,
 } from "./lib/hex.js"
 
-// Plugins
-export { typesPlugin } from "./plugins/types.js"
-export { zodPlugin } from "./plugins/zod.js"
-export { valibotPlugin } from "./plugins/valibot.js"
-export { arktypePlugin } from "./plugins/arktype.js"
-export { effectModelPlugin } from "./plugins/effect-model.js"
-export { sqlQueriesPlugin } from "./plugins/sql-queries.js"
-export { kyselyQueriesPlugin } from "./plugins/kysely-queries.js"
-export { kyselyTypesPlugin } from "./plugins/kysely-types.js"
-export { httpElysiaPlugin } from "./plugins/http-elysia.js"
-export { httpTrpcPlugin } from "./plugins/http-trpc.js"
-export { httpOrpcPlugin } from "./plugins/http-orpc.js"
+// Plugins (new API)
+export { typesPlugin, types } from "./plugins/types.js"
+export { zod, type ZodConfig } from "./plugins/zod.js"
+export { arktype, type ArkTypeConfig } from "./plugins/arktype.js"
+export { valibot, type ValibotConfig } from "./plugins/valibot.js"
+export { sqlQueries, sqlQueries as sqlQueriesPlugin, type SqlQueriesConfig } from "./plugins/sql-queries.js"
+
+// Effect plugin (unified model + repository + http)
+export { effect, effectPlugin, type EffectConfig } from "./plugins/effect.js"
+
+// Kysely plugin
+export { kysely, type KyselyConfig } from "./plugins/kysely.js"
+
+// HTTP plugins (new API)
+export { httpElysia, type HttpElysiaConfig } from "./plugins/http-elysia.js"
+export { httpExpress, type HttpExpressConfig } from "./plugins/http-express.js"
+export { httpHono, type HttpHonoConfig } from "./plugins/http-hono.js"
+export { httpTrpc, type HttpTrpcConfig } from "./plugins/http-trpc.js"
+export { httpOrpc, type HttpOrpcConfig } from "./plugins/http-orpc.js"
 
 // Generate orchestration
 export {

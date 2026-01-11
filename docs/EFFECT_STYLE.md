@@ -1,255 +1,139 @@
 # Effect-TS Style Guide
 
-**Read this before writing or modifying any Effect code.**
+Effect is functional TypeScript. Think of it as a different language: there is no `for(..)` loop
 
-Effect is a functional language embedded in TypeScript. This guide covers the specific conventions for this codebase.
-
-## Quick Reference
-
-| Pattern | Use | Avoid |
-|---------|-----|-------|
-| Effect chains | `effect.pipe(Effect.map(...))` | `pipe(effect, Effect.map(...))` |
-| Data transforms | `pipe(data, Array.map(...))` | `data.pipe(...)` (doesn't exist) |
-| Imports | `import { Array, Option }` | `import { Array as A }` |
-| Branching | `Effect.if(cond, { onTrue, onFalse })` | `if/else` blocks returning Effects |
-| Find first failure | `Array.findFirst` + `Option.match` | `for` loop with early return |
-| Validate during build | `Effect.reduce` | Build then validate |
-| Service definition | `Effect.Service` or `Context.Tag` | Classes with `new` |
-
-## Core Rules
-
-### Method `.pipe()` for Effects, Function `pipe()` for Data
+## Two Pipe Styles
 
 ```typescript
-// ✅ Effect values use method-style .pipe()
+// Effects: method .pipe()
 buildProviderMap(plugins).pipe(
-  Effect.tap((providers) => checkRequirements(plugins, providers)),
-  Effect.flatMap((providers) => topoSort(plugins, providers))
+  Effect.tap(checkRequirements),
+  Effect.flatMap(topoSort)
 )
 
-// ✅ Pure data transformations use pipe() function
-const names = pipe(
-  plugins,
-  Array.flatMap(p => p.provides),
-  Array.dedupe
-)
-
-// ❌ NEVER use pipe() function on Effect values
-pipe(
-  buildProviderMap(plugins),
-  Effect.tap(...),  // NO!
-  Effect.flatMap(...)
-)
+// Pure transforms: use native methods where possible
+plugins.map(p => p.name).filter(Boolean))
+use effect pipes if necessary
 ```
 
-**Why?** Effect values have a `.pipe()` method that provides better type inference and IDE support. The `pipe()` function is for transforming plain data.
+## Core Patterns
 
-### Separate Pure from Effectful
+| Do | Don't |
+|----|-------|
+| `effect.pipe(Effect.map(...))` | `pipe(effect, Effect.map(...))` |
+| `plugins.map(p => p.name).filter(Boolean))` | `pipe(data, Array.map(...),Array.filter(..))` |
+| `import { Array, Option }` | `import { Array as A }` |
+| `Effect.forEach(items, fn)` | `for` loop with `yield*` |
+| `Effect.reduce(items, init, fn)` | Build then validate |
 
-Extract pure data transformations into standalone functions. Only wrap in Effect what actually needs it.
+## Extract Pure Logic
 
 ```typescript
-// ✅ Pure function for data extraction
-const capabilityPairs = (plugins: readonly ConfiguredPlugin[]) =>
-  pipe(
-    plugins,
-    Array.flatMap(({ plugin }) =>
-      pipe(
-        plugin.provides,
-        Array.map(cap => [cap, plugin.name] as const)
-      )
-    )
-  )
+// Pure: no Effect wrapper needed
+const capabilityPairs = (plugins: ConfiguredPlugin[]) =>
+  plugins.flatMap(p => p.plugin.provides.map(cap => [cap, p.plugin.name] as const))
 
-// ✅ Effect only for the validation logic
-const buildProviderMap = (plugins: readonly ConfiguredPlugin[]) =>
-  Effect.reduce(
-    capabilityPairs(plugins),  // Pure extraction
-    HashMap.empty(),
-    (map, [cap, name]) => /* validation logic */
+// Effectful: only where needed
+const buildProviderMap = (plugins: ConfiguredPlugin[]) =>
+  Effect.reduce(capabilityPairs(plugins), HashMap.empty(), (map, [cap, name]) =>
+    HashMap.has(map, cap)
+      ? Effect.fail(new Conflict({ cap }))
+      : Effect.succeed(HashMap.set(map, cap, name))
   )
 ```
 
-### Fail Early in Folds
-
-Use `Effect.reduce` to validate during construction, not after.
+## Anti-Patterns
 
 ```typescript
-// ✅ Single-pass validation with Effect.reduce
-const buildMap = (entries: readonly Entry[]) =>
-  Effect.reduce(entries, HashMap.empty(), (map, entry) =>
-    HashMap.has(map, entry.key)
-      ? Effect.fail(new Conflict({ key: entry.key }))
-      : Effect.succeed(HashMap.set(map, entry.key, entry.value))
-  )
-
-// ❌ Build then validate (two passes, harder to read)
-const buildMap = (entries: readonly Entry[]) =>
-  Effect.gen(function* () {
-    const map = new Map()
-    for (const entry of entries) {
-      map.set(entry.key, entry.value)
-    }
-    // Now validate... but we already lost info about conflicts!
-  })
-```
-
-### Find-First Pattern for Failure
-
-Use `Array.findFirst` + `Option.match` instead of loops with early return.
-
-```typescript
-// ✅ Declarative find-first pattern
-const checkRequirements = (plugins, providers) =>
-  pipe(
-    requirementPairs(plugins),
-    Array.findFirst(([req]) => !HashMap.has(providers, req)),
-    Option.match({
-      onNone: () => Effect.void,
-      onSome: ([req, name]) =>
-        Effect.fail(new CapabilityNotSatisfied({ required: req, requiredBy: name }))
-    })
-  )
-
-// ❌ Imperative loop
-const checkRequirements = (plugins, providers) =>
-  Effect.gen(function* () {
-    for (const { plugin } of plugins) {
-      for (const req of plugin.requires ?? []) {
-        if (!HashMap.has(providers, req)) {
-          yield* Effect.fail(new CapabilityNotSatisfied({ ... }))
-        }
-      }
-    }
-  })
-```
-
-### Effect.if for Boolean Branching
-
-```typescript
-// ✅ Effect.if for branching on boolean
-Effect.if(plugins.length === 0, {
-  onTrue: () => Effect.succeed([]),
-  onFalse: () => processPlugins(plugins)
+// BAD: imperative loop in gen
+Effect.gen(function* () {
+  const results = []
+  for (const item of items) {
+    results.push(yield* process(item))
+  }
+  return results
 })
 
-// ✅ Ternary for simple cases
-isValid
-  ? Effect.succeed(value)
-  : Effect.fail(new Invalid({ value }))
+// GOOD: declarative
+Effect.forEach(items, process)
 
-// ❌ if/else blocks returning Effects
-if (plugins.length === 0) {
-  return Effect.succeed([])
-} else {
-  return processPlugins(plugins)
-}
+// BAD: unnecessary succeed
+getUser().pipe(Effect.flatMap(u => Effect.succeed(u.name)))
+
+// GOOD: use map for pure transforms
+getUser().pipe(Effect.map(u => u.name))
+
+// BAD: nested gens
+Effect.gen(function* () {
+  const a = yield* Effect.gen(function* () {
+    return yield* getX()
+  })
+})
+
+// GOOD: flatten
+getX().pipe(Effect.map(transform))
 ```
 
-### When to Use Effect.gen
+## When Effect.gen Is Appropriate
 
-Reserve `Effect.gen` for complex control flow where pipes become unwieldy:
+Multiple dependent yields or complex control flow:
 
 ```typescript
-// ✅ Good use of Effect.gen - multiple dependent yields
 Effect.gen(function* () {
   const config = yield* loadConfig()
   const db = yield* connectDatabase(config.connectionString)
   const schema = yield* introspect(db, config.schemas)
   return buildIR(schema)
 })
+```
 
-// ✅ Also good - try/catch recovery
-Effect.gen(function* () {
-  const result = yield* someEffect.pipe(
-    Effect.catchTag("NotFound", () => Effect.succeed(defaultValue))
-  )
-  return processResult(result)
-})
+Simple chains should use pipe:
 
-// ❌ Unnecessary gen - should be pipe
-Effect.gen(function* () {
-  const a = yield* getA()
-  const b = yield* processA(a)
-  return b
-})
-
-// ✅ Better as pipe
+```typescript
+// Instead of gen with 2 yields
 getA().pipe(Effect.flatMap(processA))
 ```
 
-## Anti-Patterns and Fixes
-
-### Anti-Pattern: Imperative Loops in Effect.gen
+## Services
 
 ```typescript
-// ❌ Imperative accumulation
-Effect.gen(function* () {
-  const results = []
-  for (const item of items) {
-    const result = yield* process(item)
-    results.push(result)
-  }
-  return results
-})
+// Simple: Context.Tag + Layer
+class Inflection extends Context.Tag("Inflection")<Inflection, CoreInflection>() {}
+export const InflectionLive = Layer.succeed(Inflection, { /* impl */ })
 
-// ✅ Use Effect.forEach
-Effect.forEach(items, process)
-
-// ✅ Or Effect.reduce for accumulation with logic
-Effect.reduce(items, [], (acc, item) =>
-  process(item).pipe(Effect.map(r => [...acc, r]))
-)
+// With dependencies: Effect.Service
+class Logger extends Effect.Service<Logger>()("Logger", {
+  effect: Effect.gen(function* () {
+    const { prefix } = yield* Prefix
+    return { info: (msg) => Effect.log(`[${prefix}] ${msg}`) }
+  }),
+  dependencies: [Prefix.Default]
+}) {}
 ```
 
-### Anti-Pattern: Nested Effect.gen
+## Errors
 
 ```typescript
-// ❌ Nested gens are a smell
-Effect.gen(function* () {
-  const a = yield* Effect.gen(function* () {
-    const x = yield* getX()
-    return transform(x)
-  })
-  return finalize(a)
-})
+// Define
+class CapabilityConflict extends Data.TaggedError("CapabilityConflict")<{
+  readonly capability: string
+}> {}
 
-// ✅ Flatten with pipe
-getX().pipe(
-  Effect.map(transform),
-  Effect.map(finalize)
-)
+// Catch
+effect.pipe(Effect.catchTag("CapabilityConflict", handleConflict))
 ```
 
-### Anti-Pattern: Using globalThis.Array
+## Option Handling
 
 ```typescript
-// ❌ Mixing Array types
-import { Array } from "effect"
-const items = globalThis.Array.from(iterator)
-
-// ✅ Use Array.fromIterable
-import { Array } from "effect"
-const items = Array.fromIterable(iterator)
-
-// ✅ Or be explicit at call site if truly needed
-const items = [...iterator] as readonly Item[]
-```
-
-### Anti-Pattern: Ignoring Option
-
-```typescript
-// ❌ Unsafe unwrapping
-const value = Option.getOrThrow(maybeValue)
-
-// ❌ Null checks after Option
-const opt = Array.findFirst(items, predicate)
+// BAD: null checks after Option
+const opt = Array.findFirst(items, pred)
 if (Option.isNone(opt)) return
-const value = opt.value  // Still accessing internals
+const value = opt.value
 
-// ✅ Use Option.match
+// GOOD: pattern match
 pipe(
-  Array.findFirst(items, predicate),
+  Array.findFirst(items, pred),
   Option.match({
     onNone: () => handleMissing(),
     onSome: (value) => handleFound(value)
@@ -257,160 +141,38 @@ pipe(
 )
 ```
 
-### Anti-Pattern: Effect.succeed in Chains
-
-```typescript
-// ❌ Unnecessary wrapping
-getUser().pipe(
-  Effect.flatMap(user => Effect.succeed(user.name))
-)
-
-// ✅ Use Effect.map for pure transformations
-getUser().pipe(Effect.map(user => user.name))
-```
-
-### Anti-Pattern: Effect.fail in Validation
-
-```typescript
-// ❌ Multiple Effect.fail calls in sequence
-Effect.gen(function* () {
-  if (!isValid(a)) yield* Effect.fail(new InvalidA())
-  if (!isValid(b)) yield* Effect.fail(new InvalidB())
-  // ...continues after failure?
-})
-
-// ✅ Use findFirst + fail pattern
-pipe(
-  [a, b, c],
-  Array.findFirst(x => !isValid(x)),
-  Option.match({
-    onNone: () => Effect.succeed({ a, b, c }),
-    onSome: (bad) => Effect.fail(new Invalid({ item: bad }))
-  })
-)
-```
-
-## Service Patterns
-
-### Defining Services
-
-For simple services with a single implementation, use `Context.Tag` + `Layer.succeed`:
-
-```typescript
-// Simple pattern: Context.Tag + Layer (preferred for most cases)
-export class Inflection extends Context.Tag("Inflection")<
-  Inflection,
-  CoreInflection
->() {}
-
-export const InflectionStub: CoreInflection = { /* ... */ }
-export const InflectionStubLayer = Layer.succeed(Inflection, InflectionStub)
-export const InflectionLive = Layer.succeed(Inflection, { /* ... */ })
-```
-
-For services needing effectful construction, dependencies, or lifecycle:
-
-```typescript
-// Effect.Service - when you need dependencies or effects
-class Logger extends Effect.Service<Logger>()("Logger", {
-  effect: Effect.gen(function* () {
-    const { prefix } = yield* Prefix
-    return { info: (msg: string) => Effect.log(`[${prefix}] ${msg}`) }
-  }),
-  dependencies: [Prefix.Default]
-}) {}
-```
-
-### Using Services
-
-```typescript
-// In Effect.gen
-Effect.gen(function* () {
-  const inflection = yield* Inflection
-  const name = inflection.camelCase("foo_bar")
-})
-
-// With pipe
-Inflection.pipe(
-  Effect.map(inflection => inflection.camelCase("foo_bar"))
-)
-```
-
-## Error Handling
-
-### Defining Errors
-
-```typescript
-import { Data } from "effect"
-
-export class CapabilityConflict extends Data.TaggedError("CapabilityConflict")<{
-  readonly message: string
-  readonly capability: string
-  readonly providers: readonly string[]
-}> {}
-```
-
-### Catching Errors
-
-```typescript
-// Catch specific error type
-effect.pipe(
-  Effect.catchTag("CapabilityConflict", (err) =>
-    Effect.succeed(fallbackValue)
-  )
-)
-
-// Catch multiple types
-effect.pipe(
-  Effect.catchTags({
-    CapabilityConflict: (err) => handleConflict(err),
-    CapabilityCycle: (err) => handleCycle(err),
-  })
-)
-```
-
-## Testing with @effect/vitest
-
-```typescript
-import { it, describe, layer } from "@effect/vitest"
-import { Effect } from "effect"
-
-describe("MyService", () => {
-  // Basic effect test
-  it.effect("does something", () =>
-    Effect.gen(function* () {
-      const result = yield* someEffect
-      expect(result).toBe(expected)
-    })
-  )
-})
-
-// Test suite with layer
-layer(MyServiceLive)("with service", (it) => {
-  it.effect("uses service", () =>
-    Effect.gen(function* () {
-      const svc = yield* MyService
-      const result = yield* svc.doThing()
-      expect(result).toBeDefined()
-    })
-  )
-})
-```
-
-## Common Effect Operations Cheat Sheet
+## Quick Reference
 
 | Want to... | Use |
 |------------|-----|
-| Transform success value | `Effect.map(fn)` |
+| Transform value | `Effect.map(fn)` |
 | Chain effects | `Effect.flatMap(fn)` |
-| Run side effect | `Effect.tap(fn)` |
-| Sequence (ignore first) | `Effect.andThen(effect)` |
-| Map over array | `Effect.forEach(items, fn)` |
+| Side effect | `Effect.tap(fn)` |
+| Map array | `Effect.forEach(items, fn)` |
 | Reduce with failure | `Effect.reduce(items, init, fn)` |
-| Boolean branch | `Effect.if(cond, { onTrue, onFalse })` |
+| Boolean branch | `Effect.if(cond, {onTrue, onFalse})` |
 | Catch error | `Effect.catchTag("Tag", fn)` |
 | Provide service | `Effect.provide(layer)` |
-| Discard value | `Effect.asVoid` |
-| Succeed with value | `Effect.succeed(value)` |
-| Fail with error | `Effect.fail(error)` |
-| From nullable | `Effect.fromNullable(value)` |
+
+## Mutable Collections
+
+Use `MutableHashMap`/`MutableList` for single-pass accumulation. Prefer `Effect.forEach` over converting to arrays:
+
+```typescript
+const map = MutableHashMap.empty<string, number>()
+MutableHashMap.set(map, "key", 1)
+
+// Iterate with Effect.forEach (lazy, no intermediate array)
+Effect.forEach(MutableHashMap.keys(map), (key) =>
+  Effect.gen(function* () {
+    const value = MutableHashMap.get(map, key)
+    // ...
+  })
+)
+```
+
+| Scenario | Use |
+|----------|-----|
+| Building during traversal | Mutable collections |
+| Pure transforms | Immutable `HashMap`, `Array` |
+| Shared across fibers | `Ref<HashMap>` |

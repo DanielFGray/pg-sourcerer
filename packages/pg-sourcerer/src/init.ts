@@ -24,11 +24,11 @@ interface PluginInfo {
 
 /** Maps plugin value to import name for config generation */
 const pluginImportNames: Record<string, string> = {
-  types: "typesPlugin",
-  zod: "zodPlugin",
+  types: "types",
+  zod: "zod",
   arktype: "arktypePlugin",
-  "effect-model": "effectModelPlugin",
-  "sql-queries": "sqlQueriesPlugin",
+  effect: "effect",
+  "sql-queries": "sqlQueries",
   "kysely-types": "kyselyTypesPlugin",
   "kysely-queries": "kyselyQueriesPlugin",
   "http-elysia": "httpElysiaPlugin",
@@ -327,7 +327,7 @@ const makeOutputDirPrompt = () =>
  * Flow:
  * 1. Kysely? → yes: checkboxes for types + kysely-queries → HTTP plugins → exit
  * 2. No Kysely → raw types or schema-driven?
- * 3. If schema-driven → select schema lib (zod/arktype/effect-model)
+ * 3. If schema-driven → select schema lib (zod/arktype/effect)
  * 4. Query plugins (optional multiselect, currently just sql-queries)
  * 5. HTTP/RPC framework (optional)
  */
@@ -384,7 +384,7 @@ const makePluginsPrompt = () =>
         choices: [
           { title: "Zod", value: "zod" },
           { title: "ArkType", value: "arktype" },
-          { title: "Effect Schema", value: "effect-model" },
+          { title: "Effect Schema (@effect/sql)", value: "effect" },
         ],
       });
     }
@@ -515,7 +515,7 @@ const generateConfigContent = (answers: InitAnswers): string => {
   }
 
   // Plugins array - no config needed, all plugins have sensible defaults
-  const pluginCalls = selectedPlugins.map(plugin => conjure.id(plugin.importName).call([]).build());
+  const pluginCalls = selectedPlugins.map(p => conjure.id(p.importName).call([]).build());
   const pluginsArr = conjure.arr(...pluginCalls);
   configObj = configObj.prop("plugins", pluginsArr.build());
 

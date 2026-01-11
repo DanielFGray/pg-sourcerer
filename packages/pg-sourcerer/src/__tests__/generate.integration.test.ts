@@ -14,8 +14,8 @@ import { NodeFileSystem, NodePath, NodeCommandExecutor } from "@effect/platform-
 import { generate } from "../generate.js"
 import { ConfigTest } from "../services/config.js"
 import { DatabaseIntrospectionLive, DatabaseIntrospectionService } from "../services/introspection.js"
-import { typesPlugin } from "../plugins/types.js"
-import { zodPlugin } from "../plugins/zod.js"
+import { types } from "../plugins/types.js"
+import { zod } from "../plugins/zod.js"
 import { inflect } from "../services/inflection.js"
 import type { ResolvedConfig } from "../config.js"
 
@@ -56,7 +56,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
             outputDir: tmpDir,
             typeHints: [],
             inflection: undefined,
-            plugins: [typesPlugin({ outputDir: "types" })],
+            plugins: [types({ outputDir: "types" })],
           }
 
           const result = yield* generate({ outputDir: tmpDir }).pipe(
@@ -146,7 +146,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
             schemas: ["app_public"],
             outputDir: tmpDir,
             typeHints: [],
-            plugins: [typesPlugin({ outputDir: "types" })],
+            plugins: [types({ outputDir: "types" })],
           }
 
           const result = yield* generate({ outputDir: tmpDir, dryRun: true }).pipe(
@@ -182,8 +182,8 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
             typeHints: [],
             inflection: undefined,
             plugins: [
-              typesPlugin({ outputDir: "types" }),
-              zodPlugin({ outputDir: "zod", exportTypes: false }),
+              types({ outputDir: "types" }),
+              zod({ outputDir: "zod", exportTypes: false }),
             ],
           }
 
@@ -226,7 +226,7 @@ layer(BaseTestLayer)("Generate Pipeline Integration", (it) => {
               fieldName: inflect.camelCase,
               shapeSuffix: inflect.capitalize,
             },
-            plugins: [typesPlugin({ outputDir: "types" })],
+            plugins: [types({ outputDir: "types" })],
           }
 
           const result = yield* generate({ outputDir: tmpDir }).pipe(

@@ -75,9 +75,8 @@ const runGenerateCommand = (args: GenerateArgs) => {
     Effect.tap(logSuccess),
     // Handle errors with extra details
     Effect.catchTags({
-      ConfigInvalid: error => logErrorWithDetails(error, error.errors),
-      PluginConfigInvalid: error => logErrorWithDetails(error, error.errors),
-      CapabilityCycle: error =>
+      ConfigInvalid: (error) => logErrorWithDetails(error, error.errors),
+      PluginCycle: (error) =>
         Console.error(`\n✗ Error: ${error._tag}`).pipe(
           Effect.andThen(Console.error(`  ${error.message}`)),
           Effect.andThen(Console.error(`  Cycle: ${error.cycle.join(" → ")}`)),
@@ -85,7 +84,7 @@ const runGenerateCommand = (args: GenerateArgs) => {
         ),
     }),
     // Generic fallback for remaining tagged errors (GenerateError types)
-    Effect.catchAll(error => {
+    Effect.catchAll((error: unknown) => {
       // Handle tagged errors with _tag property
       if (error && typeof error === "object" && "_tag" in error) {
         const taggedError = error as { _tag: string; message?: string };

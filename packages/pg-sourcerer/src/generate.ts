@@ -5,49 +5,45 @@
  * 1. Load config
  * 2. Introspect database
  * 3. Build IR
- * 4. Prepare and run plugins
+ * 4. Run providers
  * 5. Write files
  *
  * Logging:
  * - Effect.log (INFO) - Progress messages shown by default
  * - Effect.logDebug (DEBUG) - Detailed info (entity names, file lists)
- * 
+ *
  * Configure via Logger.withMinimumLogLevel at the call site.
  */
 import { Effect, Layer } from "effect"
 import { FileSystem, Path, Command, CommandExecutor } from "@effect/platform"
 import type { ResolvedConfig } from "./config.js"
-import type { ConfiguredPlugin, RunResult } from "./services/plugin-runner.js"
+import type { Plugin } from "./services/plugin.js"
+import { runPlugins, type PluginRunResult, type PluginRunError } from "./services/plugin-runner.js"
 import { ConfigService } from "./services/config.js"
 import {
   DatabaseIntrospectionService,
   DatabaseIntrospectionLive,
 } from "./services/introspection.js"
 import { createIRBuilderService } from "./services/ir-builder.js"
-import { PluginRunner } from "./services/plugin-runner.js"
 import { createFileWriter, type WriteResult } from "./services/file-writer.js"
-import { TypeHintsLive } from "./services/type-hints.js"
-import { makeInflectionLayer } from "./services/inflection.js"
-import { getEnumEntities, getTableEntities, getDomainEntities, getCompositeEntities, type SemanticIR } from "./ir/semantic-ir.js"
+import { createInflection, makeInflectionLayer } from "./services/inflection.js"
+import { createTypeHintRegistry } from "./services/type-hints.js"
+import {
+  getEnumEntities,
+  getTableEntities,
+  getDomainEntities,
+  getCompositeEntities,
+  type SemanticIR,
+} from "./ir/semantic-ir.js"
 import {
   ConfigNotFound,
   ConfigInvalid,
   ConnectionFailed,
   IntrospectionFailed,
   TagParseError,
-  CapabilityConflict,
-  CapabilityCycle,
-  CapabilityNotSatisfied,
-  DuplicatePlugin,
-  PluginConfigInvalid,
-  PluginExecutionFailed,
-  EmitConflict,
-  SymbolConflict,
-  UndefinedReference,
   WriteError,
   FormatError,
 } from "./errors.js"
-
 
 /**
  * Options for the generate function
@@ -68,7 +64,7 @@ export interface GenerateResult {
   /** The built semantic IR */
   readonly ir: SemanticIR
   /** Plugin execution results */
-  readonly pluginResult: RunResult
+  readonly pluginResult: PluginRunResult
   /** File write results */
   readonly writeResults: readonly WriteResult[]
 }
@@ -82,15 +78,7 @@ export type GenerateError =
   | ConnectionFailed
   | IntrospectionFailed
   | TagParseError
-  | CapabilityConflict
-  | CapabilityCycle
-  | CapabilityNotSatisfied
-  | DuplicatePlugin
-  | PluginConfigInvalid
-  | PluginExecutionFailed
-  | EmitConflict
-  | SymbolConflict
-  | UndefinedReference
+  | PluginRunError
   | WriteError
   | FormatError
 
@@ -186,24 +174,30 @@ export const generate = (
     yield* Effect.log("Building semantic IR...")
     const irBuilder = createIRBuilderService()
 
-    // Create inflection layer from config (or use defaults)
+    // Create inflection from config (or use defaults)
+    const inflection = createInflection(config.inflection)
     const inflectionLayer = makeInflectionLayer(config.inflection)
 
     const ir = yield* irBuilder
-      .build(introspection, { schemas: config.schemas as string[], role: config.role })
+      .build(introspection, {
+        schemas: config.schemas as string[],
+        role: config.role,
+      })
       .pipe(Effect.provide(inflectionLayer))
 
     const enumEntities = getEnumEntities(ir)
     const tableEntities = getTableEntities(ir)
     const domainEntities = getDomainEntities(ir)
     const compositeEntities = getCompositeEntities(ir)
-    
+
     const counts = [
       `${tableEntities.length} tables/views`,
       `${enumEntities.length} enums`,
     ]
-    if (domainEntities.length > 0) counts.push(`${domainEntities.length} domains`)
-    if (compositeEntities.length > 0) counts.push(`${compositeEntities.length} composites`)
+    if (domainEntities.length > 0)
+      counts.push(`${domainEntities.length} domains`)
+    if (compositeEntities.length > 0)
+      counts.push(`${compositeEntities.length} composites`)
     yield* Effect.log(`Built ${counts.join(", ")}`)
 
     if (ir.entities.size > 0) {
@@ -211,38 +205,26 @@ export const generate = (
       yield* Effect.logDebug(`Entities: ${entityNames.join(", ")}`)
     }
     if (enumEntities.length > 0) {
-      const enumNames = enumEntities.map(e => e.name).sort()
+      const enumNames = enumEntities.map((e) => e.name).sort()
       yield* Effect.logDebug(`Enums: ${enumNames.join(", ")}`)
     }
 
-    // 4. Prepare and run plugins
-    // NOTE: We create the PluginRunner with the user's inflection layer
-    // so plugins use the same naming conventions as the IR
+    // 4. Run providers
     yield* Effect.log("Running plugins...")
-    
-    // Cast plugins from config to ConfiguredPlugin[]
-    // The config stores them as unknown[], but they should be ConfiguredPlugin[]
-    const plugins = config.plugins as readonly ConfiguredPlugin[]
 
-    // Create TypeHints layer from config
-    const typeHintsLayer = TypeHintsLive(config.typeHints)
+    // Cast plugins from config to Plugin[]
+    const plugins = config.plugins as readonly Plugin[]
 
-    // Run plugins with user's inflection (not default identity inflection)
-    // Use DefaultWithoutDependencies so our inflectionLayer takes precedence
-    const pluginResult = yield* Effect.gen(function* () {
-      const runner = yield* PluginRunner
-      const prepared = yield* runner.prepare(plugins)
-      
-      const pluginNames = prepared.map((p) => p.plugin.name)
-      yield* Effect.log(`Plugin order: ${pluginNames.join(" → ")}`)
-      
-      return yield* runner.run(prepared, ir)
-    }).pipe(
-      Effect.provide(typeHintsLayer),
-      Effect.provide(
-        Layer.provide(PluginRunner.DefaultWithoutDependencies, inflectionLayer)
-      )
-    )
+    yield* Effect.log(`Plugins: ${plugins.map((p) => p.name).join(", ")}`)
+
+    // Create type hints registry from config
+    const typeHints = createTypeHintRegistry(config.typeHints ?? [])
+
+    const pluginResult = yield* runPlugins(plugins, {
+      ir,
+      typeHints,
+      inflection,
+    })
 
     const emissions = pluginResult.emissions.getAll()
     yield* Effect.log(`Generated ${emissions.length} files`)
@@ -265,10 +247,18 @@ export const generate = (
     }
 
     // Log each file at debug level
-    yield* Effect.forEach(writeResults, (result) => {
-      const status = options.dryRun ? "(dry run)" : result.written ? "✓" : "–"
-      return Effect.logDebug(`${status} ${result.path}`)
-    }, { discard: true })
+    yield* Effect.forEach(
+      writeResults,
+      (result) => {
+        const status = options.dryRun
+          ? "(dry run)"
+          : result.written
+            ? "✓"
+            : "–"
+        return Effect.logDebug(`${status} ${result.path}`)
+      },
+      { discard: true }
+    )
 
     const written = writeResults.filter((r) => r.written).length
     const dryRunSuffix = options.dryRun ? " (dry run)" : ""
@@ -287,14 +277,10 @@ export const generate = (
  *
  * Note: ConfigService is NOT included here - it must be provided separately
  * via ConfigFromFile, ConfigWithInit, or ConfigTest layers.
- *
- * Note: PluginRunner is NOT included here because it needs to be
- * created with the user's inflection config (from loaded config).
- * The generate() function creates the PluginRunner internally.
  */
 export const GenerateLive = Layer.effect(
   DatabaseIntrospectionService,
-  DatabaseIntrospectionLive,
+  DatabaseIntrospectionLive
 )
 
 /**
