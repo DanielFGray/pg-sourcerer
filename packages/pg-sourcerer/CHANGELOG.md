@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.2](https://github.com/DanielFGray/pg-sourcerer/compare/v0.2.1...v0.2.2) (2026-01-11)
+
+
+### Features
+
+* **conjure,hex:** add AST helpers for route generation ([0bfa2b6](https://github.com/DanielFGray/pg-sourcerer/commit/0bfa2b6ac34c957dbb0998bc425b7e67c5f69c38))
+* **conjure:** add export.* helpers for cleaner export generation ([0853b94](https://github.com/DanielFGray/pg-sourcerer/commit/0853b94ddd39b530d5d4e8059bcbb70fbe51b6aa))
+* declarative plugin system with DAG resolution ([ae462f8](https://github.com/DanielFGray/pg-sourcerer/commit/ae462f8f9d2e1b78151ca44e1f7aa6f8b45d9cea))
+* **emissions:** add blank lines before export statements ([b2736e5](https://github.com/DanielFGray/pg-sourcerer/commit/b2736e5f7734011112f7450589dfe9e34ae1b4f0))
+* **emissions:** detect and report undefined symbol references ([4980dd8](https://github.com/DanielFGray/pg-sourcerer/commit/4980dd87522f05d9a644c2602c6c86e739fdf328))
+* **init:** add HTTP/RPC framework selection ([b7c58fb](https://github.com/DanielFGray/pg-sourcerer/commit/b7c58fb57a71ce7589fdb00f84186af5454f74e9))
+* IR extensions and unified plugins ([184114f](https://github.com/DanielFGray/pg-sourcerer/commit/184114f19f12e8490f7c78e4b31cf59489c3c448))
+* **kysely-queries:** add defaultLimit config option ([1df994c](https://github.com/DanielFGray/pg-sourcerer/commit/1df994c4cef8057bcf75fac3da5ef34aaa775a08))
+* **kysely-types:** add composite type support ([f0b0441](https://github.com/DanielFGray/pg-sourcerer/commit/f0b044159c777a456782a52e351d9aabc18cc586))
+* **plugins:** add explicitColumns config for runtime column filtering ([c39fcb0](https://github.com/DanielFGray/pg-sourcerer/commit/c39fcb05708ed5f9e394dbeb669e7c067af74e88))
+* **plugins:** add exportStyle and exportName config to query plugins ([f20434a](https://github.com/DanielFGray/pg-sourcerer/commit/f20434ae78a13f23413b550edfdbe9cf15b6d270))
+* **plugins:** add HTTP route generation plugins ([c533a8b](https://github.com/DanielFGray/pg-sourcerer/commit/c533a8b86d2db5aaf740d1d2cbdd2e6e8fcd6ed8))
+* **plugins:** add valibot schema plugin ([cb3cc3e](https://github.com/DanielFGray/pg-sourcerer/commit/cb3cc3e9f96d71f191e80225c0afa2a784ad4a5c))
+* **plugins:** support dynamic provides based on config ([8d6d0d3](https://github.com/DanielFGray/pg-sourcerer/commit/8d6d0d3b9f6f95f45611ebc3e30ec33a5e6e874f))
+* **sql-queries,kysely-queries:** add function wrapper generation ([8e3ea30](https://github.com/DanielFGray/pg-sourcerer/commit/8e3ea3014282ed26bd7d73080ac7cabd7d04ce14))
+* **sql-queries:** add stored function wrappers ([8bb97e4](https://github.com/DanielFGray/pg-sourcerer/commit/8bb97e404c471364c10d823e1e74067b8a64a370))
+
+
+### Bug Fixes
+
+* **cli:** refactor config loading to use Effect DI pattern ([e756bc2](https://github.com/DanielFGray/pg-sourcerer/commit/e756bc233651af88cbb6239b8c009e4a9c7c2663))
+* **plugins:** simplify capability names and fix type registration ([595e4a4](https://github.com/DanielFGray/pg-sourcerer/commit/595e4a49ef48d559790f46856aaebdd1fd12d860))
+
 ## [0.2.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.2.0...v0.2.1) (2026-01-09)
 
 
