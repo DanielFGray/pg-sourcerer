@@ -39,7 +39,7 @@ import {
   resolveFieldType,
 } from "../lib/field-utils.js";
 
-const { ts, exp, obj } = conjure;
+const { b, ts, exp, obj } = conjure;
 
 // ============================================================================
 // Configuration
@@ -362,23 +362,23 @@ const buildModelClass = (
   );
 
   // Build: Model.Class<ClassName>("table_name")
-  const modelClassRef = conjure.b.memberExpression(
-    conjure.b.identifier("Model"),
-    conjure.b.identifier("Class")
+  const modelClassRef = b.memberExpression(
+    b.identifier("Model"),
+    b.identifier("Class")
   );
 
-  const modelClassWithType = conjure.b.callExpression(modelClassRef, [
+  const modelClassWithType = b.callExpression(modelClassRef, [
     conjure.str(entity.pgName),
   ]);
 
   // Add type parameters: Model.Class<ClassName>
   (modelClassWithType as { typeParameters?: unknown }).typeParameters =
-    conjure.b.tsTypeParameterInstantiation([
-      conjure.b.tsTypeReference(conjure.b.identifier(className)),
+    b.tsTypeParameterInstantiation([
+      b.tsTypeReference(b.identifier(className)),
     ]);
 
   // Call with fields: Model.Class<ClassName>("table_name")({ ... })
-  return conjure.b.callExpression(modelClassWithType, [fieldsObj.build()]);
+  return b.callExpression(modelClassWithType, [fieldsObj.build()]);
 };
 
 /**
@@ -391,15 +391,15 @@ const generateModelStatement = (
 ): SymbolStatement => {
   const modelExpr = buildModelClass(entity, className, ctx);
 
-  const classDecl = conjure.b.classDeclaration(
-    conjure.b.identifier(className),
-    conjure.b.classBody([]),
+  const classDecl = b.classDeclaration(
+    b.identifier(className),
+    b.classBody([]),
     toExprKind(modelExpr)
   );
 
   return {
     _tag: "SymbolStatement",
-    node: conjure.b.exportNamedDeclaration(classDecl, []),
+    node: b.exportNamedDeclaration(classDecl, []),
     symbol: {
       name: className,
       capability: "models",
@@ -736,13 +736,13 @@ const generateRepoStatement = (
   const qualifiedTableName = getQualifiedTableName(entity);
 
   // Build: Model.makeRepository(Entity, { tableName: "...", spanPrefix: "...", idColumn: "..." })
-  const makeRepoCall = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("Model"),
-      conjure.b.identifier("makeRepository")
+  const makeRepoCall = b.callExpression(
+    b.memberExpression(
+      b.identifier("Model"),
+      b.identifier("makeRepository")
     ),
     [
-      conjure.b.identifier(className),
+      b.identifier(className),
       obj()
         .prop("tableName", conjure.str(qualifiedTableName))
         .prop("spanPrefix", conjure.str(repoName))
@@ -830,37 +830,37 @@ const generateNotFoundError = (className: string, idSchemaType: string): SymbolS
 
   // Build: S.TaggedError<ErrorName>()("ErrorName", { id: Schema })
   // This is complex AST - use a simpler approach with raw template
-  const taggedErrorCall = conjure.b.callExpression(
-    conjure.b.callExpression(
-      conjure.b.memberExpression(
-        conjure.b.identifier("S"),
-        conjure.b.identifier("TaggedError")
+  const taggedErrorCall = b.callExpression(
+    b.callExpression(
+      b.memberExpression(
+        b.identifier("S"),
+        b.identifier("TaggedError")
       ),
       []
     ),
     [
       conjure.str(errorName),
-      obj().prop("id", conjure.b.identifier(idSchemaType)).build(),
+      obj().prop("id", b.identifier(idSchemaType)).build(),
     ]
   );
 
   // Add type parameter to the first call: S.TaggedError<ErrorName>
   const innerCall = (taggedErrorCall as n.CallExpression).callee as n.CallExpression;
   (innerCall as { typeParameters?: unknown }).typeParameters =
-    conjure.b.tsTypeParameterInstantiation([
-      conjure.b.tsTypeReference(conjure.b.identifier(errorName)),
+    b.tsTypeParameterInstantiation([
+      b.tsTypeReference(b.identifier(errorName)),
     ]);
 
   // Build class: class ErrorName extends S.TaggedError<ErrorName>()(...) {}
-  const classDecl = conjure.b.classDeclaration(
-    conjure.b.identifier(errorName),
-    conjure.b.classBody([]),
+  const classDecl = b.classDeclaration(
+    b.identifier(errorName),
+    b.classBody([]),
     taggedErrorCall as ExpressionKind
   );
 
   return {
     _tag: "SymbolStatement",
-    node: conjure.b.exportNamedDeclaration(classDecl, []),
+    node: b.exportNamedDeclaration(classDecl, []),
     symbol: {
       name: errorName,
       capability: "http",
@@ -887,169 +887,169 @@ const generateApiGroup = (
   const fullPath = `${basePath}/${pluralPath}`;
 
   // Build the id path param: HttpApiSchema.param("id", Schema)
-  const idParam = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("HttpApiSchema"),
-      conjure.b.identifier("param")
+  const idParam = b.callExpression(
+    b.memberExpression(
+      b.identifier("HttpApiSchema"),
+      b.identifier("param")
     ),
-    [conjure.str("id"), conjure.b.identifier(idSchemaType)]
+    [conjure.str("id"), b.identifier(idSchemaType)]
   );
 
   // GET / - list endpoint
-  const listEndpoint = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.callExpression(
-        conjure.b.memberExpression(
-          conjure.b.identifier("HttpApiEndpoint"),
-          conjure.b.identifier("get")
+  const listEndpoint = b.callExpression(
+    b.memberExpression(
+      b.callExpression(
+        b.memberExpression(
+          b.identifier("HttpApiEndpoint"),
+          b.identifier("get")
         ),
         [conjure.str("list"), conjure.str("/")]
       ),
-      conjure.b.identifier("addSuccess")
+      b.identifier("addSuccess")
     ),
     [
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("S"), conjure.b.identifier("Array")),
-        [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("json"))]
+      b.callExpression(
+        b.memberExpression(b.identifier("S"), b.identifier("Array")),
+        [b.memberExpression(b.identifier(className), b.identifier("json"))]
       ),
     ]
   );
 
   // GET /:id - get endpoint (with template literal for path param)
   // HttpApiEndpoint.get("get")`/${idParam}`.addSuccess(Entity.json).addError(NotFound, { status: 404 })
-  const getEndpointBase = conjure.b.taggedTemplateExpression(
-    conjure.b.callExpression(
-      conjure.b.memberExpression(
-        conjure.b.identifier("HttpApiEndpoint"),
-        conjure.b.identifier("get")
+  const getEndpointBase = b.taggedTemplateExpression(
+    b.callExpression(
+      b.memberExpression(
+        b.identifier("HttpApiEndpoint"),
+        b.identifier("get")
       ),
       [conjure.str("get")]
     ),
-    conjure.b.templateLiteral(
+    b.templateLiteral(
       [
-        conjure.b.templateElement({ raw: "/", cooked: "/" }, false),
-        conjure.b.templateElement({ raw: "", cooked: "" }, true),
+        b.templateElement({ raw: "/", cooked: "/" }, false),
+        b.templateElement({ raw: "", cooked: "" }, true),
       ],
       [idParam]
     )
   );
-  const getEndpointWithSuccess = conjure.b.callExpression(
-    conjure.b.memberExpression(getEndpointBase, conjure.b.identifier("addSuccess")),
-    [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("json"))]
+  const getEndpointWithSuccess = b.callExpression(
+    b.memberExpression(getEndpointBase, b.identifier("addSuccess")),
+    [b.memberExpression(b.identifier(className), b.identifier("json"))]
   );
-  const getEndpoint = conjure.b.callExpression(
-    conjure.b.memberExpression(getEndpointWithSuccess, conjure.b.identifier("addError")),
-    [conjure.b.identifier(errorName), obj().prop("status", conjure.b.literal(404)).build()]
+  const getEndpoint = b.callExpression(
+    b.memberExpression(getEndpointWithSuccess, b.identifier("addError")),
+    [b.identifier(errorName), obj().prop("status", b.literal(404)).build()]
   );
 
   // POST / - create endpoint
-  const createEndpointBase = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("HttpApiEndpoint"),
-      conjure.b.identifier("post")
+  const createEndpointBase = b.callExpression(
+    b.memberExpression(
+      b.identifier("HttpApiEndpoint"),
+      b.identifier("post")
     ),
     [conjure.str("create"), conjure.str("/")]
   );
-  const createEndpointWithPayload = conjure.b.callExpression(
-    conjure.b.memberExpression(createEndpointBase, conjure.b.identifier("setPayload")),
-    [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("jsonCreate"))]
+  const createEndpointWithPayload = b.callExpression(
+    b.memberExpression(createEndpointBase, b.identifier("setPayload")),
+    [b.memberExpression(b.identifier(className), b.identifier("jsonCreate"))]
   );
-  const createEndpoint = conjure.b.callExpression(
-    conjure.b.memberExpression(createEndpointWithPayload, conjure.b.identifier("addSuccess")),
-    [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("json"))]
+  const createEndpoint = b.callExpression(
+    b.memberExpression(createEndpointWithPayload, b.identifier("addSuccess")),
+    [b.memberExpression(b.identifier(className), b.identifier("json"))]
   );
 
   // PUT /:id - update endpoint
-  const updateEndpointBase = conjure.b.taggedTemplateExpression(
-    conjure.b.callExpression(
-      conjure.b.memberExpression(
-        conjure.b.identifier("HttpApiEndpoint"),
-        conjure.b.identifier("put")
+  const updateEndpointBase = b.taggedTemplateExpression(
+    b.callExpression(
+      b.memberExpression(
+        b.identifier("HttpApiEndpoint"),
+        b.identifier("put")
       ),
       [conjure.str("update")]
     ),
-    conjure.b.templateLiteral(
+    b.templateLiteral(
       [
-        conjure.b.templateElement({ raw: "/", cooked: "/" }, false),
-        conjure.b.templateElement({ raw: "", cooked: "" }, true),
+        b.templateElement({ raw: "/", cooked: "/" }, false),
+        b.templateElement({ raw: "", cooked: "" }, true),
       ],
       [idParam]
     )
   );
-  const updateEndpointWithPayload = conjure.b.callExpression(
-    conjure.b.memberExpression(updateEndpointBase, conjure.b.identifier("setPayload")),
-    [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("jsonUpdate"))]
+  const updateEndpointWithPayload = b.callExpression(
+    b.memberExpression(updateEndpointBase, b.identifier("setPayload")),
+    [b.memberExpression(b.identifier(className), b.identifier("jsonUpdate"))]
   );
-  const updateEndpointWithSuccess = conjure.b.callExpression(
-    conjure.b.memberExpression(updateEndpointWithPayload, conjure.b.identifier("addSuccess")),
-    [conjure.b.memberExpression(conjure.b.identifier(className), conjure.b.identifier("json"))]
+  const updateEndpointWithSuccess = b.callExpression(
+    b.memberExpression(updateEndpointWithPayload, b.identifier("addSuccess")),
+    [b.memberExpression(b.identifier(className), b.identifier("json"))]
   );
-  const updateEndpoint = conjure.b.callExpression(
-    conjure.b.memberExpression(updateEndpointWithSuccess, conjure.b.identifier("addError")),
-    [conjure.b.identifier(errorName), obj().prop("status", conjure.b.literal(404)).build()]
+  const updateEndpoint = b.callExpression(
+    b.memberExpression(updateEndpointWithSuccess, b.identifier("addError")),
+    [b.identifier(errorName), obj().prop("status", b.literal(404)).build()]
   );
 
   // DELETE /:id - delete endpoint
-  const deleteEndpointBase = conjure.b.taggedTemplateExpression(
-    conjure.b.callExpression(
-      conjure.b.memberExpression(
-        conjure.b.identifier("HttpApiEndpoint"),
-        conjure.b.identifier("del")
+  const deleteEndpointBase = b.taggedTemplateExpression(
+    b.callExpression(
+      b.memberExpression(
+        b.identifier("HttpApiEndpoint"),
+        b.identifier("del")
       ),
       [conjure.str("delete")]
     ),
-    conjure.b.templateLiteral(
+    b.templateLiteral(
       [
-        conjure.b.templateElement({ raw: "/", cooked: "/" }, false),
-        conjure.b.templateElement({ raw: "", cooked: "" }, true),
+        b.templateElement({ raw: "/", cooked: "/" }, false),
+        b.templateElement({ raw: "", cooked: "" }, true),
       ],
       [idParam]
     )
   );
-  const deleteEndpoint = conjure.b.callExpression(
-    conjure.b.memberExpression(deleteEndpointBase, conjure.b.identifier("addError")),
-    [conjure.b.identifier(errorName), obj().prop("status", conjure.b.literal(404)).build()]
+  const deleteEndpoint = b.callExpression(
+    b.memberExpression(deleteEndpointBase, b.identifier("addError")),
+    [b.identifier(errorName), obj().prop("status", b.literal(404)).build()]
   );
 
   // Build: HttpApiGroup.make("name").prefix("/path").add(...).add(...)
-  let groupExpr: ExpressionKind = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("HttpApiGroup"),
-      conjure.b.identifier("make")
+  let groupExpr: ExpressionKind = b.callExpression(
+    b.memberExpression(
+      b.identifier("HttpApiGroup"),
+      b.identifier("make")
     ),
     [conjure.str(pluralPath)]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("prefix")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("prefix")),
     [conjure.str(fullPath)]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("add")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("add")),
     [listEndpoint]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("add")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("add")),
     [getEndpoint]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("add")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("add")),
     [createEndpoint]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("add")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("add")),
     [updateEndpoint]
   );
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("add")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("add")),
     [deleteEndpoint]
   );
   // Add InternalServerError for SQL errors
-  groupExpr = conjure.b.callExpression(
-    conjure.b.memberExpression(groupExpr, conjure.b.identifier("addError")),
+  groupExpr = b.callExpression(
+    b.memberExpression(groupExpr, b.identifier("addError")),
     [
-      conjure.b.memberExpression(
-        conjure.b.identifier("HttpApiError"),
-        conjure.b.identifier("InternalServerError")
+      b.memberExpression(
+        b.identifier("HttpApiError"),
+        b.identifier("InternalServerError")
       ),
     ]
   );
@@ -1126,7 +1126,7 @@ const generateHttpApi = (
  * Create a shorthand property for object patterns: { id } instead of { id: id }
  */
 const shorthandProp = (name: string): n.Property => {
-  const prop = conjure.b.property("init", conjure.b.identifier(name), conjure.b.identifier(name));
+  const prop = b.property("init", b.identifier(name), b.identifier(name));
   prop.shorthand = true;
   return prop;
 };
@@ -1199,30 +1199,30 @@ const collectApiEntities = (
  */
 const generateCombinedApiClass = (entities: readonly ApiEntityInfo[]): SymbolStatement => {
   // Build: HttpApi.make("api").add(Group1).add(Group2)...
-  let apiExpr: ExpressionKind = conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("HttpApi"),
-      conjure.b.identifier("make")
+  let apiExpr: ExpressionKind = b.callExpression(
+    b.memberExpression(
+      b.identifier("HttpApi"),
+      b.identifier("make")
     ),
     [conjure.str("api")]
   );
 
   for (const info of entities) {
-    apiExpr = conjure.b.callExpression(
-      conjure.b.memberExpression(apiExpr, conjure.b.identifier("add")),
-      [conjure.b.identifier(info.groupName)]
+    apiExpr = b.callExpression(
+      b.memberExpression(apiExpr, b.identifier("add")),
+      [b.identifier(info.groupName)]
     );
   }
 
-  const classDecl = conjure.b.classDeclaration(
-    conjure.b.identifier("Api"),
-    conjure.b.classBody([]),
+  const classDecl = b.classDeclaration(
+    b.identifier("Api"),
+    b.classBody([]),
     apiExpr
   );
 
   return {
     _tag: "SymbolStatement",
-    node: conjure.b.exportNamedDeclaration(classDecl, []),
+    node: b.exportNamedDeclaration(classDecl, []),
     symbol: {
       name: "Api",
       capability: "http",
@@ -1270,25 +1270,25 @@ const generateHttpApiClass = (
  * Build: Effect.catchTag("SqlError", () => Effect.fail(new HttpApiError.InternalServerError()))
  */
 const buildSqlErrorCatch = (): ExpressionKind =>
-  conjure.b.callExpression(
-    conjure.b.memberExpression(
-      conjure.b.identifier("Effect"),
-      conjure.b.identifier("catchTag")
+  b.callExpression(
+    b.memberExpression(
+      b.identifier("Effect"),
+      b.identifier("catchTag")
     ),
     [
       conjure.str("SqlError"),
-      conjure.b.arrowFunctionExpression(
+      b.arrowFunctionExpression(
         [],
-        conjure.b.callExpression(
-          conjure.b.memberExpression(
-            conjure.b.identifier("Effect"),
-            conjure.b.identifier("fail")
+        b.callExpression(
+          b.memberExpression(
+            b.identifier("Effect"),
+            b.identifier("fail")
           ),
           [
-            conjure.b.newExpression(
-              conjure.b.memberExpression(
-                conjure.b.identifier("HttpApiError"),
-                conjure.b.identifier("InternalServerError")
+            b.newExpression(
+              b.memberExpression(
+                b.identifier("HttpApiError"),
+                b.identifier("InternalServerError")
               ),
               []
             ),
@@ -1302,8 +1302,8 @@ const buildSqlErrorCatch = (): ExpressionKind =>
  * Build: expr.pipe(arg1, arg2, ...)
  */
 const buildPipe = (expr: ExpressionKind, ...args: ExpressionKind[]): ExpressionKind =>
-  conjure.b.callExpression(
-    conjure.b.memberExpression(expr, conjure.b.identifier("pipe")),
+  b.callExpression(
+    b.memberExpression(expr, b.identifier("pipe")),
     args
   );
 
@@ -1326,13 +1326,13 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
 
   // Build Effect.gen body
   // const sql = yield* SqlClient;
-  const sqlDecl = conjure.b.variableDeclaration("const", [
-    conjure.b.variableDeclarator(
-      conjure.b.identifier("sql"),
-      conjure.b.yieldExpression(
-        conjure.b.memberExpression(
-          conjure.b.identifier("SqlClient"),
-          conjure.b.identifier("SqlClient")
+  const sqlDecl = b.variableDeclaration("const", [
+    b.variableDeclarator(
+      b.identifier("sql"),
+      b.yieldExpression(
+        b.memberExpression(
+          b.identifier("SqlClient"),
+          b.identifier("SqlClient")
         ),
         true
       )
@@ -1340,11 +1340,11 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
   ]);
 
   // const repo = yield* {Entity}Repo;
-  const repoDecl = conjure.b.variableDeclaration("const", [
-    conjure.b.variableDeclarator(
-      conjure.b.identifier("repo"),
-      conjure.b.yieldExpression(
-        conjure.b.identifier(info.repoName),
+  const repoDecl = b.variableDeclaration("const", [
+    b.variableDeclarator(
+      b.identifier("repo"),
+      b.yieldExpression(
+        b.identifier(info.repoName),
         true // delegate (yield*)
       )
     ),
@@ -1352,45 +1352,45 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
 
   // Build handlers chain: handlers.handle("list", ...).handle("get", ...)...
   // Start with handlers reference
-  let handlersChain: ExpressionKind = conjure.b.identifier("handlers");
+  let handlersChain: ExpressionKind = b.identifier("handlers");
 
   // .handle("list", () => sql`SELECT * FROM table`.pipe(
   //   Effect.flatMap(Schema.decodeUnknown(Schema.Array(Model))),
   //   Effect.catchAll(() => Effect.fail(new HttpApiError.InternalServerError()))
   // ))
-  const listQuery = conjure.b.taggedTemplateExpression(
-    conjure.b.identifier("sql"),
-    conjure.b.templateLiteral(
-      [conjure.b.templateElement({ raw: `SELECT * FROM ${qualifiedTable}`, cooked: `SELECT * FROM ${qualifiedTable}` }, true)],
+  const listQuery = b.taggedTemplateExpression(
+    b.identifier("sql"),
+    b.templateLiteral(
+      [b.templateElement({ raw: `SELECT * FROM ${qualifiedTable}`, cooked: `SELECT * FROM ${qualifiedTable}` }, true)],
       []
     )
   );
   // Schema.decodeUnknown(Schema.Array(Model))
-  const decodeArray = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Schema"), conjure.b.identifier("decodeUnknown")),
+  const decodeArray = b.callExpression(
+    b.memberExpression(b.identifier("Schema"), b.identifier("decodeUnknown")),
     [
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("Schema"), conjure.b.identifier("Array")),
-        [conjure.b.identifier(info.className)]
+      b.callExpression(
+        b.memberExpression(b.identifier("Schema"), b.identifier("Array")),
+        [b.identifier(info.className)]
       ),
     ]
   );
   // Effect.flatMap(decodeArray)
-  const flatMapDecode = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("flatMap")),
+  const flatMapDecode = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("flatMap")),
     [decodeArray]
   );
   // Effect.catchAll(() => Effect.fail(new HttpApiError.InternalServerError()))
-  const catchAll = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("catchAll")),
+  const catchAll = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("catchAll")),
     [
-      conjure.b.arrowFunctionExpression(
+      b.arrowFunctionExpression(
         [],
-        conjure.b.callExpression(
-          conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("fail")),
+        b.callExpression(
+          b.memberExpression(b.identifier("Effect"), b.identifier("fail")),
           [
-            conjure.b.newExpression(
-              conjure.b.memberExpression(conjure.b.identifier("HttpApiError"), conjure.b.identifier("InternalServerError")),
+            b.newExpression(
+              b.memberExpression(b.identifier("HttpApiError"), b.identifier("InternalServerError")),
               []
             ),
           ]
@@ -1399,69 +1399,69 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
     ]
   );
   const listQueryWithErrorHandling = buildPipe(listQuery, flatMapDecode, catchAll);
-  handlersChain = conjure.b.callExpression(
-    conjure.b.memberExpression(handlersChain, conjure.b.identifier("handle")),
+  handlersChain = b.callExpression(
+    b.memberExpression(handlersChain, b.identifier("handle")),
     [
       conjure.str("list"),
-      conjure.b.arrowFunctionExpression([], listQueryWithErrorHandling),
+      b.arrowFunctionExpression([], listQueryWithErrorHandling),
     ]
   );
 
   // .handle("get", ({ path: { id } }) => repo.findById(id).pipe(Effect.flatMap(Option.match(...))))
-  const getHandler = conjure.b.arrowFunctionExpression(
+  const getHandler = b.arrowFunctionExpression(
     [
-      conjure.b.objectPattern([
-        conjure.b.property(
+      b.objectPattern([
+        b.property(
           "init",
-          conjure.b.identifier("path"),
-          conjure.b.objectPattern([shorthandProp("id")])
+          b.identifier("path"),
+          b.objectPattern([shorthandProp("id")])
         ),
       ]),
     ],
     // repo.findById(id).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.fail(new Error({ id })), onSome: Effect.succeed })))
-    conjure.b.callExpression(
-      conjure.b.memberExpression(
-        conjure.b.callExpression(
-          conjure.b.memberExpression(
-            conjure.b.identifier("repo"),
-            conjure.b.identifier("findById")
+    b.callExpression(
+      b.memberExpression(
+        b.callExpression(
+          b.memberExpression(
+            b.identifier("repo"),
+            b.identifier("findById")
           ),
-          [conjure.b.identifier("id")]
+          [b.identifier("id")]
         ),
-        conjure.b.identifier("pipe")
+        b.identifier("pipe")
       ),
       [
-        conjure.b.callExpression(
-          conjure.b.memberExpression(
-            conjure.b.identifier("Effect"),
-            conjure.b.identifier("flatMap")
+        b.callExpression(
+          b.memberExpression(
+            b.identifier("Effect"),
+            b.identifier("flatMap")
           ),
           [
-            conjure.b.callExpression(
-              conjure.b.memberExpression(
-                conjure.b.identifier("Option"),
-                conjure.b.identifier("match")
+            b.callExpression(
+              b.memberExpression(
+                b.identifier("Option"),
+                b.identifier("match")
               ),
               [
                 obj()
                   .prop(
                     "onNone",
-                    conjure.b.arrowFunctionExpression(
+                    b.arrowFunctionExpression(
                       [],
-                      conjure.b.callExpression(
-                        conjure.b.memberExpression(
-                          conjure.b.identifier("Effect"),
-                          conjure.b.identifier("fail")
+                      b.callExpression(
+                        b.memberExpression(
+                          b.identifier("Effect"),
+                          b.identifier("fail")
                         ),
                         [
-                          conjure.b.newExpression(conjure.b.identifier(info.errorName), [
-                            obj().prop("id", conjure.b.identifier("id")).build(),
+                          b.newExpression(b.identifier(info.errorName), [
+                            obj().prop("id", b.identifier("id")).build(),
                           ]),
                         ]
                       )
                     )
                   )
-                  .prop("onSome", conjure.b.identifier("Effect.succeed"))
+                  .prop("onSome", b.identifier("Effect.succeed"))
                   .build(),
               ]
             ),
@@ -1470,47 +1470,47 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
       ]
     )
   );
-  handlersChain = conjure.b.callExpression(
-    conjure.b.memberExpression(handlersChain, conjure.b.identifier("handle")),
+  handlersChain = b.callExpression(
+    b.memberExpression(handlersChain, b.identifier("handle")),
     [conjure.str("get"), getHandler]
   );
 
   // .handle("create", ({ payload }) => repo.insert({ ...payload, created_at: Model.Override(DateTime.unsafeNow()), ... }))
   // Build timestamp properties for insert: Model.Override(DateTime.unsafeNow())
-  const timestampNow = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Model"), conjure.b.identifier("Override")),
+  const timestampNow = b.callExpression(
+    b.memberExpression(b.identifier("Model"), b.identifier("Override")),
     [
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("DateTime"), conjure.b.identifier("unsafeNow")),
+      b.callExpression(
+        b.memberExpression(b.identifier("DateTime"), b.identifier("unsafeNow")),
         []
       ),
     ]
   );
 
   const insertTimestampProps = info.insertTimestampFields.map((fieldName) =>
-    conjure.b.property("init", conjure.b.identifier(fieldName), timestampNow)
+    b.property("init", b.identifier(fieldName), timestampNow)
   );
 
   // Build insert argument: { ...payload, created_at: ..., updated_at: ... } or just payload if no timestamps
   const insertArg =
     insertTimestampProps.length > 0
-      ? conjure.b.objectExpression([
-          conjure.b.spreadProperty(conjure.b.identifier("payload")),
+      ? b.objectExpression([
+          b.spreadProperty(b.identifier("payload")),
           ...insertTimestampProps,
         ])
-      : conjure.b.identifier("payload");
+      : b.identifier("payload");
 
-  const createHandler = conjure.b.arrowFunctionExpression(
+  const createHandler = b.arrowFunctionExpression(
     [
-      conjure.b.objectPattern([shorthandProp("payload")]),
+      b.objectPattern([shorthandProp("payload")]),
     ],
-    conjure.b.callExpression(
-      conjure.b.memberExpression(conjure.b.identifier("repo"), conjure.b.identifier("insert")),
+    b.callExpression(
+      b.memberExpression(b.identifier("repo"), b.identifier("insert")),
       [insertArg]
     )
   );
-  handlersChain = conjure.b.callExpression(
-    conjure.b.memberExpression(handlersChain, conjure.b.identifier("handle")),
+  handlersChain = b.callExpression(
+    b.memberExpression(handlersChain, b.identifier("handle")),
     [conjure.str("create"), createHandler]
   );
 
@@ -1524,65 +1524,65 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
 
   // Build update payload object: { ...payload, updated_at: DateTime.unsafeNow() }
   const updateTimestampProps = info.updateTimestampFields.map((fieldName) =>
-    conjure.b.property(
+    b.property(
       "init",
-      conjure.b.identifier(fieldName),
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("DateTime"), conjure.b.identifier("unsafeNow")),
+      b.identifier(fieldName),
+      b.callExpression(
+        b.memberExpression(b.identifier("DateTime"), b.identifier("unsafeNow")),
         []
       )
     )
   );
-  const updatePayloadObj = conjure.b.objectExpression([
-    conjure.b.spreadProperty(conjure.b.identifier("payload")),
+  const updatePayloadObj = b.objectExpression([
+    b.spreadProperty(b.identifier("payload")),
     ...updateTimestampProps,
   ]);
 
   // sql.update(payload) - builds SET clause from payload object
-  const sqlUpdateCall = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("sql"), conjure.b.identifier("update")),
+  const sqlUpdateCall = b.callExpression(
+    b.memberExpression(b.identifier("sql"), b.identifier("update")),
     [updatePayloadObj]
   );
 
   // Build template: sql`UPDATE table SET ${sql.update(...)} WHERE id = ${id} RETURNING *`
-  const updateQuery = conjure.b.taggedTemplateExpression(
-    conjure.b.identifier("sql"),
-    conjure.b.templateLiteral(
+  const updateQuery = b.taggedTemplateExpression(
+    b.identifier("sql"),
+    b.templateLiteral(
       [
-        conjure.b.templateElement({ raw: `UPDATE ${qualifiedTable} SET `, cooked: `UPDATE ${qualifiedTable} SET ` }, false),
-        conjure.b.templateElement({ raw: ` WHERE ${info.idColumn} = `, cooked: ` WHERE ${info.idColumn} = ` }, false),
-        conjure.b.templateElement({ raw: " RETURNING *", cooked: " RETURNING *" }, true),
+        b.templateElement({ raw: `UPDATE ${qualifiedTable} SET `, cooked: `UPDATE ${qualifiedTable} SET ` }, false),
+        b.templateElement({ raw: ` WHERE ${info.idColumn} = `, cooked: ` WHERE ${info.idColumn} = ` }, false),
+        b.templateElement({ raw: " RETURNING *", cooked: " RETURNING *" }, true),
       ],
-      [sqlUpdateCall, conjure.b.identifier("id")]
+      [sqlUpdateCall, b.identifier("id")]
     )
   );
 
   // Effect.head
-  const effectHead = conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("head"));
+  const effectHead = b.memberExpression(b.identifier("Effect"), b.identifier("head"));
 
   // Effect.flatMap(Schema.decodeUnknown(Model))
-  const updateFlatMapDecode = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("flatMap")),
+  const updateFlatMapDecode = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("flatMap")),
     [
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("Schema"), conjure.b.identifier("decodeUnknown")),
-        [conjure.b.identifier(info.className)]
+      b.callExpression(
+        b.memberExpression(b.identifier("Schema"), b.identifier("decodeUnknown")),
+        [b.identifier(info.className)]
       ),
     ]
   );
 
   // Effect.catchTag("NoSuchElementException", () => Effect.fail(new NotFound({ id })))
-  const catchNotFound = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("catchTag")),
+  const catchNotFound = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("catchTag")),
     [
       conjure.str("NoSuchElementException"),
-      conjure.b.arrowFunctionExpression(
+      b.arrowFunctionExpression(
         [],
-        conjure.b.callExpression(
-          conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("fail")),
+        b.callExpression(
+          b.memberExpression(b.identifier("Effect"), b.identifier("fail")),
           [
-            conjure.b.newExpression(conjure.b.identifier(info.errorName), [
-              obj().prop("id", conjure.b.identifier("id")).build(),
+            b.newExpression(b.identifier(info.errorName), [
+              obj().prop("id", b.identifier("id")).build(),
             ]),
           ]
         )
@@ -1591,20 +1591,20 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
   );
 
   // Effect.catchTags({ ParseError: () => ..., SqlError: () => ... })
-  const internalServerErrorFn = conjure.b.arrowFunctionExpression(
+  const internalServerErrorFn = b.arrowFunctionExpression(
     [],
-    conjure.b.callExpression(
-      conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("fail")),
+    b.callExpression(
+      b.memberExpression(b.identifier("Effect"), b.identifier("fail")),
       [
-        conjure.b.newExpression(
-          conjure.b.memberExpression(conjure.b.identifier("HttpApiError"), conjure.b.identifier("InternalServerError")),
+        b.newExpression(
+          b.memberExpression(b.identifier("HttpApiError"), b.identifier("InternalServerError")),
           []
         ),
       ]
     )
   );
-  const catchTags = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("catchTags")),
+  const catchTags = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("catchTags")),
     [
       obj()
         .prop("ParseError", internalServerErrorFn)
@@ -1622,72 +1622,72 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
     catchTags
   );
 
-  const updateHandler = conjure.b.arrowFunctionExpression(
+  const updateHandler = b.arrowFunctionExpression(
     [
-      conjure.b.objectPattern([
-        conjure.b.property(
+      b.objectPattern([
+        b.property(
           "init",
-          conjure.b.identifier("path"),
-          conjure.b.objectPattern([shorthandProp("id")])
+          b.identifier("path"),
+          b.objectPattern([shorthandProp("id")])
         ),
         shorthandProp("payload"),
       ]),
     ],
     updateQueryWithPipe
   );
-  handlersChain = conjure.b.callExpression(
-    conjure.b.memberExpression(handlersChain, conjure.b.identifier("handle")),
+  handlersChain = b.callExpression(
+    b.memberExpression(handlersChain, b.identifier("handle")),
     [conjure.str("update"), updateHandler]
   );
 
   // .handle("delete", ({ path: { id } }) => repo.delete(id))
   // delete returns void directly, no Option matching needed
-  const deleteHandler = conjure.b.arrowFunctionExpression(
+  const deleteHandler = b.arrowFunctionExpression(
     [
-      conjure.b.objectPattern([
-        conjure.b.property(
+      b.objectPattern([
+        b.property(
           "init",
-          conjure.b.identifier("path"),
-          conjure.b.objectPattern([shorthandProp("id")])
+          b.identifier("path"),
+          b.objectPattern([shorthandProp("id")])
         ),
       ]),
     ],
-    conjure.b.callExpression(
-      conjure.b.memberExpression(conjure.b.identifier("repo"), conjure.b.identifier("delete")),
-      [conjure.b.identifier("id")]
+    b.callExpression(
+      b.memberExpression(b.identifier("repo"), b.identifier("delete")),
+      [b.identifier("id")]
     )
   );
-  handlersChain = conjure.b.callExpression(
-    conjure.b.memberExpression(handlersChain, conjure.b.identifier("handle")),
+  handlersChain = b.callExpression(
+    b.memberExpression(handlersChain, b.identifier("handle")),
     [conjure.str("delete"), deleteHandler]
   );
 
   // return handlers chain
-  const returnStmt = conjure.b.returnStatement(handlersChain);
+  const returnStmt = b.returnStatement(handlersChain);
 
   // Build the generator function body
-  const genBody = conjure.b.blockStatement([sqlDecl, repoDecl, returnStmt]);
+  const genBody = b.blockStatement([sqlDecl, repoDecl, returnStmt]);
 
   // Build: function* () { ... }
-  const genFunc = conjure.b.functionExpression(null, [], genBody);
+  const genFunc = b.functionExpression(null, [], genBody);
   genFunc.generator = true;
 
   // Build: Effect.gen(function* () { ... })
-  const effectGen = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("Effect"), conjure.b.identifier("gen")),
+  const effectGen = b.callExpression(
+    b.memberExpression(b.identifier("Effect"), b.identifier("gen")),
     [genFunc]
   );
 
   // Build: (handlers) => Effect.gen(...)
-  const handlersCallback = conjure.b.arrowFunctionExpression(
-    [conjure.b.identifier("handlers")],
+  const handlersCallback = b.arrowFunctionExpression(
+    [b.identifier("handlers")],
     effectGen
   );
 
   // Build: HttpApiBuilder.group(Api, "pluralName", callback)
-  const groupCall = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("HttpApiBuilder"), conjure.b.identifier("group")),
-    [conjure.b.identifier("Api"), conjure.str(info.pluralName), handlersCallback]
+  const groupCall = b.callExpression(
+    b.memberExpression(b.identifier("HttpApiBuilder"), b.identifier("group")),
+    [b.identifier("Api"), conjure.str(info.pluralName), handlersCallback]
   );
 
   return exp.const(handlersName, { capability: "http", entity: info.entity.name }, groupCall);
@@ -1698,22 +1698,22 @@ const generateEntityHandlers = (info: ApiEntityInfo): SymbolStatement => {
  */
 const generateApiLive = (entities: readonly ApiEntityInfo[]): SymbolStatement => {
   // Build: HttpApiBuilder.api(Api)
-  let apiExpr: ExpressionKind = conjure.b.callExpression(
-    conjure.b.memberExpression(conjure.b.identifier("HttpApiBuilder"), conjure.b.identifier("api")),
-    [conjure.b.identifier("Api")]
+  let apiExpr: ExpressionKind = b.callExpression(
+    b.memberExpression(b.identifier("HttpApiBuilder"), b.identifier("api")),
+    [b.identifier("Api")]
   );
 
   // Chain .pipe(Layer.provide(Handler1), Layer.provide(Handler2), ...)
   if (entities.length > 0) {
     const pipeArgs = entities.map((info) =>
-      conjure.b.callExpression(
-        conjure.b.memberExpression(conjure.b.identifier("Layer"), conjure.b.identifier("provide")),
-        [conjure.b.identifier(`${info.className}Handlers`)]
+      b.callExpression(
+        b.memberExpression(b.identifier("Layer"), b.identifier("provide")),
+        [b.identifier(`${info.className}Handlers`)]
       )
     );
 
-    apiExpr = conjure.b.callExpression(
-      conjure.b.memberExpression(apiExpr, conjure.b.identifier("pipe")),
+    apiExpr = b.callExpression(
+      b.memberExpression(apiExpr, b.identifier("pipe")),
       pipeArgs
     );
   }
