@@ -6,8 +6,7 @@
  */
 import { Array as Arr, Option, pipe, Schema as S } from "effect"
 import type { namedTypes as n } from "ast-types"
-import { definePlugin } from "../services/plugin.js"
-import type { FileNameContext } from "../services/plugin.js"
+import { definePlugin, type PluginContext } from "../services/plugin.js"
 import { findEnumByPgName } from "../services/pg-types.js"
 import type {
   Field,
@@ -35,7 +34,14 @@ const { ts, exp } = conjure
 // Configuration
 // ============================================================================
 
-const TypesPluginConfig = S.Struct({
+/**
+ * Configuration for the types provider
+ */
+export interface TypesConfig {
+  readonly outputDir?: string
+}
+
+const TypesConfigSchema = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => "types" }),
 })
 
@@ -275,128 +281,116 @@ const addCustomImports = (
 }
 
 // ============================================================================
-// Plugin Definition
+// Provider Definition
 // ============================================================================
 
 /**
- * Types Plugin
+ * Create a types provider that generates TypeScript interfaces.
  *
- * Generates TypeScript interfaces for each entity's shapes (Row, Insert, Update, Patch)
- * and type aliases for PostgreSQL enums.
- *
- * Supports type overrides via TypeHints configuration:
+ * @example
  * ```typescript
- * typeHints: [
- *   { match: { pgType: 'jsonb' }, hints: { tsType: 'JsonValue', import: './types.js' } },
- *   { match: { table: 'users', column: 'id' }, hints: { tsType: 'UserId' } },
- * ]
+ * import { types } from "pg-sourcerer"
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     types(),
+ *     types({ outputDir: "custom/types" }),
+ *   ],
+ * })
  * ```
  */
-export const typesPlugin = definePlugin({
-  name: "types",
-  provides: ["types"],
-  configSchema: TypesPluginConfig,
-  inflection: {
-    outputFile: ctx => `${ctx.entityName}.ts`,
-    symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
-  },
+export function types(config: TypesConfig = {}): ReturnType<typeof definePlugin> {
+  const parsed = S.decodeUnknownSync(TypesConfigSchema)(config)
 
-  run: (ctx, config) => {
-    const { ir, typeHints } = ctx
-    const enumEntities = getEnumEntities(ir)
+  return definePlugin({
+    name: "types",
+    kind: "typescript-types",
+    singleton: true,
 
-    // Helper to build file path
-    const buildFilePath = (fileNameCtx: FileNameContext): string =>
-      `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`
+    canProvide: () => true,
 
-    // Generate enum type files
-    enumEntities
-      .filter(e => e.tags.omit !== true)
-      .forEach(enumEntity => {
-        const fileNameCtx: FileNameContext = {
-          entityName: enumEntity.name,
-          pgName: enumEntity.pgName,
-          schema: enumEntity.schemaName,
-          inflection: ctx.inflection,
-          entity: enumEntity,
-        }
+    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
+      const { ir, typeHints, inflection } = ctx
+      const enumEntities = getEnumEntities(ir)
 
-        ctx
-          .file(buildFilePath(fileNameCtx))
-          .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
-          .emit()
-      })
+      // Helper to build file path
+      const buildFilePath = (entityName: string): string =>
+        `${parsed.outputDir}/${entityName}.ts`
 
-    // Generate table/view entity type files
-    getTableEntities(ir)
-      .filter(e => e.tags.omit !== true)
-      .forEach(entity => {
-        const fieldCtx: FieldContext = {
-          schemaName: entity.schemaName,
-          tableName: entity.pgName,
-          enums: enumEntities,
-          extensions: ir.extensions,
-          typeHints,
-        }
+      // Generate enum type files
+      enumEntities
+        .filter(e => e.tags.omit !== true)
+        .forEach(enumEntity => {
+          ctx
+            .file(buildFilePath(enumEntity.name))
+            .ast(conjure.symbolProgram(generateEnumStatement(enumEntity)))
+            .emit()
+        })
 
-        const result = generateTableStatements(entity, fieldCtx)
+      // Generate table/view entity type files
+      getTableEntities(ir)
+        .filter(e => e.tags.omit !== true)
+        .forEach(entity => {
+          const fieldCtx: FieldContext = {
+            schemaName: entity.schemaName,
+            tableName: entity.pgName,
+            enums: enumEntities,
+            extensions: ir.extensions,
+            typeHints,
+          }
 
-        // Collect all fields from all shapes for enum detection
-        const allFields = [
-          ...entity.shapes.row.fields,
-          ...(entity.shapes.insert?.fields ?? []),
-          ...(entity.shapes.update?.fields ?? []),
-        ]
-        const usedEnums = collectUsedEnums(allFields, enumEntities)
+          const result = generateTableStatements(entity, fieldCtx)
 
-        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags)
-        const fileNameCtx: FileNameContext = {
-          entityName,
-          pgName: entity.pgName,
-          schema: entity.schemaName,
-          inflection: ctx.inflection,
-          entity,
-        }
+          // Collect all fields from all shapes for enum detection
+          const allFields = [
+            ...entity.shapes.row.fields,
+            ...(entity.shapes.insert?.fields ?? []),
+            ...(entity.shapes.update?.fields ?? []),
+          ]
+          const usedEnums = collectUsedEnums(allFields, enumEntities)
 
-        const fileBuilder = ctx
-          .file(buildFilePath(fileNameCtx))
+          const entityName = inflection.entityName(entity.pgClass, entity.tags)
 
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
-        addCustomImports(fileBuilder, result.customImports)
+          const fileBuilder = ctx.file(buildFilePath(entityName))
 
-        fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
-      })
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
+          addCustomImports(fileBuilder, result.customImports)
 
-    // Generate composite type files
-    getCompositeEntities(ir)
-      .filter(e => e.tags.omit !== true)
-      .forEach(composite => {
-        const fieldCtx: FieldContext = {
-          schemaName: composite.schemaName,
-          tableName: composite.pgName,
-          enums: enumEntities,
-          extensions: ir.extensions,
-          typeHints,
-        }
+          fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
+        })
 
-        const result = generateCompositeStatement(composite, fieldCtx)
-        const usedEnums = collectUsedEnums(composite.fields, enumEntities)
+      // Generate composite type files
+      getCompositeEntities(ir)
+        .filter(e => e.tags.omit !== true)
+        .forEach(composite => {
+          const fieldCtx: FieldContext = {
+            schemaName: composite.schemaName,
+            tableName: composite.pgName,
+            enums: enumEntities,
+            extensions: ir.extensions,
+            typeHints,
+          }
 
-        const fileNameCtx: FileNameContext = {
-          entityName: composite.name,
-          pgName: composite.pgName,
-          schema: composite.schemaName,
-          inflection: ctx.inflection,
-          entity: composite,
-        }
+          const result = generateCompositeStatement(composite, fieldCtx)
+          const usedEnums = collectUsedEnums(composite.fields, enumEntities)
 
-        const fileBuilder = ctx
-          .file(buildFilePath(fileNameCtx))
+          const fileBuilder = ctx.file(buildFilePath(composite.name))
 
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
-        addCustomImports(fileBuilder, result.customImports)
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref))
+          addCustomImports(fileBuilder, result.customImports)
 
-        fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
-      })
-   },
-})
+          fileBuilder.ast(conjure.symbolProgram(...result.statements)).emit()
+        })
+
+      // Singleton providers can return void
+      return undefined
+    },
+  })
+}
+
+// ============================================================================
+// Legacy Export (for backwards compatibility during migration)
+// ============================================================================
+
+/** Alias for types() */
+export const typesPlugin = types

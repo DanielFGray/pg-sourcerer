@@ -12,8 +12,7 @@
  */
 import { Array as Arr, Option, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin } from "../services/plugin.js";
-import type { FileNameContext } from "../services/plugin.js";
+import { definePlugin, type PluginContext } from "../services/plugin.js";
 import { findEnumByPgName, TsType } from "../services/pg-types.js";
 import type {
   Field,
@@ -34,6 +33,13 @@ import {
   getPgTypeName,
   resolveFieldType,
 } from "../lib/field-utils.js";
+import {
+  SCHEMA_BUILDER_KIND,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
+} from "../ir/extensions/schema-builder.js";
+import type { QueryMethodParam } from "../ir/extensions/queries.js";
 
 const { ts, exp, obj } = conjure;
 
@@ -41,22 +47,30 @@ const { ts, exp, obj } = conjure;
 // Configuration
 // ============================================================================
 
-const ArkTypePluginConfig = S.Struct({
+/**
+ * Configuration for the arktype provider
+ */
+export interface ArkTypeConfig {
   /** Output directory relative to main outputDir */
-  outputDir: S.optionalWith(S.String, { default: () => "arktype" }),
+  readonly outputDir?: string;
   /** Export inferred types alongside schemas */
-  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
+  readonly exportTypes?: boolean;
   /** How to represent enum values: 'strings' uses union literals, 'enum' uses TS enum */
+  readonly enumStyle?: "strings" | "enum";
+  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
+  readonly typeReferences?: "inline" | "separate";
+}
+
+const ArkTypeConfigSchema = S.Struct({
+  outputDir: S.optionalWith(S.String, { default: () => "arktype" }),
+  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
   enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
     default: () => "strings" as const,
   }),
-  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
   typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
     default: () => "separate" as const,
   }),
 });
-
-type ArkTypePluginConfig = S.Schema.Type<typeof ArkTypePluginConfig>;
 
 // ============================================================================
 // ArkType Schema Builders (pure functions)
@@ -151,8 +165,6 @@ const resolveFieldArkType = (field: Field, ctx: FieldContext): ArkTypeFieldResul
   if (resolved.enumDef) {
     if (ctx.typeReferences === "separate") {
       // Reference by name - will be imported
-      // ArkType can reference other types by name in a scope, but for simple
-      // cases we'll use the type directly
       const baseRef = resolved.enumDef.name;
       const withMods = buildArkTypeString(baseRef, {
         nullable: field.nullable,
@@ -254,7 +266,6 @@ const generateShapeStatements = (
 
   // Generate: export type ShapeName = typeof ShapeName.infer
   // ArkType uses Schema.infer for the inferred type
-  // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
   const inferType = ts.typeof(`${shape.name}.infer`);
   const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
@@ -335,7 +346,6 @@ const generateCompositeStatements = (
   }
 
   // Generate: export type CompositeName = typeof CompositeName.infer
-  // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: composite.name };
   const inferType = ts.typeof(`${composite.name}.infer`);
   const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
@@ -396,7 +406,6 @@ const generateEnumStatement = (
   }
 
   // Generate: export type EnumName = typeof EnumName.infer
-  // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
   const inferType = ts.typeof(`${enumEntity.name}.infer`);
   const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
@@ -426,127 +435,176 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   }));
 
 // ============================================================================
-// Plugin Definition
+// Schema Builder Service
 // ============================================================================
 
 /**
- * ArkType Plugin
- *
- * Generates ArkType schemas for each entity's shapes (base, Insert, Update)
- * with inferred TypeScript types.
+ * Map TypeScript type string to ArkType string for params.
+ * URL params are strings, so we use string.integer for numbers (coerces).
  */
-export const arktypePlugin = definePlugin({
-  name: "arktype",
-  provides: config =>
-    config.exportTypes
-      ? ["schemas", "types"]
-      : ["schemas"],
-  configSchema: ArkTypePluginConfig,
-  inflection: {
-    outputFile: ctx => `${ctx.entityName}.ts`,
-    symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
-  },
+const paramTypeToArkTypeString = (tsType: string): string => {
+  switch (tsType.toLowerCase()) {
+    case "number":
+      // string.integer parses string to integer
+      return "string.integer.parse";
+    case "boolean":
+      return "string";  // ArkType doesn't have built-in boolean coercion from string
+    case "bigint":
+      return "string";  // Handle as string, parse manually
+    case "string":
+    default:
+      return "string";
+  }
+};
 
-  run: (ctx, config) => {
-    const enumEntities = getEnumEntities(ctx.ir);
-    const { enumStyle, typeReferences } = config;
+/**
+ * Build type({ ... }) expression from QueryMethodParam[].
+ * For path/query parameter validation in HTTP handlers.
+ */
+const buildParamArkTypeObject = (params: readonly QueryMethodParam[]): n.Expression => {
+  const objBuilder = params.reduce((builder, param) => {
+    const arkType = paramTypeToArkTypeString(param.type);
 
-    const fieldCtx: FieldContext = {
-      enums: enumEntities,
-      extensions: ctx.ir.extensions,
-      enumStyle,
-      typeReferences,
-    };
+    // Use "key?" syntax for optional params
+    const key = param.required ? param.name : `${param.name}?`;
+    return builder.stringProp(key, conjure.str(arkType));
+  }, obj());
 
-    // Generate separate enum files if configured
-    if (typeReferences === "separate") {
-      enumEntities
-        .filter(e => e.tags.omit !== true)
-        .forEach(enumEntity => {
-          const fileNameCtx: FileNameContext = {
-            entityName: enumEntity.name,
-            pgName: enumEntity.pgName,
-            schema: enumEntity.schemaName,
-            inflection: ctx.inflection,
-            entity: enumEntity,
-          };
-          const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-          const statements = generateEnumStatement(enumEntity, enumStyle, config.exportTypes);
+  return conjure.id("type").call([objBuilder.build()]).build();
+};
 
-          ctx
-            .file(filePath)
-            .import({ kind: "package", names: ["type"], from: "arktype" })
-            .ast(conjure.symbolProgram(...statements))
-            .emit();
-        });
+/**
+ * Create a SchemaBuilder implementation for ArkType.
+ */
+const createArkTypeSchemaBuilder = (): SchemaBuilder => ({
+  build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
+    if (request.params.length === 0) {
+      return undefined;
     }
 
-    getTableEntities(ctx.ir)
-      .filter(entity => entity.tags.omit !== true)
-      .forEach(entity => {
-        const statements = generateEntityStatements(entity, fieldCtx, config.exportTypes);
-
-        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
-        const fileNameCtx: FileNameContext = {
-          entityName,
-          pgName: entity.pgName,
-          schema: entity.schemaName,
-          inflection: ctx.inflection,
-          entity,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect all fields for enum detection
-        const allFields = [
-          ...entity.shapes.row.fields,
-          ...(entity.shapes.insert?.fields ?? []),
-          ...(entity.shapes.update?.fields ?? []),
-        ];
-        const usedEnums =
-          typeReferences === "separate"
-            ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", names: ["type"], from: "arktype" });
-
-        // Add enum imports when using separate files
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
-
-    // Generate composite type schemas
-    getCompositeEntities(ctx.ir)
-      .filter(composite => composite.tags.omit !== true)
-      .forEach(composite => {
-        const statements = generateCompositeStatements(composite, fieldCtx, config.exportTypes);
-
-        const fileNameCtx: FileNameContext = {
-          entityName: composite.name,
-          pgName: composite.pgName,
-          schema: composite.schemaName,
-          inflection: ctx.inflection,
-          entity: composite,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect enum usage for imports
-        const usedEnums =
-          typeReferences === "separate"
-            ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", names: ["type"], from: "arktype" });
-
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
+    const ast = buildParamArkTypeObject(request.params);
+    return {
+      ast,
+      importSpec: {
+        names: ["type"],
+        from: "arktype",
+      },
+    };
   },
 });
+
+// ============================================================================
+// Provider Definition
+// ============================================================================
+
+/**
+ * Create an arktype provider that generates ArkType schemas.
+ *
+ * @example
+ * ```typescript
+ * import { arktype } from "pg-sourcerer"
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     arktype(),
+ *     arktype({ outputDir: "schemas", exportTypes: false }),
+ *   ],
+ * })
+ * ```
+ */
+export function arktype(config: ArkTypeConfig = {}): ReturnType<typeof definePlugin> {
+  const parsed = S.decodeUnknownSync(ArkTypeConfigSchema)(config);
+
+  return definePlugin({
+    name: "arktype",
+    kind: "schemas",
+    singleton: true,
+
+    canProvide: () => true,
+
+    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
+      const { ir, inflection } = ctx;
+      const enumEntities = getEnumEntities(ir);
+
+      // Register schema-builder service for on-demand param/query schema generation
+      ctx.registerHandler(SCHEMA_BUILDER_KIND, createArkTypeSchemaBuilder().build);
+
+      const fieldCtx: FieldContext = {
+        enums: enumEntities,
+        extensions: ir.extensions,
+        enumStyle: parsed.enumStyle,
+        typeReferences: parsed.typeReferences,
+      };
+
+      // Helper to build file path
+      const buildFilePath = (entityName: string): string =>
+        `${parsed.outputDir}/${entityName}.ts`;
+
+      // Generate separate enum files if configured
+      if (parsed.typeReferences === "separate") {
+        enumEntities
+          .filter(e => e.tags.omit !== true)
+          .forEach(enumEntity => {
+            const statements = generateEnumStatement(enumEntity, parsed.enumStyle, parsed.exportTypes);
+
+            ctx
+              .file(buildFilePath(enumEntity.name))
+              .import({ kind: "package", names: ["type"], from: "arktype" })
+              .ast(conjure.symbolProgram(...statements))
+              .emit();
+          });
+      }
+
+      getTableEntities(ir)
+        .filter(entity => entity.tags.omit !== true)
+        .forEach(entity => {
+          const statements = generateEntityStatements(entity, fieldCtx, parsed.exportTypes);
+
+          const entityName = inflection.entityName(entity.pgClass, entity.tags);
+
+          // Collect all fields for enum detection
+          const allFields = [
+            ...entity.shapes.row.fields,
+            ...(entity.shapes.insert?.fields ?? []),
+            ...(entity.shapes.update?.fields ?? []),
+          ];
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(entityName))
+            .import({ kind: "package", names: ["type"], from: "arktype" });
+
+          // Add enum imports when using separate files
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+
+      // Generate composite type schemas
+      getCompositeEntities(ir)
+        .filter(composite => composite.tags.omit !== true)
+        .forEach(composite => {
+          const statements = generateCompositeStatements(composite, fieldCtx, parsed.exportTypes);
+
+          // Collect enum usage for imports
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(composite.name))
+            .import({ kind: "package", names: ["type"], from: "arktype" });
+
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+
+      return undefined;
+    },
+  });
+}

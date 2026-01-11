@@ -1,314 +1,54 @@
 /**
  * HTTP Elysia Plugin - Generate Elysia route handlers from query plugins
  *
- * Consumes QueryArtifact from sql-queries or kysely-queries and generates
- * type-safe Elysia HTTP route handlers with schema validation.
- *
- * When a "schemas" capability is available (zod, arktype, etc.), imports those
- * for body validation. Otherwise, generates inline TypeBox schemas from the IR.
+ * Consumes method symbols from sql-queries or kysely-queries via the symbol registry
+ * and generates type-safe Elysia HTTP route handlers.
  */
-import { Schema as S, Either } from "effect";
+import { Option, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin } from "../services/plugin.js";
+import { definePlugin, type PluginContext } from "../services/plugin.js";
 import { conjure, cast } from "../lib/conjure.js";
 import { inflect } from "../services/inflection.js";
-import { resolveFieldType } from "../lib/field-utils.js";
-import { TsType } from "../services/pg-types.js";
-import type { Shape, Field, EnumEntity, ExtensionInfo, SemanticIR } from "../ir/semantic-ir.js";
-import { getEnumEntities, getTableEntities } from "../ir/semantic-ir.js";
+import type { MethodSymbol, EntityMethods } from "../services/symbols.js";
+import type { QueryMethodKind, QueryMethodParam } from "../ir/extensions/queries.js";
+import {
+  SCHEMA_BUILDER_KIND,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
+} from "../ir/extensions/schema-builder.js";
+import {
+  getTableEntities,
+  getEnumEntities,
+  type TableEntity,
+  type Field,
+  type EnumEntity,
+  type ExtensionInfo,
+} from "../ir/semantic-ir.js";
+import {
+  resolveFieldType,
+  isUuidType,
+  isDateType,
+  isEnumType,
+  getPgTypeName,
+} from "../lib/field-utils.js";
+import { findEnumByPgName, TsType } from "../services/pg-types.js";
 
 const { b, stmt } = conjure;
-
-// ============================================================================
-// Query Artifact Schema (consumer-defined)
-// ============================================================================
-// This schema defines what http-elysia expects from query plugins.
-// We decode the artifact.data using this schema.
-
-/** How to call a query function */
-const CallSignature = S.Struct({
-  style: S.Union(S.Literal("named"), S.Literal("positional")),
-  bodyStyle: S.optional(S.Union(S.Literal("property"), S.Literal("spread"))),
-});
-type CallSignature = S.Schema.Type<typeof CallSignature>;
-
-const QueryMethodParam = S.Struct({
-  name: S.String,
-  type: S.String,
-  required: S.Boolean,
-  columnName: S.optional(S.String),
-  source: S.optional(S.Union(
-    S.Literal("pk"),
-    S.Literal("fk"),
-    S.Literal("lookup"),
-    S.Literal("body"),
-    S.Literal("pagination"),
-  )),
-});
-type QueryMethodParam = S.Schema.Type<typeof QueryMethodParam>;
-
-const QueryMethodReturn = S.Struct({
-  type: S.String,
-  nullable: S.Boolean,
-  isArray: S.Boolean,
-});
-
-const QueryMethodKind = S.Union(
-  S.Literal("read"),
-  S.Literal("list"),
-  S.Literal("create"),
-  S.Literal("update"),
-  S.Literal("delete"),
-  S.Literal("lookup"),
-  S.Literal("function"),
-);
-
-const QueryMethod = S.Struct({
-  name: S.String,
-  kind: QueryMethodKind,
-  params: S.Array(QueryMethodParam),
-  returns: QueryMethodReturn,
-  lookupField: S.optional(S.String),
-  isUniqueLookup: S.optional(S.Boolean),
-  callSignature: S.optional(CallSignature),
-});
-type QueryMethod = S.Schema.Type<typeof QueryMethod>;
-
-const EntityQueryMethods = S.Struct({
-  entityName: S.String,
-  tableName: S.String,
-  schemaName: S.String,
-  pkType: S.optional(S.String),
-  hasCompositePk: S.optional(S.Boolean),
-  methods: S.Array(QueryMethod),
-});
-type EntityQueryMethods = S.Schema.Type<typeof EntityQueryMethods>;
-
-const FunctionQueryMethod = S.Struct({
-  functionName: S.String,
-  exportName: S.String,
-  schemaName: S.String,
-  volatility: S.Union(S.Literal("immutable"), S.Literal("stable"), S.Literal("volatile")),
-  params: S.Array(QueryMethodParam),
-  returns: QueryMethodReturn,
-  callSignature: S.optional(CallSignature),
-});
-type FunctionQueryMethod = S.Schema.Type<typeof FunctionQueryMethod>;
-
-const QueryArtifact = S.Struct({
-  entities: S.Array(EntityQueryMethods),
-  functions: S.Array(FunctionQueryMethod),
-  sourcePlugin: S.String,
-  outputDir: S.String,
-});
-type QueryArtifact = S.Schema.Type<typeof QueryArtifact>;
-
-// ============================================================================
-// TypeBox Schema Generation (fallback when no schema plugin available)
-// ============================================================================
-
-/**
- * Map TsType to TypeBox builder expression: t.String(), t.Number(), etc.
- */
-const tsTypeToTypeBox = (tsType: TsType): n.Expression => {
-  const tMethod = (name: string) =>
-    b.callExpression(b.memberExpression(b.identifier("t"), b.identifier(name)), []);
-
-  switch (tsType) {
-    case TsType.String:
-      return tMethod("String");
-    case TsType.Number:
-      return tMethod("Number");
-    case TsType.Boolean:
-      return tMethod("Boolean");
-    case TsType.Date:
-      return tMethod("String"); // Dates come as ISO strings in HTTP
-    case TsType.BigInt:
-      return tMethod("String"); // BigInt as string in JSON
-    case TsType.Buffer:
-      return tMethod("String"); // Base64 encoded
-    default:
-      return tMethod("Unknown");
-  }
-};
-
-/**
- * Build TypeBox schema for an enum: t.Union([t.Literal('a'), t.Literal('b')])
- */
-const buildTypeBoxEnum = (values: readonly string[]): n.Expression => {
-  const literals = values.map((v) =>
-    b.callExpression(
-      b.memberExpression(b.identifier("t"), b.identifier("Literal")),
-      [b.stringLiteral(v)]
-    )
-  );
-  return b.callExpression(
-    b.memberExpression(b.identifier("t"), b.identifier("Union")),
-    [b.arrayExpression(literals)]
-  );
-};
-
-/**
- * Build TypeBox schema from a field
- */
-const buildTypeBoxField = (
-  field: Field,
-  enums: Iterable<EnumEntity>,
-  extensions: readonly ExtensionInfo[]
-): n.Expression => {
-  const resolved = resolveFieldType(field, enums, extensions);
-
-  let schema: n.Expression;
-  if (resolved.enumDef) {
-    schema = buildTypeBoxEnum(resolved.enumDef.values);
-  } else {
-    schema = tsTypeToTypeBox(resolved.tsType);
-  }
-
-  // Wrap in array if needed
-  if (field.isArray) {
-    schema = b.callExpression(
-      b.memberExpression(b.identifier("t"), b.identifier("Array")),
-      [cast.toExpr(schema)]
-    );
-  }
-
-  // Wrap in Optional if nullable or optional
-  if (field.nullable || field.optional) {
-    schema = b.callExpression(
-      b.memberExpression(b.identifier("t"), b.identifier("Optional")),
-      [cast.toExpr(schema)]
-    );
-  }
-
-  return schema;
-};
-
-/**
- * Build t.Object({ field: schema, ... }) from a Shape
- */
-const buildTypeBoxFromShape = (
-  shape: Shape,
-  enums: Iterable<EnumEntity>,
-  extensions: readonly ExtensionInfo[]
-): n.Expression => {
-  let objBuilder = conjure.obj();
-
-  for (const field of shape.fields) {
-    const fieldSchema = buildTypeBoxField(field, enums, extensions);
-    objBuilder = objBuilder.prop(field.name, fieldSchema);
-  }
-
-  return b.callExpression(
-    b.memberExpression(b.identifier("t"), b.identifier("Object")),
-    [objBuilder.build()]
-  );
-};
-
-// ============================================================================
-// String Helpers
-// ============================================================================
-
-/**
- * Convert PascalCase/camelCase to kebab-case.
- * UserProfile → user-profile
- */
-const toKebabCase = (str: string): string =>
-  str
-    .replace(/([a-z])([A-Z])/g, "$1-$2")
-    .replace(/_/g, "-")
-    .toLowerCase();
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-/**
- * Path template configuration for route generation.
- * Supports variables: {entity}, {id}, {field}
- */
-const PathTemplateConfig = S.Struct({
-  /** Base path for all routes. Default: "/api" */
-  basePath: S.optionalWith(S.String, { default: () => "/api" }),
-  /** Path template for single entity by ID. Default: "/{entity}/{id}" */
-  findById: S.optionalWith(S.String, { default: () => "/{entity}/{id}" }),
-  /** Path template for entity list. Default: "/{entity}" */
-  list: S.optionalWith(S.String, { default: () => "/{entity}" }),
-  /** Path template for create. Default: "/{entity}" */
-  create: S.optionalWith(S.String, { default: () => "/{entity}" }),
-  /** Path template for update. Default: "/{entity}/{id}" */
-  update: S.optionalWith(S.String, { default: () => "/{entity}/{id}" }),
-  /** Path template for delete. Default: "/{entity}/{id}" */
-  delete: S.optionalWith(S.String, { default: () => "/{entity}/{id}" }),
-  /** Path template for lookup methods. Default: "/{entity}/by-{field}/{value}" */
-  lookup: S.optionalWith(S.String, { default: () => "/{entity}/by-{field}/{value}" }),
-  /** Prefix for function routes. Default: "" (no prefix). Example: "fn" → "/fn/current-user" */
-  functionPrefix: S.optionalWith(S.String, { default: () => "" }),
-});
-
-type PathTemplateConfig = S.Schema.Type<typeof PathTemplateConfig>;
-
-/**
- * Per-entity configuration overrides.
- */
-const EntityOverride = S.Struct({
-  /** Override entity path segment (e.g., "user" instead of "users") */
-  pathSegment: S.optional(S.String),
-  /** Disable specific methods for this entity */
-  disableMethods: S.optionalWith(S.Array(S.String), { default: () => [] }),
-  /** Custom path templates for this entity */
-  paths: S.optional(PathTemplateConfig),
-});
-
-type EntityOverride = S.Schema.Type<typeof EntityOverride>;
-
-/**
- * HTTP Elysia Plugin configuration schema.
- */
-const HttpElysiaPluginConfigSchema = S.Struct({
+const HttpElysiaConfigSchema = S.Struct({
   /** Output directory for generated route files. Default: "routes" */
   outputDir: S.optionalWith(S.String, { default: () => "routes" }),
 
-  /** 
-   * Path to import query functions from (relative to outputDir).
-   * Auto-detected from query artifact's outputDir if not specified.
-   */
-  queriesPath: S.optional(S.String),
-
-  /** Global path templates */
-  paths: S.optional(PathTemplateConfig),
-
-  /** Per-entity configuration overrides */
-  entities: S.optionalWith(S.Record({ key: S.String, value: EntityOverride }), {
-    default: () => ({}),
-  }),
-
-  /**
-   * Whether to generate a single routes file or per-entity files.
-   * - "single": All routes in routes/index.ts
-   * - "per-entity": routes/users.ts, routes/posts.ts, etc.
-   * Default: "per-entity"
-   */
-  outputStyle: S.optionalWith(S.Union(S.Literal("single"), S.Literal("per-entity")), {
-    default: () => "per-entity" as const,
-  }),
+  /** Base path for all routes. Default: "/api" */
+  basePath: S.optionalWith(S.String, { default: () => "/api" }),
 
   /** Header content to prepend to each generated file */
   header: S.optional(S.String),
-
-  /**
-   * Include functions in route generation.
-   * When true, generates routes for PostgreSQL function wrappers.
-   * Default: true
-   */
-  includeFunctions: S.optionalWith(S.Boolean, { default: () => true }),
-
-  /**
-   * Generate an index.ts that aggregates all route files.
-   * When true, generates routes/index.ts that imports and combines all routes.
-   * Default: true
-   */
-  generateIndex: S.optionalWith(S.Boolean, { default: () => true }),
 
   /**
    * Name of the aggregated router export.
@@ -317,74 +57,30 @@ const HttpElysiaPluginConfigSchema = S.Struct({
   aggregatorName: S.optionalWith(S.String, { default: () => "api" }),
 });
 
-type HttpElysiaPluginConfig = S.Schema.Type<typeof HttpElysiaPluginConfigSchema>;
+/** Input config type (with optional fields) */
+export type HttpElysiaConfig = S.Schema.Encoded<typeof HttpElysiaConfigSchema>;
 
 // ============================================================================
-// Path Generation Helpers
+// String Helpers
 // ============================================================================
 
-/**
- * Convert entity name to URL path segment.
- * Default: kebab-case plural (e.g., "UserProfile" → "user-profiles")
- */
+/** Convert PascalCase/camelCase to kebab-case */
+const toKebabCase = (str: string): string =>
+  str
+    .replace(/([a-z])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-")
+    .toLowerCase();
+
+/** Convert entity name to URL path segment (kebab-case plural) */
 const entityToPathSegment = (entityName: string): string =>
   inflect.pluralize(toKebabCase(entityName));
 
-/**
- * Get the route path for a query method.
- * Returns path relative to the entity prefix (e.g., "/:id" not "/users/:id")
- */
-const getRoutePath = (
-  method: QueryMethod,
-  _pathSegment: string,
-  pathConfig: PathTemplateConfig,
-): string => {
-  switch (method.kind) {
-    case "read": {
-      // GET /:id
-      const pkParam = method.params.find(p => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "list":
-      // GET /
-      return "/";
-    case "create":
-      // POST /
-      return "/";
-    case "update": {
-      // PUT /:id
-      const pkParam = method.params.find(p => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "delete": {
-      // DELETE /:id
-      const pkParam = method.params.find(p => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "lookup": {
-      // GET /by-{field}/:value
-      const field = method.lookupField ?? "field";
-      const fieldKebab = toKebabCase(field);
-      const lookupParam = method.params.find(p => p.source === "lookup" || p.source === "fk");
-      const paramName = lookupParam?.name ?? field;
-      return `/by-${fieldKebab}/:${paramName}`;
-    }
-    case "function": {
-      // POST /{prefix}/{functionName} or just /{functionName} if no prefix
-      const fnPath = toKebabCase(method.name);
-      const prefix = pathConfig.functionPrefix;
-      return prefix ? `/${prefix}/${fnPath}` : `/${fnPath}`;
-    }
-  }
-};
+// ============================================================================
+// Route Generation Helpers
+// ============================================================================
 
-/**
- * Get the HTTP method for a query method kind.
- */
-const kindToHttpMethod = (kind: QueryMethod["kind"]): string => {
+/** Map query method kind to HTTP method */
+const kindToHttpMethod = (kind: QueryMethodKind): string => {
   switch (kind) {
     case "read":
     case "list":
@@ -397,128 +93,300 @@ const kindToHttpMethod = (kind: QueryMethod["kind"]): string => {
     case "delete":
       return "delete";
     case "function":
-      // Functions default to POST for safety
       return "post";
   }
 };
 
+/** Get the route path for a method */
+const getRoutePath = (method: MethodSymbol): string => {
+  switch (method.kind) {
+    case "read":
+    case "update":
+    case "delete": {
+      const pkParam = method.params.find((p) => p.source === "pk");
+      const paramName = pkParam?.name ?? "id";
+      return `/:${paramName}`;
+    }
+    case "list":
+    case "create":
+      return "/";
+    case "lookup": {
+      const field = method.lookupField ?? "field";
+      const fieldKebab = toKebabCase(field);
+      const lookupParam = method.params.find((p) => p.source === "lookup" || p.source === "fk");
+      const paramName = lookupParam?.name ?? field;
+      return `/by-${fieldKebab}/:${paramName}`;
+    }
+    case "function": {
+      return `/${toKebabCase(method.name)}`;
+    }
+  }
+};
+
 // ============================================================================
-// Route Handler Builders
+// TypeBox Schema Generation (for fallback when no schema plugin)
 // ============================================================================
 
 /**
- * Build the handler function body for a query method.
- * Returns statements that call the query function and return the result.
- * Uses callSignature to determine how to pass arguments.
+ * Context for TypeBox field resolution
  */
-const buildHandlerBody = (method: QueryMethod): n.Statement[] => {
-  const queryFnName = method.name;
+interface TypeBoxContext {
+  readonly enums: readonly EnumEntity[];
+  readonly extensions: readonly ExtensionInfo[];
+}
+
+/**
+ * Build a TypeBox type call: t.String(), t.Number(), etc.
+ */
+const buildTypeBoxCall = (methodName: string, args: n.Expression[] = []): n.Expression =>
+  b.callExpression(
+    b.memberExpression(b.identifier("t"), b.identifier(methodName)),
+    args.map(cast.toExpr),
+  );
+
+/**
+ * Map TypeScript type string to TypeBox method name.
+ * For path params (strings from URL), numeric types use t.Numeric() for coercion.
+ */
+const tsTypeToTypeBoxMethod = (tsType: string, forPathParam: boolean): string => {
+  switch (tsType) {
+    case TsType.String:
+      return "String";
+    case TsType.Number:
+      // t.Numeric() coerces string to number (for path/query params)
+      return forPathParam ? "Numeric" : "Number";
+    case TsType.Boolean:
+      return "Boolean";
+    case TsType.BigInt:
+      // BigInt comes as string from URL params
+      return forPathParam ? "String" : "BigInt";
+    case TsType.Date:
+      // Dates come as strings, need string schema
+      return "String";
+    case TsType.Buffer:
+    case TsType.Unknown:
+    default:
+      return "Unknown";
+  }
+};
+
+/**
+ * Build TypeBox enum schema: t.Union([t.Literal('a'), t.Literal('b'), ...])
+ */
+const buildTypeBoxEnum = (values: readonly string[]): n.Expression => {
+  const literals = values.map((v) =>
+    buildTypeBoxCall("Literal", [b.stringLiteral(v)]),
+  );
+  return buildTypeBoxCall("Union", [b.arrayExpression(literals.map(cast.toExpr))]);
+};
+
+/**
+ * Build TypeBox array schema: t.Array(<inner>)
+ */
+const buildTypeBoxArray = (inner: n.Expression): n.Expression =>
+  buildTypeBoxCall("Array", [cast.toExpr(inner)]);
+
+/**
+ * Build TypeBox optional schema: t.Optional(<inner>)
+ */
+const buildTypeBoxOptional = (inner: n.Expression): n.Expression =>
+  buildTypeBoxCall("Optional", [cast.toExpr(inner)]);
+
+/**
+ * Build TypeBox union with null: t.Union([<inner>, t.Null()])
+ */
+const buildTypeBoxNullable = (inner: n.Expression): n.Expression =>
+  buildTypeBoxCall("Union", [
+    b.arrayExpression([cast.toExpr(inner), cast.toExpr(buildTypeBoxCall("Null"))]),
+  ]);
+
+/**
+ * Resolve a Field to its TypeBox schema expression.
+ *
+ * @param field - The IR field to resolve
+ * @param ctx - Context with enums and extensions
+ * @param forInsert - True if generating for insert shape (fields with defaults are optional)
+ */
+const resolveFieldTypeBoxSchema = (
+  field: Field,
+  ctx: TypeBoxContext,
+  forInsert: boolean,
+): n.Expression => {
+  let baseSchema: n.Expression;
+
+  // 1. UUID types - still strings
+  if (isUuidType(field)) {
+    baseSchema = buildTypeBoxCall("String");
+  }
+  // 2. Date types - accept string or Date
+  else if (isDateType(field)) {
+    baseSchema = buildTypeBoxCall("Union", [
+      b.arrayExpression([
+        cast.toExpr(buildTypeBoxCall("String")),
+        cast.toExpr(buildTypeBoxCall("Date")),
+      ]),
+    ]);
+  }
+  // 3. Enum types - union of literals
+  else if (isEnumType(field)) {
+    const pgTypeName = getPgTypeName(field);
+    const enumDef = pgTypeName
+      ? pipe(
+          findEnumByPgName(ctx.enums, pgTypeName),
+          Option.getOrUndefined,
+        )
+      : undefined;
+
+    if (enumDef) {
+      baseSchema = buildTypeBoxEnum(enumDef.values);
+    } else {
+      baseSchema = buildTypeBoxCall("Unknown");
+    }
+  }
+  // 4. Fallback to resolved TypeScript type
+  else {
+    const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
+    const typeBoxMethod = tsTypeToTypeBoxMethod(resolved.tsType, false);
+    baseSchema = buildTypeBoxCall(typeBoxMethod);
+  }
+
+  // Wrap with array if needed
+  if (field.isArray) {
+    baseSchema = buildTypeBoxArray(baseSchema);
+  }
+
+  // Apply nullable
+  if (field.nullable) {
+    baseSchema = buildTypeBoxNullable(baseSchema);
+  }
+
+  // Apply optional (for insert shapes: fields with defaults are optional)
+  if (forInsert && field.optional) {
+    baseSchema = buildTypeBoxOptional(baseSchema);
+  }
+
+  return baseSchema;
+};
+
+/**
+ * Build TypeBox object schema for an entity shape.
+ *
+ * @param entity - The entity to build schema for
+ * @param shapeKind - Which shape to use (insert or update)
+ * @param ctx - Context with enums and extensions
+ */
+const buildEntityTypeBoxSchema = (
+  entity: TableEntity,
+  shapeKind: "insert" | "update",
+  ctx: TypeBoxContext,
+): n.Expression => {
+  const shape = shapeKind === "insert" ? entity.shapes.insert : entity.shapes.update;
+  if (!shape) {
+    // Fallback to row shape if specific shape doesn't exist
+    return buildTypeBoxCall("Unknown");
+  }
+
+  let objBuilder = conjure.obj();
+  for (const field of shape.fields) {
+    // For update shapes, ALL fields are optional (patch semantics)
+    // For insert shapes, only fields with defaults/nullable are optional (already marked in IR)
+    const applyOptional = shapeKind === "update" || (shapeKind === "insert" && field.optional);
+    let fieldSchema = resolveFieldTypeBoxSchema(field, ctx, false); // Don't apply optional inside
+    if (applyOptional) {
+      fieldSchema = buildTypeBoxOptional(fieldSchema);
+    }
+    objBuilder = objBuilder.prop(field.name, fieldSchema);
+  }
+
+  return buildTypeBoxCall("Object", [objBuilder.build()]);
+};
+
+/**
+ * Build TypeBox schema for a path/query parameter based on its type string.
+ *
+ * @param param - The query method param
+ */
+const buildParamTypeBoxSchema = (param: QueryMethodParam): n.Expression => {
+  const typeBoxMethod = tsTypeToTypeBoxMethod(param.type, true);
+  return buildTypeBoxCall(typeBoxMethod);
+};
+
+/**
+ * Build the handler function body for a query method.
+ * Params/query are destructured in the handler signature, so we reference them directly.
+ */
+const buildHandlerBody = (method: MethodSymbol): n.Statement[] => {
   const callSig = method.callSignature ?? { style: "named" as const };
 
   // Build the function call arguments based on callSignature
   const args: n.Expression[] = [];
 
   if (callSig.style === "positional") {
-    // Positional: fn(a, b, c)
+    // Positional: fn(a, b, c) - params are already destructured
     for (const param of method.params) {
-      if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
-        args.push(b.memberExpression(b.identifier("params"), b.identifier(param.name)));
+      if (param.source === "pk" || param.source === "fk" || param.source === "lookup" || param.source === "pagination") {
+        args.push(b.identifier(param.name));
       } else if (param.source === "body") {
         args.push(b.identifier("body"));
-      } else if (param.source === "pagination") {
-        args.push(b.memberExpression(b.identifier("query"), b.identifier(param.name)));
       } else {
-        // No source specified (e.g., function args) - get from body
+        // No source specified - get from body (body is not destructured)
         args.push(b.memberExpression(b.identifier("body"), b.identifier(param.name)));
       }
     }
   } else {
     // Named: fn({ a, b, c }) or fn({ id, data: body })
-    const bodyParam = method.params.find(p => p.source === "body");
-    
-    if (bodyParam && callSig.bodyStyle === "property") {
+    const bodyParam = method.params.find((p) => p.source === "body");
+
+    if (bodyParam && callSig.bodyStyle === "spread") {
+      // Body fields spread directly: fn(body)
+      args.push(b.identifier("body"));
+    } else if (bodyParam && callSig.bodyStyle === "property") {
       // Body wrapped in property: fn({ id, data: body })
       let objBuilder = conjure.obj();
-      
-      // Add non-body params first
+
       for (const param of method.params) {
-        if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
-          objBuilder = objBuilder.prop(
-            param.name,
-            b.memberExpression(b.identifier("params"), b.identifier(param.name))
-          );
-        } else if (param.source === "pagination") {
-          objBuilder = objBuilder.prop(
-            param.name,
-            b.memberExpression(b.identifier("query"), b.identifier(param.name))
-          );
+        if (param.source === "pk" || param.source === "fk" || param.source === "lookup" || param.source === "pagination") {
+          // Params are destructured, use shorthand: { id }
+          objBuilder = objBuilder.shorthand(param.name);
         }
       }
-      
-      // Add body as "data" property
+
       objBuilder = objBuilder.prop(bodyParam.name, b.identifier("body"));
       args.push(objBuilder.build());
-      
-    } else if (bodyParam && callSig.bodyStyle === "spread") {
-      // Body fields spread directly: fn({ field1, field2, ... })
-      // Just pass body directly - the query function destructures it
-      args.push(b.identifier("body"));
-      
-    } else if (bodyParam) {
-      // No bodyStyle specified but has body - default to passing body directly
-      args.push(b.identifier("body"));
-      
     } else {
-      // No body param - build object from path/pagination params
+      // Build object from path/pagination params using shorthand
       let objBuilder = conjure.obj();
-      
+
       for (const param of method.params) {
-        if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
-          objBuilder = objBuilder.prop(
-            param.name,
-            b.memberExpression(b.identifier("params"), b.identifier(param.name))
-          );
-        } else if (param.source === "pagination") {
-          objBuilder = objBuilder.prop(
-            param.name,
-            b.memberExpression(b.identifier("query"), b.identifier(param.name))
-          );
+        if (param.source === "pk" || param.source === "fk" || param.source === "lookup" || param.source === "pagination") {
+          objBuilder = objBuilder.shorthand(param.name);
         }
       }
-      
+
       if (method.params.length > 0) {
         args.push(objBuilder.build());
       }
     }
   }
 
-  // Build: const result = await queryFn(args)
-  const queryCall = b.callExpression(b.identifier(queryFnName), args.map(cast.toExpr));
+  // Build: const result = await Queries.queryFn(args)
+  const queryCall = b.callExpression(
+    b.memberExpression(b.identifier("Queries"), b.identifier(method.name)),
+    args.map(cast.toExpr),
+  );
   const awaitExpr = b.awaitExpression(queryCall);
   const resultDecl = stmt.const("result", awaitExpr);
 
-  // For delete, just return success
-  if (method.kind === "delete") {
-    return [
-      b.expressionStatement(awaitExpr),
-      b.returnStatement(
-        conjure.obj().prop("success", b.booleanLiteral(true)).build()
-      ),
-    ];
-  }
-
-  // For read/lookup that can return null, handle 404
-  if (method.returns.nullable && !method.returns.isArray) {
-    const notFoundCheck = stmt.if(
-      conjure.op.not(b.identifier("result")),
-      [
-        b.returnStatement(
-          b.callExpression(
-            b.identifier("status"),
-            [b.numericLiteral(404), b.stringLiteral("Not found")]
-          )
-        ),
-      ]
+  // Handle 404 for read/lookup that returns null
+  if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
+    // if (!result) return status(404, 'Not found');
+    const statusCall = b.callExpression(
+      b.identifier("status"),
+      [b.numericLiteral(404), b.stringLiteral("Not found")],
+    );
+    const notFoundCheck = b.ifStatement(
+      b.unaryExpression("!", b.identifier("result")),
+      b.returnStatement(statusCall),
     );
     return [resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
   }
@@ -526,712 +394,438 @@ const buildHandlerBody = (method: QueryMethod): n.Statement[] => {
   return [resultDecl, b.returnStatement(b.identifier("result"))];
 };
 
+/** Schema import info needed for body validation */
+interface SchemaImport {
+  readonly entity: string;
+  readonly shape: "insert" | "update";
+  readonly schemaName: string;
+}
+
 /**
- * Build destructured handler parameter: ({ params, body, query, status })
+ * Determine if a method needs body validation and which schema to use.
+ * Returns the schema import info or null if no body validation needed.
  */
-const buildHandlerParam = (method: QueryMethod): n.ObjectPattern => {
-  const properties: n.ObjectProperty[] = [];
-
-  const hasPathParams = method.params.some(
-    p => p.source === "pk" || p.source === "fk" || p.source === "lookup"
-  );
-  // For function methods with no source on params, treat them as body params
-  const hasBody = method.params.some(p => p.source === "body" || p.source === undefined);
-  const hasQuery = method.params.some(p => p.source === "pagination");
-  const needsError = method.returns.nullable && !method.returns.isArray;
-
-  if (hasPathParams) {
-    const prop = b.objectProperty(b.identifier("params"), b.identifier("params"));
-    prop.shorthand = true;
-    properties.push(prop);
+const getBodySchemaImport = (method: MethodSymbol, entityName: string): SchemaImport | null => {
+  if (method.kind === "create") {
+    return { entity: entityName, shape: "insert", schemaName: `${entityName}Insert` };
   }
-
-  if (hasBody) {
-    const prop = b.objectProperty(b.identifier("body"), b.identifier("body"));
-    prop.shorthand = true;
-    properties.push(prop);
+  if (method.kind === "update") {
+    return { entity: entityName, shape: "update", schemaName: `${entityName}Update` };
   }
-
-  if (hasQuery) {
-    const prop = b.objectProperty(b.identifier("query"), b.identifier("query"));
-    prop.shorthand = true;
-    properties.push(prop);
-  }
-
-  if (needsError) {
-    const prop = b.objectProperty(b.identifier("status"), b.identifier("status"));
-    prop.shorthand = true;
-    properties.push(prop);
-  }
-
-  return b.objectPattern(properties);
+  return null;
 };
 
 /**
- * Map a TypeScript type string to an Elysia t.* validator call.
- * Returns an expression like t.String() or t.Number()
+ * Function type for requesting schema builder results.
+ * Returns undefined if no schema builder is registered.
  */
-const typeToElysiaValidator = (tsType: string, required: boolean): n.Expression => {
-  // Normalize the type (remove optionality markers, arrays, etc.)
-  const baseType = tsType.replace(/\[\]$/, "").replace(/\?$/, "").toLowerCase();
-  
-  let validator: n.Expression;
-  switch (baseType) {
-    case "number":
-    case "int":
-    case "integer":
-    case "float":
-    case "double":
-      // t.Numeric() parses string to number from URL params
-      validator = b.callExpression(
-        b.memberExpression(b.identifier("t"), b.identifier("Numeric")),
-        []
-      );
-      break;
-    case "boolean":
-    case "bool":
-      validator = b.callExpression(
-        b.memberExpression(b.identifier("t"), b.identifier("Boolean")),
-        []
-      );
-      break;
-    case "date":
-      // t.Date() accepts ISO strings and converts to Date objects
-      validator = b.callExpression(
-        b.memberExpression(b.identifier("t"), b.identifier("Date")),
-        []
-      );
-      break;
-    case "string":
-    default:
-      validator = b.callExpression(
-        b.memberExpression(b.identifier("t"), b.identifier("String")),
-        []
-      );
-      break;
-  }
-  
-  // Wrap in t.Optional() if not required
-  if (!required) {
-    validator = b.callExpression(
-      b.memberExpression(b.identifier("t"), b.identifier("Optional")),
-      [cast.toExpr(validator)]
-    );
-  }
-  
-  return validator;
-};
+type SchemaBuilderFn = (params: readonly QueryMethodParam[]) => SchemaBuilderResult | undefined;
 
 /**
- * Build t.Object({ field: t.Type() }) for params or query validation.
+ * Build the route options object (params/body/query validation schemas).
+ * Returns the options object expression, whether it needs 't' import, body schema info,
+ * and any schema builder imports needed.
+ *
+ * @param hasSchemaProvider - Whether a schema provider is registered for body validation
+ * @param entity - The entity for inline TypeBox body schema generation (when no schema provider)
+ * @param typeBoxCtx - Context for TypeBox field resolution
  */
-const buildElysiaValidatorObject = (
-  params: readonly QueryMethodParam[],
-): n.Expression => {
-  let objBuilder = conjure.obj();
-  
-  for (const param of params) {
-    const validator = typeToElysiaValidator(param.type, param.required);
-    objBuilder = objBuilder.prop(param.name, validator);
-  }
-  
-  // t.Object({ ... })
-  return b.callExpression(
-    b.memberExpression(b.identifier("t"), b.identifier("Object")),
-    [cast.toExpr(objBuilder.build())]
-  );
-};
-
-/**
- * Build the validation schema object for a route.
- * Returns { params: ParamsSchema, body: BodySchema, query: QuerySchema }
- * Also returns whether we need to import 't' from elysia.
- * 
- * When hasExternalSchemas is true, imports body schemas from the schemas provider.
- * Otherwise, builds inline TypeBox schemas from the IR.
- */
-const buildValidationSchema = (
-  method: QueryMethod,
+const buildRouteOptions = (
+  method: MethodSymbol,
   entityName: string,
-  hasExternalSchemas: boolean,
-  ir: SemanticIR | undefined,
-): { 
-  schemaObj: n.ObjectExpression | null; 
-  schemaImports: Array<{ entity: string; shape?: string }>;
+  requestSchema: SchemaBuilderFn,
+  hasSchemaProvider: boolean,
+  entity: TableEntity | undefined,
+  typeBoxCtx: TypeBoxContext,
+): {
+  options: n.ObjectExpression | null;
   needsElysiaT: boolean;
-  inlineBodySchema?: { varName: string; schema: n.Expression };
+  bodySchema: SchemaImport | null;
+  schemaBuilderImport: SchemaBuilderResult["importSpec"] | null;
+  inlineBodySchema: n.Expression | null;
 } => {
-  const properties: n.ObjectProperty[] = [];
-  const schemaImports: Array<{ entity: string; shape?: string }> = [];
+  let objBuilder = conjure.obj();
+  let hasOptions = false;
   let needsElysiaT = false;
-  let inlineBodySchema: { varName: string; schema: n.Expression } | undefined;
+  let schemaBuilderImport: SchemaBuilderResult["importSpec"] | null = null;
+  let inlineBodySchema: n.Expression | null = null;
 
-  // Path params validation using Elysia's t.*
+  // Build params schema for path parameters
   const pathParams = method.params.filter(
-    p => p.source === "pk" || p.source === "fk" || p.source === "lookup"
+    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
   if (pathParams.length > 0) {
-    needsElysiaT = true;
-    const paramsValidator = buildElysiaValidatorObject(pathParams);
-    properties.push(
-      b.objectProperty(b.identifier("params"), cast.toExpr(paramsValidator))
-    );
-  }
-
-  // Body validation (for create/update)
-  const bodyParam = method.params.find(p => p.source === "body");
-  // Function methods have params with no source - treat as body params for POST methods
-  const functionBodyParams = method.params.filter(p => p.source === undefined);
-  
-  if (bodyParam) {
-    const shapeKind = method.kind === "create" ? "insert" : "update";
-    
-    if (hasExternalSchemas) {
-      // Use imported schema from schemas provider
-      schemaImports.push({ entity: entityName, shape: shapeKind });
-      const schemaName = `${entityName}${inflect.pascalCase(shapeKind)}`;
-      properties.push(
-        b.objectProperty(b.identifier("body"), b.identifier(schemaName))
-      );
-    } else if (ir) {
-      // Build inline TypeBox schema from IR
+    const schemaResult = requestSchema(pathParams);
+    if (schemaResult) {
+      objBuilder = objBuilder.prop("params", schemaResult.ast);
+      schemaBuilderImport = schemaResult.importSpec;
+    } else {
+      // Fallback to TypeBox t.Object({ ... }) with proper type coercion
       needsElysiaT = true;
-      const entity = getTableEntities(ir).find(e => e.name === entityName);
-      const shape = entity?.shapes[shapeKind as "insert" | "update"];
-      if (shape) {
-        const enums = getEnumEntities(ir);
-        const schemaExpr = buildTypeBoxFromShape(shape, enums, ir.extensions);
-        const varName = `${entityName}${inflect.pascalCase(shapeKind)}Body`;
-        
-        inlineBodySchema = { varName, schema: schemaExpr };
-        properties.push(
-          b.objectProperty(b.identifier("body"), b.identifier(varName))
-        );
+      let paramsBuilder = conjure.obj();
+      for (const param of pathParams) {
+        // Use buildParamTypeBoxSchema to get correct type (t.Numeric for numbers)
+        paramsBuilder = paramsBuilder.prop(param.name, buildParamTypeBoxSchema(param));
       }
+      const paramsSchema = b.callExpression(
+        b.memberExpression(b.identifier("t"), b.identifier("Object")),
+        [paramsBuilder.build()],
+      );
+      objBuilder = objBuilder.prop("params", paramsSchema);
     }
-  } else if (functionBodyParams.length > 0) {
-    // Function methods with params that have no source - build inline TypeBox schema
-    needsElysiaT = true;
-    const bodyValidator = buildElysiaValidatorObject(functionBodyParams);
-    properties.push(
-      b.objectProperty(b.identifier("body"), cast.toExpr(bodyValidator))
-    );
+    hasOptions = true;
   }
 
-  // Query params validation (pagination) using Elysia's t.*
-  const queryParams = method.params.filter(p => p.source === "pagination");
+  // Build query schema for pagination params
+  const queryParams = method.params.filter((p) => p.source === "pagination");
   if (queryParams.length > 0) {
-    needsElysiaT = true;
-    const queryValidator = buildElysiaValidatorObject(queryParams);
-    properties.push(
-      b.objectProperty(b.identifier("query"), cast.toExpr(queryValidator))
-    );
+    const schemaResult = requestSchema(queryParams);
+    if (schemaResult) {
+      objBuilder = objBuilder.prop("query", schemaResult.ast);
+      schemaBuilderImport = schemaResult.importSpec;
+    } else {
+      // Fallback to TypeBox t.Object({ ... })
+      needsElysiaT = true;
+      let queryBuilder = conjure.obj();
+      for (const param of queryParams) {
+        const tNumeric = b.callExpression(
+          b.memberExpression(b.identifier("t"), b.identifier("Numeric")),
+          [],
+        );
+        const tOptional = b.callExpression(
+          b.memberExpression(b.identifier("t"), b.identifier("Optional")),
+          [tNumeric],
+        );
+        queryBuilder = queryBuilder.prop(param.name, tOptional);
+      }
+      const querySchema = b.callExpression(
+        b.memberExpression(b.identifier("t"), b.identifier("Object")),
+        [queryBuilder.build()],
+      );
+      objBuilder = objBuilder.prop("query", querySchema);
+    }
+    hasOptions = true;
   }
 
-  if (properties.length === 0) {
-    return { schemaObj: null, schemaImports, needsElysiaT, inlineBodySchema };
+  // Body validation
+  const bodySchemaInfo = getBodySchemaImport(method, entityName);
+  let bodySchema: SchemaImport | null = null;
+  
+  if (bodySchemaInfo) {
+    if (hasSchemaProvider) {
+      // Use imported schema from schema provider (Zod, Valibot, etc.)
+      bodySchema = bodySchemaInfo;
+      objBuilder = objBuilder.prop("body", b.identifier(bodySchema.schemaName));
+      hasOptions = true;
+    } else if (entity) {
+      // Generate inline TypeBox schema from IR
+      needsElysiaT = true;
+      inlineBodySchema = buildEntityTypeBoxSchema(entity, bodySchemaInfo.shape, typeBoxCtx);
+      objBuilder = objBuilder.prop("body", inlineBodySchema);
+      hasOptions = true;
+    }
+    // If neither schema provider nor entity, skip body validation (body will be unknown)
   }
 
-  return { schemaObj: b.objectExpression(properties), schemaImports, needsElysiaT, inlineBodySchema };
+  return {
+    options: hasOptions ? objBuilder.build() : null,
+    needsElysiaT,
+    bodySchema,
+    schemaBuilderImport,
+    inlineBodySchema,
+  };
 };
 
 /**
- * Build a single route method call: .get('/path', handler, { validation })
+ * Build a single route method call: .get('/path', handler, options)
  */
-const buildRouteMethodCall = (
-  method: QueryMethod,
-  pathSegment: string,
+const buildRouteCall = (
+  method: MethodSymbol,
   entityName: string,
-  pathConfig: PathTemplateConfig,
-  hasExternalSchemas: boolean,
-  ir: SemanticIR | undefined,
-): { 
-  callExpr: n.CallExpression; 
-  schemaImports: Array<{ entity: string; shape?: string }>;
+  requestSchema: SchemaBuilderFn,
+  hasSchemaProvider: boolean,
+  entity: TableEntity | undefined,
+  typeBoxCtx: TypeBoxContext,
+): {
+  httpMethod: string;
+  path: string;
+  handler: n.ArrowFunctionExpression;
+  options: n.ObjectExpression | null;
   needsElysiaT: boolean;
-  inlineBodySchema?: { varName: string; schema: n.Expression };
+  bodySchema: SchemaImport | null;
+  schemaBuilderImport: SchemaBuilderResult["importSpec"] | null;
 } => {
   const httpMethod = kindToHttpMethod(method.kind);
-  const routePath = getRoutePath(method, pathSegment, pathConfig);
+  const path = getRoutePath(method);
 
-  // Build async handler: async ({ params, body }) => { ... }
-  const handlerParam = buildHandlerParam(method);
+  // Build handler: async ({ params: { id }, body, query: { limit }, status }) => { ... }
+  const handlerProps: n.Property[] = [];
+  
+  // Collect path params (pk, fk, lookup) for destructuring
+  const pathParams = method.params.filter((p) => p.source === "pk" || p.source === "fk" || p.source === "lookup");
+  if (pathParams.length > 0) {
+    // params: { id, slug, ... }
+    const paramsPattern = b.objectPattern(
+      pathParams.map((p) => {
+        const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
+        prop.shorthand = true;
+        return prop;
+      }),
+    );
+    handlerProps.push(b.property("init", b.identifier("params"), paramsPattern));
+  }
+
+  // Add body if: explicit body param, create/update method, or function with params (no source = from body)
+  const needsBody = method.params.some((p) => p.source === "body") ||
+    method.kind === "create" ||
+    method.kind === "update" ||
+    (method.kind === "function" && method.params.some((p) => !p.source));
+  if (needsBody) {
+    const prop = b.property("init", b.identifier("body"), b.identifier("body"));
+    prop.shorthand = true;
+    handlerProps.push(prop);
+  }
+
+  // Collect pagination params for destructuring
+  const paginationParams = method.params.filter((p) => p.source === "pagination");
+  if (paginationParams.length > 0) {
+    // query: { limit, offset, ... }
+    const queryPattern = b.objectPattern(
+      paginationParams.map((p) => {
+        const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
+        prop.shorthand = true;
+        return prop;
+      }),
+    );
+    handlerProps.push(b.property("init", b.identifier("query"), queryPattern));
+  }
+
+  if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
+    const prop = b.property("init", b.identifier("status"), b.identifier("status"));
+    prop.shorthand = true;
+    handlerProps.push(prop);
+  }
+
+  const handlerParamPattern = b.objectPattern(handlerProps);
+
   const handlerBody = buildHandlerBody(method);
   const handler = b.arrowFunctionExpression(
-    [handlerParam],
-    b.blockStatement(handlerBody.map(cast.toStmt))
+    [handlerParamPattern],
+    b.blockStatement(handlerBody.map(cast.toStmt)),
   );
   handler.async = true;
 
-  // Build validation schema
-  const { schemaObj, schemaImports, needsElysiaT, inlineBodySchema } = buildValidationSchema(
+  const { options, needsElysiaT, bodySchema, schemaBuilderImport } = buildRouteOptions(
     method,
     entityName,
-    hasExternalSchemas,
-    ir,
+    requestSchema,
+    hasSchemaProvider,
+    entity,
+    typeBoxCtx,
   );
 
-  // Build method call: .get('/path', handler) or .get('/path', handler, { body: Schema })
-  const methodArgs: n.Expression[] = [b.stringLiteral(routePath), handler];
-  if (schemaObj) {
-    methodArgs.push(schemaObj);
-  }
-
-  const callExpr = b.callExpression(b.identifier(httpMethod), methodArgs.map(cast.toExpr));
-  return { callExpr, schemaImports, needsElysiaT, inlineBodySchema };
-};
-
-// ============================================================================
-// Function Route Helpers
-// ============================================================================
-
-/**
- * Get HTTP method for a function based on volatility.
- * - immutable/stable → GET (safe, cacheable)
- * - volatile → POST (may have side effects)
- */
-const volatilityToHttpMethod = (volatility: FunctionQueryMethod["volatility"]): string => {
-  switch (volatility) {
-    case "immutable":
-    case "stable":
-      return "get";
-    case "volatile":
-      return "post";
-  }
-};
-
-/**
- * Build handler body for a function route.
- */
-const buildFunctionHandlerBody = (fn: FunctionQueryMethod): n.Statement[] => {
-  const fnName = fn.exportName;
-  const callSig = fn.callSignature ?? { style: "named" as const };
-  
-  // Build arguments based on call signature
-  const args: n.Expression[] = [];
-  
-  if (fn.params.length > 0) {
-    const isGetMethod = fn.volatility === "immutable" || fn.volatility === "stable";
-    const source = isGetMethod ? "query" : "body";
-    
-    if (callSig.style === "positional") {
-      // Positional: fn(body.param1, body.param2)
-      for (const param of fn.params) {
-        args.push(b.memberExpression(b.identifier(source), b.identifier(param.name)));
-      }
-    } else {
-      // Named: fn({ param1: body.param1, param2: body.param2 })
-      let objBuilder = conjure.obj();
-      for (const param of fn.params) {
-        objBuilder = objBuilder.prop(
-          param.name,
-          b.memberExpression(b.identifier(source), b.identifier(param.name))
-        );
-      }
-      args.push(objBuilder.build());
-    }
-  }
-  
-  // Build: const result = await fnName(args)
-  const fnCall = b.callExpression(b.identifier(fnName), args.map(cast.toExpr));
-  const awaitExpr = b.awaitExpression(fnCall);
-  const resultDecl = stmt.const("result", awaitExpr);
-  
-  // Handle nullable returns with 404
-  if (fn.returns.nullable && !fn.returns.isArray) {
-    const notFoundCheck = stmt.if(
-      conjure.op.not(b.identifier("result")),
-      [
-        b.returnStatement(
-          b.callExpression(
-            b.identifier("status"),
-            [b.numericLiteral(404), b.stringLiteral("Not found")]
-          )
-        ),
-      ]
-    );
-    return [resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
-  }
-  
-  return [resultDecl, b.returnStatement(b.identifier("result"))];
-};
-
-/**
- * Build handler parameter for a function route.
- */
-const buildFunctionHandlerParam = (fn: FunctionQueryMethod): n.ObjectPattern => {
-  const properties: n.ObjectProperty[] = [];
-  const isGetMethod = fn.volatility === "immutable" || fn.volatility === "stable";
-  const needsStatus = fn.returns.nullable && !fn.returns.isArray;
-  
-  if (fn.params.length > 0) {
-    const sourceIdent = isGetMethod ? "query" : "body";
-    const prop = b.objectProperty(b.identifier(sourceIdent), b.identifier(sourceIdent));
-    prop.shorthand = true;
-    properties.push(prop);
-  }
-  
-  if (needsStatus) {
-    const prop = b.objectProperty(b.identifier("status"), b.identifier("status"));
-    prop.shorthand = true;
-    properties.push(prop);
-  }
-  
-  return b.objectPattern(properties);
-};
-
-/**
- * Build validation schema for a function route.
- */
-const buildFunctionValidationSchema = (
-  fn: FunctionQueryMethod
-): { schemaObj: n.ObjectExpression | null; needsElysiaT: boolean } => {
-  if (fn.params.length === 0) {
-    return { schemaObj: null, needsElysiaT: false };
-  }
-  
-  const isGetMethod = fn.volatility === "immutable" || fn.volatility === "stable";
-  const schemaKey = isGetMethod ? "query" : "body";
-  
-  // Build t.Object({ param: t.Type(), ... })
-  const validator = buildElysiaValidatorObject(fn.params);
-  
-  const schemaObj = b.objectExpression([
-    b.objectProperty(b.identifier(schemaKey), cast.toExpr(validator))
-  ]);
-  
-  return { schemaObj, needsElysiaT: true };
-};
-
-/**
- * Build a single function route call: .get('/fn-name', handler, { validation })
- */
-const buildFunctionRouteCall = (
-  fn: FunctionQueryMethod,
-  functionPrefix: string,
-): { callExpr: n.CallExpression; needsElysiaT: boolean } => {
-  const httpMethod = volatilityToHttpMethod(fn.volatility);
-  
-  // Build path: /{prefix}/{fn-name} or just /{fn-name}
-  const fnPath = toKebabCase(fn.exportName);
-  const routePath = functionPrefix ? `/${functionPrefix}/${fnPath}` : `/${fnPath}`;
-  
-  // Build async handler
-  const handlerParam = buildFunctionHandlerParam(fn);
-  const handlerBody = buildFunctionHandlerBody(fn);
-  const handler = b.arrowFunctionExpression(
-    [handlerParam],
-    b.blockStatement(handlerBody.map(cast.toStmt))
-  );
-  handler.async = true;
-  
-  // Build validation schema
-  const { schemaObj, needsElysiaT } = buildFunctionValidationSchema(fn);
-  
-  // Build method call
-  const methodArgs: n.Expression[] = [b.stringLiteral(routePath), handler];
-  if (schemaObj) {
-    methodArgs.push(schemaObj);
-  }
-  
-  const callExpr = b.callExpression(b.identifier(httpMethod), methodArgs.map(cast.toExpr));
-  return { callExpr, needsElysiaT };
+  return { httpMethod, path, handler, options, needsElysiaT, bodySchema, schemaBuilderImport };
 };
 
 // ============================================================================
 // Plugin Definition
 // ============================================================================
 
-export const httpElysiaPlugin = definePlugin({
-  name: "http-elysia",
-  provides: ["http", "http:elysia"],
-  requires: ["queries"],
-  configSchema: HttpElysiaPluginConfigSchema,
-  inflection: {
-    outputFile: ctx => `${inflect.uncapitalize(ctx.entityName)}.ts`,
-    symbolName: (entityName, _artifactKind) => `${inflect.uncapitalize(entityName)}Routes`,
-  },
+export function httpElysia(config: HttpElysiaConfig): ReturnType<typeof definePlugin> {
+  const parsed = S.decodeUnknownSync(HttpElysiaConfigSchema)(config);
 
-  run: (ctx, config) => {
-    // Find any queries artifact (works with sql-queries, kysely-queries, or any future query plugin)
-    const artifact = ctx.findArtifact("queries");
+  return definePlugin({
+    name: "http-elysia",
+    kind: "http-routes",
+    singleton: true,
 
-    if (!artifact) {
-      // No query artifact available - nothing to generate
-      return;
-    }
+    canProvide: () => true,
 
-    // Check if external schemas are available by looking for registered symbols
-    // This works because schema plugins (zod, arktype, etc.) run before http-elysia
-    // and register their symbols during execution.
-    // We check for any entity's insert schema as a proxy for "schemas capability exists"
-    const hasExternalSchemas = (() => {
-      // Try to find any registered schema symbol
-      for (const entity of ctx.ir.entities.values()) {
-        if (entity.kind === "table" || entity.kind === "view") {
-          const symbol = ctx.symbols.resolve({
-            capability: "schemas",
-            entity: entity.name,
-            shape: "insert",
-          });
-          if (symbol) return true;
+    // Declare dependencies: queries required, schemas optional (falls back to TypeBox)
+    requires: () => [
+      { kind: "queries", params: {} },
+    ],
+
+    optionalRequires: () => [
+      { kind: "schemas", params: {} },
+    ],
+
+    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext): void => {
+      const { outputDir, basePath, header, aggregatorName } = parsed;
+
+      // Get all entities with registered query methods
+      const entityNames = ctx.symbols.getEntitiesWithMethods();
+
+      if (entityNames.length === 0) {
+        // No query methods registered - nothing to generate
+        return;
+      }
+
+      // Track generated routes for aggregator index
+      const generatedRoutes: Array<{ fileName: string; exportName: string }> = [];
+
+      // Build TypeBox context for inline schema generation (when no schema plugin)
+      const enumEntities = getEnumEntities(ctx.ir);
+      const tableEntities = getTableEntities(ctx.ir);
+      const typeBoxCtx: TypeBoxContext = {
+        enums: enumEntities,
+        extensions: ctx.ir.extensions,
+      };
+
+      // Generate routes for each entity
+      for (const entityName of entityNames) {
+        const entityMethods = ctx.symbols.getEntityMethods(entityName);
+        if (!entityMethods || entityMethods.methods.length === 0) continue;
+
+        // Find the entity in the IR for inline TypeBox body schema generation
+        const entity = tableEntities.find((e) => e.name === entityName);
+
+        const pathSegment = entityToPathSegment(entityName);
+        const filePath = `${outputDir}/${inflect.uncapitalize(entityName)}.ts`;
+        const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
+
+        const file = ctx.file(filePath);
+
+        if (header) {
+          file.header(header);
         }
-      }
-      return false;
-    })();
 
-    // Decode the artifact data using our expected schema
-    const decodeResult = S.decodeUnknownEither(QueryArtifact)(artifact.data);
-    if (Either.isLeft(decodeResult)) {
-      throw new Error(
-        `http-elysia: Invalid artifact data from ${artifact.capability}. Expected QueryArtifact shape.`
-      );
-    }
+        // Import Elysia
+        file.import({ kind: "package", names: ["Elysia"], from: "elysia" });
 
-    const queryArtifact = decodeResult.right;
-    const { entities } = queryArtifact;
-
-    // Compute queries import path: use config override or derive from artifact's outputDir
-    const queriesPath = config.queriesPath ?? `../${queryArtifact.outputDir}`;
-
-    // Get path configuration with defaults
-    const pathConfig: PathTemplateConfig = {
-      basePath: config.paths?.basePath ?? "/api",
-      findById: config.paths?.findById ?? "/{entity}/{id}",
-      list: config.paths?.list ?? "/{entity}",
-      create: config.paths?.create ?? "/{entity}",
-      update: config.paths?.update ?? "/{entity}/{id}",
-      delete: config.paths?.delete ?? "/{entity}/{id}",
-      lookup: config.paths?.lookup ?? "/{entity}/by-{field}/{value}",
-      functionPrefix: config.paths?.functionPrefix ?? "",
-    };
-
-    // Track generated route exports for the aggregator index
-    const generatedRoutes: Array<{ fileName: string; exportName: string }> = [];
-
-    // Generate routes for each entity
-    for (const entityMethods of entities) {
-      const { entityName, methods } = entityMethods;
-
-      // Get entity-specific overrides
-      const entityOverride = config.entities?.[entityName];
-      const pathSegment = entityOverride?.pathSegment ?? entityToPathSegment(entityName);
-      const disabledMethods = new Set(entityOverride?.disableMethods ?? []);
-
-      // Filter out disabled methods
-      const enabledMethods = methods.filter(m => !disabledMethods.has(m.name));
-
-      if (enabledMethods.length === 0) continue;
-
-      // Build file path
-      const filePath = config.outputStyle === "single"
-        ? `${config.outputDir}/index.ts`
-        : `${config.outputDir}/${inflect.uncapitalize(entityName)}.ts`;
-
-      const file = ctx.file(filePath);
-
-      // Add header if provided
-      if (config.header) {
-        file.header(config.header);
-      }
-
-      // Import Elysia
-      file.import({ kind: "package", names: ["Elysia"], from: "elysia" });
-
-      // Collect all query function names to import
-      const queryFunctionNames = enabledMethods.map(m => m.name);
-
-      // Import query functions from queries path
-      const queryFileName = entityName; // Queries are in files like sql-queries/User.ts
-      file.import({
-        kind: "relative",
-        names: queryFunctionNames,
-        from: `${queriesPath}/${queryFileName}.js`,
-      });
-
-      // Collect schema imports needed for validation
-      const allSchemaImports: Array<{ entity: string; shape?: string }> = [];
-      const allInlineSchemas: Array<{ varName: string; schema: n.Expression }> = [];
-      let fileNeedsElysiaT = false;
-
-      // Build the Elysia route chain
-      // new Elysia({ prefix: '/api/users' })
-      //   .get('/:id', handler, { params: schema })
-      //   .post('/', handler, { body: schema })
-      //   ...
-
-      // Start with: new Elysia({ prefix: '/{pathSegment}' })
-      const prefixPath = `${pathConfig.basePath}/${pathSegment}`;
-      const elysiaConfig = conjure.obj()
-        .prop("prefix", b.stringLiteral(prefixPath))
-        .build();
-      let chainExpr: n.Expression = b.newExpression(
-        b.identifier("Elysia"),
-        [elysiaConfig]
-      );
-
-      // Chain each route method
-      for (const method of enabledMethods) {
-        const { callExpr, schemaImports, needsElysiaT, inlineBodySchema } = buildRouteMethodCall(
-          method,
-          pathSegment,
-          entityName,
-          pathConfig,
-          hasExternalSchemas,
-          ctx.ir,
-        );
-        allSchemaImports.push(...schemaImports);
-        if (inlineBodySchema) allInlineSchemas.push(inlineBodySchema);
-        if (needsElysiaT) fileNeedsElysiaT = true;
-
-        // Chain: expr.method(args) → becomes memberExpression + callExpression
-        const httpMethod = kindToHttpMethod(method.kind);
-        chainExpr = b.callExpression(
-          b.memberExpression(cast.toExpr(chainExpr), b.identifier(httpMethod)),
-          callExpr.arguments
-        );
-      }
-
-      // Import t from elysia if any route needs params/query validation
-      if (fileNeedsElysiaT) {
-        file.import({ kind: "package", names: ["t"], from: "elysia" });
-      }
-
-      // Import schemas needed for body validation (when using external schemas)
-      for (const schemaImport of allSchemaImports) {
+        // Import queries as namespace
+        const queriesImportPath = `../${entityMethods.importPath.replace(/\.ts$/, ".js")}`;
         file.import({
-          kind: "symbol",
-          ref: {
-            capability: "schemas",
-            entity: schemaImport.entity,
-            shape: schemaImport.shape,
-          },
+          kind: "relative",
+          namespace: "Queries",
+          from: queriesImportPath,
         });
-      }
 
-      // Emit inline TypeBox schemas (when not using external schemas)
-      const inlineSchemaStmts = allInlineSchemas.map(({ varName, schema }) =>
-        stmt.const(varName, schema)
-      );
+        // Build the Elysia route chain
+        // new Elysia({ prefix: '/api/users' }).get(...).post(...)
+        const prefixPath = `${basePath}/${pathSegment}`;
+        const elysiaConfig = conjure.obj().prop("prefix", b.stringLiteral(prefixPath)).build();
+        let chainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), [elysiaConfig]);
 
-      // Export: export const userRoutes = new Elysia({ ... }).get(...).post(...)
-      const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
-      const exportStmt = conjure.export.const(routesVarName, chainExpr);
+        let fileNeedsElysiaT = false;
+        const bodySchemaImports: SchemaImport[] = [];
+        let schemaLibraryImport: SchemaBuilderResult["importSpec"] | null = null;
 
-      // Emit inline schemas first, then the routes
-      file.ast(conjure.program(...inlineSchemaStmts, exportStmt)).emit();
+        // Create a schema builder function that requests from the service registry
+        const requestSchema: SchemaBuilderFn = (params) => {
+          if (params.length === 0) return undefined;
+          try {
+            const request: SchemaBuilderRequest = { variant: "params", params };
+            return ctx.request<SchemaBuilderResult | undefined>(SCHEMA_BUILDER_KIND, request);
+          } catch {
+            // No schema-builder registered, will fall back to TypeBox
+            return undefined;
+          }
+        };
 
-      // Track for aggregator index
-      if (config.outputStyle !== "single") {
+        // Check if a schema provider is available for body validation
+        // We probe by checking if the schema-builder service exists
+        let hasSchemaProvider = false;
+        try {
+          // Try to request an entity schema - if it succeeds, we have a provider
+          ctx.request(SCHEMA_BUILDER_KIND, { variant: "entity", entity: entityName, shape: "insert" });
+          hasSchemaProvider = true;
+        } catch {
+          // No schema provider registered
+        }
+
+        for (const method of entityMethods.methods) {
+          const { httpMethod, path, handler, options, needsElysiaT, bodySchema, schemaBuilderImport } =
+            buildRouteCall(method, entityName, requestSchema, hasSchemaProvider, entity, typeBoxCtx);
+          if (needsElysiaT) fileNeedsElysiaT = true;
+          if (bodySchema) bodySchemaImports.push(bodySchema);
+          if (schemaBuilderImport) schemaLibraryImport = schemaBuilderImport;
+
+          const callArgs: n.Expression[] = [b.stringLiteral(path), handler];
+          if (options) {
+            callArgs.push(options);
+          }
+
+          chainExpr = b.callExpression(
+            b.memberExpression(cast.toExpr(chainExpr), b.identifier(httpMethod)),
+            callArgs.map(cast.toExpr),
+          );
+        }
+
+        if (fileNeedsElysiaT) {
+          file.import({ kind: "package", names: ["t"], from: "elysia" });
+        }
+
+        // Import schema library (e.g., Zod) if using schema-builder for params
+        if (schemaLibraryImport) {
+          if (schemaLibraryImport.names) {
+            file.import({
+              kind: "package",
+              names: [...schemaLibraryImport.names],
+              from: schemaLibraryImport.from,
+            });
+          } else if (schemaLibraryImport.namespace) {
+            file.import({
+              kind: "package",
+              namespace: schemaLibraryImport.namespace,
+              from: schemaLibraryImport.from,
+            });
+          }
+        }
+
+        // Import body schemas from schema plugins (Zod, Valibot, etc.)
+        // These are resolved via the symbol registry's "schemas" capability
+        for (const schemaImport of bodySchemaImports) {
+          file.import({
+            kind: "symbol",
+            ref: {
+              capability: "schemas",
+              entity: schemaImport.entity,
+              shape: schemaImport.shape,
+            },
+          });
+        }
+
+        const exportStmt = conjure.export.const(routesVarName, chainExpr);
+        file.ast(conjure.program(exportStmt)).emit();
+
         generatedRoutes.push({
           fileName: `${inflect.uncapitalize(entityName)}.js`,
           exportName: routesVarName,
         });
       }
-    }
 
-    // Generate function routes if includeFunctions is true
-    const { functions } = queryArtifact;
-    if (config.includeFunctions && functions.length > 0) {
-      const filePath = `${config.outputDir}/functions.ts`;
-      const file = ctx.file(filePath);
+      // Generate aggregator index.ts
+      if (generatedRoutes.length > 0) {
+        const indexPath = `${outputDir}/index.ts`;
+        const indexFile = ctx.file(indexPath);
 
-      // Add header if provided
-      if (config.header) {
-        file.header(config.header);
+        if (header) {
+          indexFile.header(header);
+        }
+
+        indexFile.import({ kind: "package", names: ["Elysia"], from: "elysia" });
+
+        for (const route of generatedRoutes) {
+          indexFile.import({
+            kind: "relative",
+            names: [route.exportName],
+            from: `./${route.fileName}`,
+          });
+        }
+
+        // Build: new Elysia().use(userRoutes).use(postRoutes)...
+        let chainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), []);
+        for (const route of generatedRoutes) {
+          chainExpr = b.callExpression(
+            b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")),
+            [b.identifier(route.exportName)],
+          );
+        }
+
+        const exportStmt = conjure.export.const(aggregatorName, chainExpr);
+        indexFile.ast(conjure.program(exportStmt)).emit();
       }
-
-      // Import Elysia
-      file.import({ kind: "package", names: ["Elysia"], from: "elysia" });
-
-      // Collect function names to import from functions.ts query file
-      const functionNames = functions.map(fn => fn.exportName);
-      file.import({
-        kind: "relative",
-        names: functionNames,
-        from: `${queriesPath}/functions.js`,
-      });
-
-      // Build the Elysia route chain
-      const functionPrefix = pathConfig.functionPrefix;
-      const basePath = pathConfig.basePath;
-      const prefixPath = functionPrefix
-        ? `${basePath}/${functionPrefix}`
-        : basePath;
-
-      const elysiaConfig = conjure.obj()
-        .prop("prefix", b.stringLiteral(prefixPath))
-        .build();
-      let chainExpr: n.Expression = b.newExpression(
-        b.identifier("Elysia"),
-        [elysiaConfig]
-      );
-
-      let fileNeedsElysiaT = false;
-
-      // Chain each function route
-      for (const fn of functions) {
-        const { callExpr, needsElysiaT } = buildFunctionRouteCall(fn, "");
-        if (needsElysiaT) fileNeedsElysiaT = true;
-
-        const httpMethod = volatilityToHttpMethod(fn.volatility);
-        chainExpr = b.callExpression(
-          b.memberExpression(cast.toExpr(chainExpr), b.identifier(httpMethod)),
-          callExpr.arguments
-        );
-      }
-
-      // Import t from elysia if any route needs validation
-      if (fileNeedsElysiaT) {
-        file.import({ kind: "package", names: ["t"], from: "elysia" });
-      }
-
-      // Export: export const functionRoutes = new Elysia({ ... }).get(...).post(...)
-      const exportStmt = conjure.export.const("functionRoutes", chainExpr);
-      file.ast(conjure.program(exportStmt)).emit();
-
-      // Track for aggregator index
-      generatedRoutes.push({
-        fileName: "functions.js",
-        exportName: "functionRoutes",
-      });
-    }
-
-    // Generate aggregator index.ts
-    if (config.generateIndex && config.outputStyle !== "single" && generatedRoutes.length > 0) {
-      const indexPath = `${config.outputDir}/index.ts`;
-      const indexFile = ctx.file(indexPath);
-
-      // Add header if provided
-      if (config.header) {
-        indexFile.header(config.header);
-      }
-
-      // Import Elysia
-      indexFile.import({ kind: "package", names: ["Elysia"], from: "elysia" });
-
-      // Import each route module
-      for (const route of generatedRoutes) {
-        indexFile.import({
-          kind: "relative",
-          names: [route.exportName],
-          from: `./${route.fileName}`,
-        });
-      }
-
-      // Build: new Elysia().use(userRoutes).use(postRoutes)...
-      let chainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), []);
-      for (const route of generatedRoutes) {
-        chainExpr = b.callExpression(
-          b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")),
-          [b.identifier(route.exportName)]
-        );
-      }
-
-      // Export: export const api = new Elysia().use(...)
-      const aggregatorName = config.aggregatorName;
-      const exportStmt = conjure.export.const(aggregatorName, chainExpr);
-      indexFile.ast(conjure.program(exportStmt)).emit();
-    }
-  },
-});
+    },
+  });
+}

@@ -6,8 +6,7 @@
  */
 import { Array as Arr, Option, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin } from "../services/plugin.js";
-import type { FileNameContext } from "../services/plugin.js";
+import { definePlugin, type PluginContext } from "../services/plugin.js";
 import { findEnumByPgName, TsType } from "../services/pg-types.js";
 import type {
   Field,
@@ -28,23 +27,37 @@ import {
   getPgTypeName,
   resolveFieldType,
 } from "../lib/field-utils.js";
+import {
+  SCHEMA_BUILDER_KIND,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
+} from "../ir/extensions/schema-builder.js";
+import type { QueryMethodParam } from "../ir/extensions/queries.js";
 
-const { ts, exp, obj } = conjure;
+const { ts, exp, obj, b } = conjure;
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-const ValibotPluginConfig = S.Struct({
+const ValibotConfigSchema = S.Struct({
   /** Output directory relative to main outputDir */
   outputDir: S.optionalWith(S.String, { default: () => "valibot" }),
   /** Export inferred types alongside schemas */
   exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
   /** How to represent enum values: 'strings' uses v.picklist([...]), 'enum' uses v.enum(TsEnum) */
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
+    default: () => "strings" as const,
+  }),
   /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
+  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
+    default: () => "separate" as const,
+  }),
 });
+
+/** Input config type (with optional fields) */
+export type ValibotConfig = S.Schema.Encoded<typeof ValibotConfigSchema>;
 
 // ============================================================================
 // Valibot Schema Builders (pure functions)
@@ -58,7 +71,10 @@ const ValibotPluginConfig = S.Struct({
  * Build v.<method>() call
  */
 const buildValibotCall = (method: string, args: readonly n.Expression[] = []): n.Expression =>
-  conjure.id("v").method(method, [...args]).build();
+  conjure
+    .id("v")
+    .method(method, [...args])
+    .build();
 
 /**
  * Build v.picklist([...values])
@@ -69,20 +85,17 @@ const buildValibotPicklist = (values: readonly string[]): n.Expression =>
 /**
  * Build v.array(<inner>)
  */
-const buildValibotArray = (inner: n.Expression): n.Expression =>
-  buildValibotCall("array", [inner]);
+const buildValibotArray = (inner: n.Expression): n.Expression => buildValibotCall("array", [inner]);
 
 /**
  * Wrap expression with v.nullable(...)
  */
-const wrapNullable = (expr: n.Expression): n.Expression =>
-  buildValibotCall("nullable", [expr]);
+const wrapNullable = (expr: n.Expression): n.Expression => buildValibotCall("nullable", [expr]);
 
 /**
  * Wrap expression with v.optional(...)
  */
-const wrapOptional = (expr: n.Expression): n.Expression =>
-  buildValibotCall("optional", [expr]);
+const wrapOptional = (expr: n.Expression): n.Expression => buildValibotCall("optional", [expr]);
 
 /**
  * Map TypeScript type to Valibot method name
@@ -266,7 +279,10 @@ const generateEntityStatements = (
 /**
  * Build v.object({...}) expression from composite fields
  */
-const buildCompositeValibotObject = (composite: CompositeEntity, ctx: FieldContext): n.Expression => {
+const buildCompositeValibotObject = (
+  composite: CompositeEntity,
+  ctx: FieldContext,
+): n.Expression => {
   const objBuilder = composite.fields.reduce(
     (builder, field) => builder.prop(field.name, resolveFieldValibotSchema(field, ctx)),
     obj(),
@@ -370,126 +386,216 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   }));
 
 // ============================================================================
-// Plugin Definition
+// Param Schema Builder (for HTTP plugins)
 // ============================================================================
 
 /**
- * Valibot Plugin
- *
- * Generates Valibot schemas for each entity's shapes (base, Insert, Update)
- * with inferred TypeScript types.
+ * Build Valibot schema expression for a single param.
+ * Uses v.pipe(v.string(), v.transform(...)) for type coercion since URL params are strings.
  */
-export const valibotPlugin = definePlugin({
-  name: "valibot",
-  provides: config =>
-    config.exportTypes
-      ? ["schemas", "types"]
-      : ["schemas"],
-  configSchema: ValibotPluginConfig,
-  inflection: {
-    outputFile: ctx => `${ctx.entityName}.ts`,
-    symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
-  },
+const buildParamFieldSchema = (param: QueryMethodParam): n.Expression => {
+  const tsType = param.type.toLowerCase();
+  let fieldSchema: n.Expression;
 
-  run: (ctx, config) => {
-    const enumEntities = getEnumEntities(ctx.ir);
+  switch (tsType) {
+    case "number":
+      // v.pipe(v.string(), v.transform(Number))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [conjure.id("Number").build()]),
+      ]);
+      break;
+    case "boolean":
+      // v.pipe(v.string(), v.transform(v => v === 'true'))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [
+          b.arrowFunctionExpression(
+            [b.identifier("v")],
+            b.binaryExpression("===", b.identifier("v"), b.stringLiteral("true")),
+          ),
+        ]),
+      ]);
+      break;
+    case "bigint":
+      // v.pipe(v.string(), v.transform(BigInt))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [conjure.id("BigInt").build()]),
+      ]);
+      break;
+    case "date":
+      // v.pipe(v.string(), v.transform(s => new Date(s)))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [
+          b.arrowFunctionExpression(
+            [b.identifier("s")],
+            b.newExpression(b.identifier("Date"), [b.identifier("s")]),
+          ),
+        ]),
+      ]);
+      break;
+    case "string":
+    default:
+      // v.string()
+      fieldSchema = buildValibotCall("string");
+      break;
+  }
 
-    const fieldCtx: FieldContext = {
-      enums: enumEntities,
-      extensions: ctx.ir.extensions,
-      enumStyle: config.enumStyle,
-      typeReferences: config.typeReferences,
-    };
+  // Add v.optional(...) for non-required params
+  if (!param.required) {
+    fieldSchema = wrapOptional(fieldSchema);
+  }
 
-    // Generate separate enum files if configured
-    if (config.typeReferences === "separate") {
-      enumEntities
-        .filter(e => e.tags.omit !== true)
-        .forEach(enumEntity => {
-          const fileNameCtx: FileNameContext = {
-            entityName: enumEntity.name,
-            pgName: enumEntity.pgName,
-            schema: enumEntity.schemaName,
-            inflection: ctx.inflection,
-            entity: enumEntity,
-          };
-          const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-          const statements = generateEnumStatement(enumEntity, config.enumStyle, config.exportTypes);
+  return fieldSchema;
+};
 
-          ctx
-            .file(filePath)
-            .import({ kind: "package", namespace: "v", from: "valibot" })
-            .ast(conjure.symbolProgram(...statements))
-            .emit();
-        });
+/**
+ * Build v.object({ ... }) expression from QueryMethodParam[].
+ */
+const buildParamValibotObject = (params: readonly QueryMethodParam[]): n.Expression => {
+  const objBuilder = params.reduce(
+    (builder, param) => builder.prop(param.name, buildParamFieldSchema(param)),
+    obj(),
+  );
+
+  return buildValibotCall("object", [objBuilder.build()]);
+};
+
+/**
+ * Create a SchemaBuilder implementation for Valibot.
+ */
+const createValibotSchemaBuilder = (): SchemaBuilder => ({
+  build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
+    if (request.params.length === 0) {
+      return undefined;
     }
 
-    getTableEntities(ctx.ir)
-      .filter(entity => entity.tags.omit !== true)
-      .forEach(entity => {
-        const statements = generateEntityStatements(entity, fieldCtx, config.exportTypes);
-
-        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
-        const fileNameCtx: FileNameContext = {
-          entityName,
-          pgName: entity.pgName,
-          schema: entity.schemaName,
-          inflection: ctx.inflection,
-          entity,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect all fields for enum detection
-        const allFields = [
-          ...entity.shapes.row.fields,
-          ...(entity.shapes.insert?.fields ?? []),
-          ...(entity.shapes.update?.fields ?? []),
-        ];
-        const usedEnums =
-          config.typeReferences === "separate"
-            ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", namespace: "v", from: "valibot" });
-
-        // Add enum imports when using separate files
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
-
-    // Generate composite type schemas
-    getCompositeEntities(ctx.ir)
-      .filter(composite => composite.tags.omit !== true)
-      .forEach(composite => {
-        const statements = generateCompositeStatements(composite, fieldCtx, config.exportTypes);
-
-        const fileNameCtx: FileNameContext = {
-          entityName: composite.name,
-          pgName: composite.pgName,
-          schema: composite.schemaName,
-          inflection: ctx.inflection,
-          entity: composite,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect enum usage for imports
-        const usedEnums =
-          config.typeReferences === "separate"
-            ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", namespace: "v", from: "valibot" });
-
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
+    const ast = buildParamValibotObject(request.params);
+    return {
+      ast,
+      importSpec: {
+        namespace: "v",
+        from: "valibot",
+      },
+    };
   },
 });
+
+// ============================================================================
+// Provider Definition
+// ============================================================================
+
+/**
+ * Create a valibot provider that generates Valibot schemas.
+ *
+ * @example
+ * ```typescript
+ * import { valibot } from "pg-sourcerer"
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     valibot(),
+ *     valibot({ outputDir: "schemas", exportTypes: false }),
+ *   ],
+ * })
+ * ```
+ */
+export function valibot(config: ValibotConfig = {}) {
+  const parsed = S.decodeUnknownSync(ValibotConfigSchema)(config);
+
+  return definePlugin({
+    name: "valibot",
+    kind: "schemas",
+    singleton: true,
+
+    canProvide: () => true,
+
+    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
+      const { ir, inflection } = ctx;
+      const enumEntities = getEnumEntities(ir);
+
+      // Register schema-builder service for on-demand param/query schema generation
+      ctx.registerHandler(SCHEMA_BUILDER_KIND, createValibotSchemaBuilder().build);
+
+      const fieldCtx: FieldContext = {
+        enums: enumEntities,
+        extensions: ir.extensions,
+        enumStyle: parsed.enumStyle,
+        typeReferences: parsed.typeReferences,
+      };
+
+      // Helper to build file path
+      const buildFilePath = (entityName: string): string => `${parsed.outputDir}/${entityName}.ts`;
+
+      // Generate separate enum files if configured
+      if (parsed.typeReferences === "separate") {
+        enumEntities
+          .filter(e => e.tags.omit !== true)
+          .forEach(enumEntity => {
+            const statements = generateEnumStatement(
+              enumEntity,
+              parsed.enumStyle,
+              parsed.exportTypes,
+            );
+
+            ctx
+              .file(buildFilePath(enumEntity.name))
+              .import({ kind: "package", namespace: "v", from: "valibot" })
+              .ast(conjure.symbolProgram(...statements))
+              .emit();
+          });
+      }
+
+      getTableEntities(ir)
+        .filter(entity => entity.tags.omit !== true)
+        .forEach(entity => {
+          const statements = generateEntityStatements(entity, fieldCtx, parsed.exportTypes);
+
+          const entityName = inflection.entityName(entity.pgClass, entity.tags);
+
+          // Collect all fields for enum detection
+          const allFields = [
+            ...entity.shapes.row.fields,
+            ...(entity.shapes.insert?.fields ?? []),
+            ...(entity.shapes.update?.fields ?? []),
+          ];
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(entityName))
+            .import({ kind: "package", namespace: "v", from: "valibot" });
+
+          // Add enum imports when using separate files
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+
+      // Generate composite type schemas
+      getCompositeEntities(ir)
+        .filter(composite => composite.tags.omit !== true)
+        .forEach(composite => {
+          const statements = generateCompositeStatements(composite, fieldCtx, parsed.exportTypes);
+
+          // Collect enum usage for imports
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(composite.name))
+            .import({ kind: "package", namespace: "v", from: "valibot" });
+
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+    },
+  });
+}

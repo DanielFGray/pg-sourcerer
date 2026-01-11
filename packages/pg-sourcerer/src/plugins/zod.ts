@@ -6,8 +6,7 @@
  */
 import { Array as Arr, Option, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin } from "../services/plugin.js";
-import type { FileNameContext } from "../services/plugin.js";
+import { definePlugin, type PluginContext } from "../services/plugin.js";
 import { findEnumByPgName, TsType } from "../services/pg-types.js";
 import type {
   Field,
@@ -17,6 +16,13 @@ import type {
   EnumEntity,
   CompositeEntity,
 } from "../ir/semantic-ir.js";
+import {
+  SCHEMA_BUILDER_KIND,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
+} from "../ir/extensions/schema-builder.js";
+import type { QueryMethodParam } from "../ir/extensions/queries.js";
 import { getTableEntities, getEnumEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
@@ -35,16 +41,38 @@ const { ts, exp, obj } = conjure;
 // Configuration
 // ============================================================================
 
-const ZodPluginConfig = S.Struct({
+/**
+ * Configuration for the zod provider
+ */
+export interface ZodConfig {
   /** Output directory relative to main outputDir */
-  outputDir: S.optionalWith(S.String, { default: () => "zod" }),
+  readonly outputDir?: string
   /** Export inferred types alongside schemas */
-  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
+  readonly exportTypes?: boolean
   /** How to represent enum values: 'strings' uses z.enum([...]), 'enum' uses z.nativeEnum(TsEnum) */
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
+  readonly enumStyle?: "strings" | "enum"
   /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
+  readonly typeReferences?: "inline" | "separate"
+}
+
+const ZodConfigSchema = S.Struct({
+  outputDir: S.optionalWith(S.String, { default: () => "zod" }),
+  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
   typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
 });
+
+// ============================================================================
+// Types
+// ============================================================================
+
+/** Context for field resolution */
+interface FieldContext {
+  readonly enums: readonly EnumEntity[];
+  readonly extensions: readonly ExtensionInfo[];
+  readonly enumStyle: "strings" | "enum";
+  readonly typeReferences: "inline" | "separate";
+}
 
 // ============================================================================
 // Zod Schema Builders (pure functions)
@@ -105,73 +133,74 @@ const tsTypeToZodMethod = (tsType: string): string => {
 // Field → Zod Schema Resolution
 // ============================================================================
 
-interface FieldContext {
-  readonly enums: Iterable<EnumEntity>;
-  readonly extensions: readonly ExtensionInfo[];
-  readonly enumStyle: "strings" | "enum";
-  readonly typeReferences: "inline" | "separate";
-}
-
 /**
- * Apply nullable/optional/array modifiers to a base schema
+ * Resolve a field to its Zod schema expression.
+ *
+ * Order of resolution (first match wins):
+ * 1. UUID types → z.string().uuid()
+ * 2. Date types → z.coerce.date()
+ * 3. Enum types → z.enum([...]) or reference
+ * 4. Fallback to resolved TypeScript type
+ *
+ * Then wraps with array/nullable/optional as needed.
  */
-const applyFieldModifiers = (
-  schema: n.Expression,
-  field: Pick<Field, "isArray" | "nullable" | "optional">,
-): n.Expression => {
+const resolveFieldZodSchema = (field: Field, ctx: FieldContext): n.Expression => {
+  // Get the base schema expression
+  let baseSchema: n.Expression;
+
+  // 1. UUID types get special treatment
+  if (isUuidType(field)) {
+    baseSchema = buildZodChain("string", ["uuid"]);
+  }
+  // 2. Date types use coercion for flexibility
+  else if (isDateType(field)) {
+    baseSchema = conjure.id("z").prop("coerce").method("date").build();
+  }
+  // 3. Enum types
+  else if (isEnumType(field)) {
+    const pgTypeName = getPgTypeName(field);
+    const enumDef = pgTypeName
+      ? pipe(
+          findEnumByPgName(ctx.enums, pgTypeName),
+          Option.getOrUndefined,
+        )
+      : undefined;
+
+    if (enumDef) {
+      if (ctx.typeReferences === "inline") {
+        // Inline the enum values
+        baseSchema = buildZodEnum(enumDef.values);
+      } else {
+        // Reference the separate enum schema
+        baseSchema = conjure.id(enumDef.name).build();
+      }
+    } else {
+      baseSchema = buildZodChain("unknown", []);
+    }
+  }
+  // 4. Fallback to resolved TypeScript type
+  else {
+    const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
+    const zodMethod = tsTypeToZodMethod(resolved.tsType);
+    baseSchema = buildZodChain(zodMethod, []);
+  }
+
+  // Wrap with array if needed
+  if (field.isArray) {
+    baseSchema = buildZodArray(baseSchema);
+  }
+
+  // Collect modifiers to chain
   const modifiers: string[] = [];
   if (field.nullable) modifiers.push("nullable");
   if (field.optional) modifiers.push("optional");
 
-  const withArray = field.isArray ? buildZodArray(schema) : schema;
-  return modifiers.length > 0 ? chainZodMethods(withArray, modifiers) : withArray;
-};
-
-/**
- * Resolve a field to its Zod schema expression
- */
-const resolveFieldZodSchema = (field: Field, ctx: FieldContext): n.Expression => {
-  const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
-
-  // Enum handling
-  if (resolved.enumDef) {
-    let enumSchema: n.Expression;
-
-    if (ctx.typeReferences === "separate") {
-      // Reference by name - the enum schema is imported
-      enumSchema = conjure.id(resolved.enumDef.name).build();
-    } else if (ctx.enumStyle === "enum") {
-      // Inline native enum: z.nativeEnum(EnumName)
-      // Note: This requires the TS enum to be generated separately
-      enumSchema = conjure
-        .id("z")
-        .method("nativeEnum", [conjure.id(resolved.enumDef.name).build()])
-        .build();
-    } else {
-      // Inline strings: z.enum(['a', 'b', 'c'])
-      enumSchema = buildZodEnum(resolved.enumDef.values);
-    }
-
-    return applyFieldModifiers(enumSchema, field);
-  }
-
-  // UUID → z.string().uuid()
-  if (isUuidType(field)) {
-    return applyFieldModifiers(buildZodChain("string", ["uuid"]), field);
-  }
-
-  // Date/timestamp → z.coerce.date()
-  if (isDateType(field)) {
-    const dateSchema = conjure.id("z").prop("coerce").method("date").build();
-    return applyFieldModifiers(dateSchema, field);
-  }
-
-  // Standard type mapping
-  return applyFieldModifiers(buildZodChain(tsTypeToZodMethod(resolved.tsType), []), field);
+  // Apply modifiers
+  return modifiers.length > 0 ? chainZodMethods(baseSchema, modifiers) : baseSchema;
 };
 
 // ============================================================================
-// Shape → Statement Generation
+// Statement Generators
 // ============================================================================
 
 /**
@@ -355,126 +384,196 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   }));
 
 // ============================================================================
-// Plugin Definition
+// Schema Builder Service
 // ============================================================================
 
 /**
- * Zod Plugin
- *
- * Generates Zod schemas for each entity's shapes (base, Insert, Update)
- * with inferred TypeScript types.
+ * Build Zod schema expression for a single param.
+ * Uses z.coerce for numeric types since URL params are always strings.
  */
-export const zodPlugin = definePlugin({
-  name: "zod",
-  provides: config =>
-    config.exportTypes
-      ? ["schemas", "types"]
-      : ["schemas"],
-  configSchema: ZodPluginConfig,
-  inflection: {
-    outputFile: ctx => `${ctx.entityName}.ts`,
-    symbolName: (entityName, artifactKind) => `${entityName}${artifactKind}`,
-  },
+const buildParamFieldSchema = (param: QueryMethodParam): n.Expression => {
+  const tsType = param.type.toLowerCase();
+  let fieldSchema: n.Expression;
 
-  run: (ctx, config) => {
-    const enumEntities = getEnumEntities(ctx.ir);
+  switch (tsType) {
+    case "number":
+      // z.coerce.number() - converts string "10" to number 10
+      fieldSchema = conjure.id("z").prop("coerce").method("number").build();
+      break;
+    case "boolean":
+      // z.coerce.boolean() - converts "true"/"false" strings
+      fieldSchema = conjure.id("z").prop("coerce").method("boolean").build();
+      break;
+    case "bigint":
+      // z.coerce.bigint()
+      fieldSchema = conjure.id("z").prop("coerce").method("bigint").build();
+      break;
+    case "date":
+      // z.coerce.date() - converts ISO strings to Date objects
+      fieldSchema = conjure.id("z").prop("coerce").method("date").build();
+      break;
+    case "string":
+    default:
+      // z.string() - no coercion needed
+      fieldSchema = buildZodChain("string", []);
+      break;
+  }
 
-    const fieldCtx: FieldContext = {
-      enums: enumEntities,
-      extensions: ctx.ir.extensions,
-      enumStyle: config.enumStyle,
-      typeReferences: config.typeReferences,
-    };
+  // Add .optional() for non-required params
+  if (!param.required) {
+    fieldSchema = chainZodMethods(fieldSchema, ["optional"]);
+  }
 
-    // Generate separate enum files if configured
-    if (config.typeReferences === "separate") {
-      enumEntities
-        .filter(e => e.tags.omit !== true)
-        .forEach(enumEntity => {
-          const fileNameCtx: FileNameContext = {
-            entityName: enumEntity.name,
-            pgName: enumEntity.pgName,
-            schema: enumEntity.schemaName,
-            inflection: ctx.inflection,
-            entity: enumEntity,
-          };
-          const filePath = `${config.outputDir}/${ctx.pluginInflection.outputFile(fileNameCtx)}`;
-          const statements = generateEnumStatement(enumEntity, config.enumStyle, config.exportTypes);
+  return fieldSchema;
+};
 
-          ctx
-            .file(filePath)
-            .import({ kind: "package", names: ["z"], from: "zod" })
-            .ast(conjure.symbolProgram(...statements))
-            .emit();
-        });
+/**
+ * Build z.object({ ... }) expression from QueryMethodParam[].
+ * For path/query parameter validation in HTTP handlers.
+ */
+const buildParamZodObject = (params: readonly QueryMethodParam[]): n.Expression => {
+  const objBuilder = params.reduce(
+    (builder, param) => builder.prop(param.name, buildParamFieldSchema(param)),
+    obj(),
+  );
+
+  return conjure.id("z").method("object", [objBuilder.build()]).build();
+};
+
+/**
+ * Create a SchemaBuilder implementation for Zod.
+ */
+const createZodSchemaBuilder = (): SchemaBuilder => ({
+  build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
+    if (request.params.length === 0) {
+      return undefined;
     }
 
-    getTableEntities(ctx.ir)
-      .filter(entity => entity.tags.omit !== true)
-      .forEach(entity => {
-        const statements = generateEntityStatements(entity, fieldCtx, config.exportTypes);
-
-        const entityName = ctx.inflection.entityName(entity.pgClass, entity.tags);
-        const fileNameCtx: FileNameContext = {
-          entityName,
-          pgName: entity.pgName,
-          schema: entity.schemaName,
-          inflection: ctx.inflection,
-          entity,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect all fields for enum detection
-        const allFields = [
-          ...entity.shapes.row.fields,
-          ...(entity.shapes.insert?.fields ?? []),
-          ...(entity.shapes.update?.fields ?? []),
-        ];
-        const usedEnums =
-          config.typeReferences === "separate"
-            ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", names: ["z"], from: "zod" });
-
-        // Add enum imports when using separate files
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
-
-    // Generate composite type schemas
-    getCompositeEntities(ctx.ir)
-      .filter(composite => composite.tags.omit !== true)
-      .forEach(composite => {
-        const statements = generateCompositeStatements(composite, fieldCtx, config.exportTypes);
-
-        const fileNameCtx: FileNameContext = {
-          entityName: composite.name,
-          pgName: composite.pgName,
-          schema: composite.schemaName,
-          inflection: ctx.inflection,
-          entity: composite,
-        };
-        const fileName = ctx.pluginInflection.outputFile(fileNameCtx);
-        const filePath = `${config.outputDir}/${fileName}`;
-
-        // Collect enum usage for imports
-        const usedEnums =
-          config.typeReferences === "separate"
-            ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
-            : new Set<string>();
-
-        const fileBuilder = ctx
-          .file(filePath)
-          .import({ kind: "package", names: ["z"], from: "zod" });
-
-        buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-        fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-      });
+    const ast = buildParamZodObject(request.params);
+    return {
+      ast,
+      importSpec: {
+        names: ["z"],
+        from: "zod",
+      },
+    };
   },
 });
+
+// ============================================================================
+// Provider Definition
+// ============================================================================
+
+/**
+ * Create a zod provider that generates Zod schemas.
+ *
+ * @example
+ * ```typescript
+ * import { zod } from "pg-sourcerer"
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     zod(),
+ *     zod({ outputDir: "schemas", exportTypes: false }),
+ *   ],
+ * })
+ * ```
+ */
+export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
+  const parsed = S.decodeUnknownSync(ZodConfigSchema)(config);
+
+  return definePlugin({
+    name: "zod",
+    kind: "schemas",
+    singleton: true,
+
+    canProvide: () => true,
+
+    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
+      const { ir, inflection } = ctx;
+      const enumEntities = getEnumEntities(ir);
+
+      // Register schema-builder service for on-demand param/query schema generation
+      ctx.registerHandler(SCHEMA_BUILDER_KIND, createZodSchemaBuilder().build);
+
+      const fieldCtx: FieldContext = {
+        enums: enumEntities,
+        extensions: ir.extensions,
+        enumStyle: parsed.enumStyle,
+        typeReferences: parsed.typeReferences,
+      };
+
+      // Helper to build file path
+      const buildFilePath = (entityName: string): string =>
+        `${parsed.outputDir}/${entityName}.ts`;
+
+      // Generate separate enum files if configured
+      if (parsed.typeReferences === "separate") {
+        enumEntities
+          .filter(e => e.tags.omit !== true)
+          .forEach(enumEntity => {
+            const statements = generateEnumStatement(enumEntity, parsed.enumStyle, parsed.exportTypes);
+
+            ctx
+              .file(buildFilePath(enumEntity.name))
+              .import({ kind: "package", names: ["z"], from: "zod" })
+              .ast(conjure.symbolProgram(...statements))
+              .emit();
+          });
+      }
+
+      getTableEntities(ir)
+        .filter(entity => entity.tags.omit !== true)
+        .forEach(entity => {
+          const statements = generateEntityStatements(entity, fieldCtx, parsed.exportTypes);
+
+          const entityName = inflection.entityName(entity.pgClass, entity.tags);
+
+          // Collect all fields for enum detection
+          const allFields = [
+            ...entity.shapes.row.fields,
+            ...(entity.shapes.insert?.fields ?? []),
+            ...(entity.shapes.update?.fields ?? []),
+          ];
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(entityName))
+            .import({ kind: "package", names: ["z"], from: "zod" });
+
+          // Add enum imports when using separate files
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+
+      // Generate composite type schemas
+      getCompositeEntities(ir)
+        .filter(composite => composite.tags.omit !== true)
+        .forEach(composite => {
+          const statements = generateCompositeStatements(composite, fieldCtx, parsed.exportTypes);
+
+          // Collect enum usage for imports
+          const usedEnums =
+            parsed.typeReferences === "separate"
+              ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
+              : new Set<string>();
+
+          const fileBuilder = ctx
+            .file(buildFilePath(composite.name))
+            .import({ kind: "package", names: ["z"], from: "zod" });
+
+          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+
+          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
+        });
+
+      return undefined;
+    },
+  });
+}
+
+
