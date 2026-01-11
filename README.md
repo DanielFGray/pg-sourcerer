@@ -15,7 +15,7 @@ npm install @danielfgray/pg-sourcerer
 1. Create a config file `pgsourcerer.config.ts`:
 
 ```typescript
-import { defineConfig, typesPlugin, zodPlugin } from "@danielfgray/pg-sourcerer"
+import { defineConfig, typesPlugin, zod } from "@danielfgray/pg-sourcerer"
 
 export default defineConfig({
   connectionString: process.env.DATABASE_URL,
@@ -23,7 +23,7 @@ export default defineConfig({
   outputDir: "./src/generated",
   plugins: [
     typesPlugin({ outputDir: "types" }),
-    zodPlugin({ outputDir: "schemas" }),
+    zod({ outputDir: "schemas" }),
   ],
 })
 ```
@@ -51,15 +51,17 @@ Options:
 | Plugin | Provides | Description |
 |--------|----------|-------------|
 | `typesPlugin` | TypeScript interfaces | `User`, `UserInsert`, `UserUpdate` |
-| `zodPlugin` | Zod schemas | Runtime validation with inferred types |
-| `arktypePlugin` | ArkType validators | String-based type syntax with inference |
-| `valibotPlugin` | Valibot schemas | Modular validation with tree-shaking |
-| `effectModelPlugin` | Effect Model classes | Rich models with Schema integration |
-| `kyselyQueriesPlugin` | Kysely query builders | Type-safe CRUD operations |
-| `sqlQueriesPlugin` | Raw SQL functions | Parameterized query helpers |
-| `httpElysiaPlugin` | Elysia routes | REST endpoints with TypeBox validation |
-| `httpTrpcPlugin` | tRPC routers | Type-safe RPC with Zod validation |
-| `httpOrpcPlugin` | oRPC handlers | Lightweight RPC with TypeScript inference |
+| `zod` | Zod schemas | Runtime validation with inferred types |
+| `arktype` | ArkType validators | String-based type syntax with inference |
+| `valibot` | Valibot schemas | Modular validation with tree-shaking |
+| `effect` | Effect SQL Models + Repositories | Models, repos, and optional HTTP API |
+| `kysely` | Kysely types + queries | DB interface + type-safe CRUD functions |
+| `sqlQueries` | Raw SQL functions | Parameterized query helpers |
+| `httpElysia` | Elysia routes | REST endpoints with TypeBox validation |
+| `httpExpress` | Express routes | REST endpoints with validation middleware |
+| `httpHono` | Hono routes | REST endpoints with standard-validator |
+| `httpTrpc` | tRPC routers | Type-safe RPC with Zod validation |
+| `httpOrpc` | oRPC handlers | Lightweight RPC with TypeScript inference |
 
 ## What Gets Generated
 
@@ -232,9 +234,12 @@ export const UserUpdate = v.object({
 export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 ```
 
-### `effectModelPlugin` — Effect SQL Models
+### `effect` — Effect SQL Models + Repositories
+
+The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
 
 ```typescript
+// Model class with variant schemas
 import { Model } from "@effect/sql";
 import { Schema as S } from "effect";
 
@@ -248,11 +253,27 @@ export class User extends Model.Class<User>("User")({
   createdAt: Model.DateTimeInsertFromDate,
   updatedAt: Model.DateTimeUpdateFromDate,
 }) {}
+
+// Repository (when queryMode: "repository")
+import { Model, SqlClient } from "@effect/sql";
+import { User } from "./User.js";
+
+export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
+  effect: Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Model.makeRepository(User, {
+      tableName: "app_public.users",
+      spanPrefix: "UserRepo",
+      idColumn: "id",
+    });
+    return { ...repo };
+  }),
+}) {}
 ```
 
-### `sqlQueriesPlugin` — Raw SQL Query Functions
+### `sqlQueries` — Raw SQL Query Functions
 
-with `sqlQueriesPlugin({ sqlStyle: "tag" })`
+with `sqlQueries({ sqlStyle: "tag" })`
 ```typescript
 import { sql } from "../../db.js";
 import type { User } from "../types/User.js";
@@ -283,40 +304,61 @@ export async function currentUser() {
 }
 ```
 
-not using tagged templates? got you covered with `sqlQueriesPlugin({ sqlStyle: "string" })`
+not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
 
-### `kyselyQueriesPlugin` — Kysely Query Builders
+### `kysely` — Kysely Types + Query Builders
+
+The unified `kysely` plugin generates both type definitions and query functions:
 
 ```typescript
+// DB interface (db.ts)
+import type { Generated, ColumnType } from "kysely";
+
+export type UserRole = "admin" | "moderator" | "user";
+
+export interface UsersTable {
+  id: Generated<string>;
+  username: string;
+  name: string | null;
+  avatar_url: string | null;
+  role: UserRole;
+  bio: string;
+  is_verified: boolean;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface DB {
+  "app_public.users": UsersTable;
+}
+
+// Query functions (when generateQueries: true)
 import { db } from "../../db.js";
-import type { User } from "../db.js";
-import type { Updateable } from "kysely";
+import type { UsersTable } from "./db.js";
+import type { Insertable, Updateable } from "kysely";
 
 export const findById = ({ id }: { id: string }) =>
   db
-    .selectFrom("users")
+    .selectFrom("app_public.users")
     .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
     .where("id", "=", id)
     .executeTakeFirst();
 
-export const update = ({ id, data }: { id: string; data: Updateable<User> }) =>
-  db.updateTable("users").set(data).where("id", "=", id).returningAll().executeTakeFirstOrThrow();
+export const create = ({ data }: { data: Insertable<UsersTable> }) =>
+  db.insertInto("app_public.users").values(data).returningAll().executeTakeFirstOrThrow();
+
+export const update = ({ id, data }: { id: string; data: Updateable<UsersTable> }) =>
+  db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll().executeTakeFirstOrThrow();
 
 export const findByUsername = ({ username }: { username: string }) =>
   db
-    .selectFrom("users")
+    .selectFrom("app_public.users")
     .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
     .where("username", "=", username)
     .executeTakeFirst();
-
-export const currentUser = () =>
-  db
-    .selectFrom((eb) => eb.fn<User>("app_public.current_user", []).as("f"))
-    .selectAll()
-    .executeTakeFirst();
 ```
 
-### `httpElysiaPlugin` — Elysia REST Routes
+### `httpElysia` — Elysia REST Routes
 
 ```typescript
 import { Elysia, t } from "elysia";
@@ -350,7 +392,71 @@ export const userRoutes = new Elysia({ prefix: "/api/users" })
   );
 ```
 
-### `httpTrpcPlugin` — tRPC Routers
+### `httpExpress` — Express REST Routes
+
+```typescript
+import { Router } from "express";
+import { z } from "zod";
+import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
+import { UserUpdate } from "../schemas/User.js";
+
+export const userRoutes = Router();
+
+userRoutes.get("/:id", async (req, res) => {
+  const { id } = req.params;
+  const result = await findUserById({ id });
+  if (!result) return res.status(404).json({ error: "Not found" });
+  return res.json(result);
+});
+
+userRoutes.get("/", async (req, res) => {
+  const { limit, offset } = z.object({
+    limit: z.coerce.number().optional(),
+    offset: z.coerce.number().optional(),
+  }).parse(req.query);
+  return res.json(await findUserManys({ limit, offset }));
+});
+
+userRoutes.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  const data = UserUpdate.parse(req.body);
+  const result = await updateUser({ id, data });
+  return res.json(result);
+});
+```
+
+### `httpHono` — Hono REST Routes
+
+```typescript
+import { Hono } from "hono";
+import { sValidator } from "@hono/standard-validator";
+import { z } from "zod";
+import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
+import { UserUpdate } from "../schemas/User.js";
+
+export const userRoutes = new Hono()
+  .get("/:id", async (c) => {
+    const id = c.req.param("id");
+    const result = await findUserById({ id });
+    if (!result) return c.json({ error: "Not found" }, 404);
+    return c.json(result);
+  })
+  .get("/", sValidator("query", z.object({
+    limit: z.coerce.number().optional(),
+    offset: z.coerce.number().optional(),
+  })), async (c) => {
+    const { limit, offset } = c.req.valid("query");
+    return c.json(await findUserManys({ limit, offset }));
+  })
+  .put("/:id", sValidator("json", UserUpdate), async (c) => {
+    const id = c.req.param("id");
+    const data = c.req.valid("json");
+    const result = await updateUser({ id, data });
+    return c.json(result);
+  });
+```
+
+### `httpTrpc` — tRPC Routers
 
 ```typescript
 import { z } from "zod";
@@ -378,7 +484,7 @@ export const userRouter = router({
 });
 ```
 
-### `httpOrpcPlugin` — oRPC Handlers
+### `httpOrpc` — oRPC Handlers
 
 ```typescript
 import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
