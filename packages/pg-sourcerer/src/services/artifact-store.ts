@@ -15,9 +15,20 @@ import type { Artifact, CapabilityKey } from "../ir/semantic-ir.js"
  */
 export interface ArtifactStoreImpl {
   /**
-   * Get an artifact by capability key
+   * Get an artifact by exact capability key
    */
   readonly get: (capability: CapabilityKey) => Artifact | undefined
+
+  /**
+   * Find an artifact by capability prefix.
+   * Returns the first artifact whose capability starts with the given prefix.
+   * Useful for finding "queries" regardless of whether it's "queries:sql" or "queries:kysely".
+   * 
+   * @example
+   * // Returns artifact from "queries:sql" or "queries:kysely"
+   * store.find("queries")
+   */
+  readonly find: (capabilityPrefix: string) => Artifact | undefined
 
   /**
    * Store an artifact for a capability
@@ -43,6 +54,16 @@ export function createArtifactStore(): ArtifactStoreImpl {
   return {
     get: (capability: CapabilityKey) =>
       Option.getOrUndefined(MutableHashMap.get(artifacts, capability)),
+
+    find: (capabilityPrefix: string) => {
+      // Find first artifact whose capability matches prefix exactly or starts with "prefix:"
+      for (const [key, value] of artifacts) {
+        if (key === capabilityPrefix || key.startsWith(`${capabilityPrefix}:`)) {
+          return value
+        }
+      }
+      return undefined
+    },
 
     set: (capability: CapabilityKey, plugin: string, data: unknown) => {
       MutableHashMap.set(artifacts, capability, {

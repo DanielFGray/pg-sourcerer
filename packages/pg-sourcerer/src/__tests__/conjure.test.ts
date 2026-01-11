@@ -14,6 +14,14 @@ const printExpr = (expr: n.Expression) => conjure.print(conjure.stmt.expr(expr))
 /** Helper to get printed code from a statement */
 const printStmt = (stmt: n.Node) => conjure.print(stmt)
 
+/** Helper to print a TSType by wrapping in type alias and extracting */
+const printType = (type: n.TSType) => {
+  const alias = conjure.b.tsTypeAliasDeclaration(conjure.b.identifier("_T"), cast.toTSType(type))
+  const code = conjure.print(alias)
+  // Extract the type from "type _T = <type>;"
+  return code.replace(/^type _T = /, "").replace(/;$/, "")
+}
+
 describe("Conjure", () => {
   describe("chain builder", () => {
     it("creates identifier", () => {
@@ -1214,6 +1222,162 @@ describe("Conjure", () => {
       const firstIdx = code.indexOf("First")
       const secondIdx = code.indexOf("Second")
       expect(firstIdx).toBeLessThan(secondIdx)
+    })
+  })
+
+  describe("type modifier helpers (ts.*)", () => {
+    it("ts.nullable wraps type with null union", () => {
+      const type = conjure.ts.nullable(conjure.ts.string())
+      const code = printType(type)
+      expect(code).toBe("string | null")
+    })
+
+    it("ts.asArray wraps type in array", () => {
+      const type = conjure.ts.asArray(conjure.ts.string())
+      const code = printType(type)
+      expect(code).toBe("string[]")
+    })
+
+    it("ts.withModifiers applies array then nullable", () => {
+      const type = conjure.ts.withModifiers(conjure.ts.string(), {
+        array: true,
+        nullable: true,
+      })
+      const code = printType(type)
+      expect(code).toBe("string[] | null")
+    })
+
+    it("ts.withModifiers applies only array when nullable is false", () => {
+      const type = conjure.ts.withModifiers(conjure.ts.string(), {
+        array: true,
+        nullable: false,
+      })
+      const code = printType(type)
+      expect(code).toBe("string[]")
+    })
+
+    it("ts.withModifiers applies only nullable when array is false", () => {
+      const type = conjure.ts.withModifiers(conjure.ts.string(), {
+        array: false,
+        nullable: true,
+      })
+      const code = printType(type)
+      expect(code).toBe("string | null")
+    })
+
+    it("ts.withModifiers returns unchanged type when both false", () => {
+      const type = conjure.ts.withModifiers(conjure.ts.string(), {
+        array: false,
+        nullable: false,
+      })
+      const code = printType(type)
+      expect(code).toBe("string")
+    })
+  })
+
+  describe("ts.fromString", () => {
+    it("parses primitive types", () => {
+      expect(printType(conjure.ts.fromString("string"))).toBe("string")
+      expect(printType(conjure.ts.fromString("number"))).toBe("number")
+      expect(printType(conjure.ts.fromString("boolean"))).toBe("boolean")
+      expect(printType(conjure.ts.fromString("bigint"))).toBe("bigint")
+      expect(printType(conjure.ts.fromString("unknown"))).toBe("unknown")
+      expect(printType(conjure.ts.fromString("void"))).toBe("void")
+      expect(printType(conjure.ts.fromString("null"))).toBe("null")
+      expect(printType(conjure.ts.fromString("undefined"))).toBe("undefined")
+      expect(printType(conjure.ts.fromString("any"))).toBe("any")
+      expect(printType(conjure.ts.fromString("never"))).toBe("never")
+    })
+
+    it("parses built-in reference types", () => {
+      expect(printType(conjure.ts.fromString("Date"))).toBe("Date")
+      expect(printType(conjure.ts.fromString("Buffer"))).toBe("Buffer")
+    })
+
+    it("parses custom type references", () => {
+      expect(printType(conjure.ts.fromString("User"))).toBe("User")
+      expect(printType(conjure.ts.fromString("MyCustomType"))).toBe("MyCustomType")
+    })
+
+    it("parses array suffix types", () => {
+      expect(printType(conjure.ts.fromString("string[]"))).toBe("string[]")
+      expect(printType(conjure.ts.fromString("number[]"))).toBe("number[]")
+      expect(printType(conjure.ts.fromString("User[]"))).toBe("User[]")
+    })
+
+    it("parses nested array types", () => {
+      expect(printType(conjure.ts.fromString("string[][]"))).toBe("string[][]")
+    })
+  })
+
+  describe("exp.tsEnum", () => {
+    it("generates TS enum with string values", () => {
+      const enumStmt = conjure.exp.tsEnum(
+        "Status",
+        { capability: "types", entity: "Status" },
+        ["active", "pending", "inactive"]
+      )
+
+      expect(enumStmt._tag).toBe("SymbolStatement")
+      expect(enumStmt.symbol).toEqual({
+        name: "Status",
+        capability: "types",
+        entity: "Status",
+        isType: true,
+      })
+
+      const code = printStmt(enumStmt.node)
+      expect(code).toContain("export enum Status")
+      expect(code).toContain('ACTIVE = "active"')
+      expect(code).toContain('PENDING = "pending"')
+      expect(code).toContain('INACTIVE = "inactive"')
+    })
+
+    it("normalizes member names with special characters", () => {
+      const enumStmt = conjure.exp.tsEnum(
+        "Priority",
+        { capability: "types", entity: "Priority" },
+        ["high-priority", "low.priority", "medium priority"]
+      )
+
+      const code = printStmt(enumStmt.node)
+      expect(code).toContain('HIGH_PRIORITY = "high-priority"')
+      expect(code).toContain('LOW_PRIORITY = "low.priority"')
+      expect(code).toContain('MEDIUM_PRIORITY = "medium priority"')
+    })
+  })
+
+  describe("conjure.call", () => {
+    it("creates method call from string callee", () => {
+      const expr = conjure.call("db", "selectFrom", [conjure.str("users")])
+      const code = printExpr(expr)
+      expect(code).toBe('db.selectFrom("users");')
+    })
+
+    it("creates method call from expression callee", () => {
+      const expr = conjure.call(
+        conjure.id("this").prop("db").build(),
+        "query",
+        [conjure.str("SELECT * FROM users")]
+      )
+      const code = printExpr(expr)
+      expect(code).toBe('this.db.query("SELECT * FROM users");')
+    })
+
+    it("creates method call with no arguments", () => {
+      const expr = conjure.call("db", "close")
+      const code = printExpr(expr)
+      expect(code).toBe("db.close();")
+    })
+
+    it("creates method call with multiple arguments", () => {
+      const expr = conjure.call("console", "log", [
+        conjure.str("Hello"),
+        conjure.num(42),
+        conjure.bool(true),
+      ])
+      const code = printExpr(expr)
+      expect(code).toBe('console.log("Hello", 42, true);')
     })
   })
 })

@@ -2,9 +2,65 @@
  * Symbol Registry Service
  *
  * Tracks emitted symbols for cross-file import resolution.
+ * Also provides method registry for query provider → HTTP provider communication.
  */
 import { Array as Arr, Context, Layer, MutableHashMap, Option, pipe } from "effect"
 import type { CapabilityKey } from "../ir/index.js"
+import type {
+  QueryMethodKind,
+  QueryMethodParam,
+  QueryMethodReturn,
+  CallSignature,
+} from "../ir/extensions/queries.js"
+
+// ============================================================================
+// Method Symbols (Query Extension)
+// ============================================================================
+
+/**
+ * A method symbol registered by query providers.
+ * HTTP providers consume these to generate routes.
+ */
+export interface MethodSymbol {
+  /** Export name in the generated file (e.g., "findUserById") */
+  readonly name: string
+  /** File where the method is exported */
+  readonly file: string
+  /** Entity this method operates on */
+  readonly entity: string
+  /** What kind of operation */
+  readonly kind: QueryMethodKind
+  /** Parameters */
+  readonly params: readonly QueryMethodParam[]
+  /** Return type info */
+  readonly returns: QueryMethodReturn
+  /** For lookup methods */
+  readonly lookupField?: string
+  /** Whether lookup returns single result */
+  readonly isUniqueLookup?: boolean
+  /** How to call this method */
+  readonly callSignature?: CallSignature
+}
+
+/**
+ * Entity methods summary for a single entity
+ */
+export interface EntityMethods {
+  /** Entity name */
+  readonly entity: string
+  /** Import path for the methods file */
+  readonly importPath: string
+  /** All methods for this entity */
+  readonly methods: readonly MethodSymbol[]
+  /** Primary key type */
+  readonly pkType?: string
+  /** Has composite PK */
+  readonly hasCompositePk?: boolean
+}
+
+// ============================================================================
+// Core Symbol Types
+// ============================================================================
 
 /**
  * Reference to a symbol
@@ -75,6 +131,32 @@ export interface SymbolRegistry {
    * Get all registered symbols
    */
   readonly getAll: () => readonly Symbol[]
+
+  // ============================================================================
+  // Method Registry API (Query Extension)
+  // ============================================================================
+
+  /**
+   * Register all methods for an entity.
+   * Called by query providers (sql-queries, kysely-queries).
+   */
+  readonly registerEntityMethods: (entityMethods: EntityMethods, provider: string) => void
+
+  /**
+   * Get all methods for an entity.
+   * Called by HTTP providers (http-elysia, http-trpc).
+   */
+  readonly getEntityMethods: (entity: string) => EntityMethods | undefined
+
+  /**
+   * Get all entities that have registered methods.
+   */
+  readonly getEntitiesWithMethods: () => readonly string[]
+
+  /**
+   * Get methods by kind across all entities.
+   */
+  readonly getMethodsByKind: (kind: QueryMethodKind) => readonly MethodSymbol[]
 }
 
 /**
@@ -93,6 +175,9 @@ export function createSymbolRegistry(): SymbolRegistry {
     string,
     { symbol: Symbol; plugin: string }[]
   >()
+
+  // Method registry: entity → methods
+  const entityMethodsMap = new Map<string, { methods: EntityMethods; provider: string }>()
 
   // Key for deduplication: capability:entity:shape
   const makeKey = (ref: SymbolRef): string =>
@@ -194,6 +279,30 @@ export function createSymbolRegistry(): SymbolRegistry {
         MutableHashMap.values(symbols),
         Arr.fromIterable,
         Arr.flatMap((entries) => entries.map((e) => e.symbol))
+      ),
+
+    // ============================================================================
+    // Method Registry Implementation
+    // ============================================================================
+
+    registerEntityMethods: (entityMethods, provider) => {
+      entityMethodsMap.set(entityMethods.entity, { methods: entityMethods, provider })
+    },
+
+    getEntityMethods: (entity) => {
+      return entityMethodsMap.get(entity)?.methods
+    },
+
+    getEntitiesWithMethods: () => {
+      return [...entityMethodsMap.keys()]
+    },
+
+    getMethodsByKind: (kind) =>
+      pipe(
+        [...entityMethodsMap.values()],
+        Arr.flatMap(({ methods }) =>
+          methods.methods.filter((m) => m.kind === kind)
+        )
       ),
   }
 }

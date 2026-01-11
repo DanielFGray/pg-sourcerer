@@ -24,13 +24,16 @@ interface PluginInfo {
 
 /** Maps plugin value to import name for config generation */
 const pluginImportNames: Record<string, string> = {
-  types: "typesPlugin",
-  zod: "zodPlugin",
+  types: "types",
+  zod: "zod",
   arktype: "arktypePlugin",
-  "effect-model": "effectModelPlugin",
-  "sql-queries": "sqlQueriesPlugin",
+  effect: "effect",
+  "sql-queries": "sqlQueries",
   "kysely-types": "kyselyTypesPlugin",
   "kysely-queries": "kyselyQueriesPlugin",
+  "http-elysia": "httpElysiaPlugin",
+  "http-trpc": "httpTrpcPlugin",
+  "http-orpc": "httpOrpcPlugin",
 };
 
 /** Get plugin info by value */
@@ -322,10 +325,11 @@ const makeOutputDirPrompt = () =>
  * Plugin selection with Kysely-aware branching.
  *
  * Flow:
- * 1. Kysely? → yes: checkboxes for types + kysely-queries → exit
+ * 1. Kysely? → yes: checkboxes for types + kysely-queries → HTTP plugins → exit
  * 2. No Kysely → raw types or schema-driven?
- * 3. If schema-driven → select schema lib (zod/arktype/effect-model)
+ * 3. If schema-driven → select schema lib (zod/arktype/effect)
  * 4. Query plugins (optional multiselect, currently just sql-queries)
+ * 5. HTTP/RPC framework (optional)
  */
 const makePluginsPrompt = () =>
   Effect.gen(function* () {
@@ -337,13 +341,28 @@ const makePluginsPrompt = () =>
 
     if (usesKysely) {
       // Kysely path: checkboxes, both pre-selected
-      return yield* Prompt.multiSelect({
+      const kyselyPlugins = yield* Prompt.multiSelect({
         message: "Select Kysely plugins",
         choices: [
           { title: "kysely-types - Kysely-compatible types", value: "kysely-types", selected: true },
           { title: "kysely-queries - Query builders", value: "kysely-queries", selected: true },
         ],
       });
+
+      // Step 5: HTTP/RPC framework (only show if queries selected)
+      const hasQueries = kyselyPlugins.includes("kysely-queries");
+      if (hasQueries) {
+        const httpPlugins = yield* Prompt.multiSelect({
+          message: "HTTP/RPC framework (optional, requires query plugin)",
+          choices: [
+            { title: "Elysia routes", value: "http-elysia", selected: false },
+            { title: "tRPC routers", value: "http-trpc", selected: false },
+            { title: "oRPC routers", value: "http-orpc", selected: false },
+          ],
+        });
+        return [...kyselyPlugins, ...httpPlugins] as readonly string[];
+      }
+      return kyselyPlugins;
     }
 
     // Step 2: Raw vs schema-driven
@@ -365,7 +384,7 @@ const makePluginsPrompt = () =>
         choices: [
           { title: "Zod", value: "zod" },
           { title: "ArkType", value: "arktype" },
-          { title: "Effect Schema", value: "effect-model" },
+          { title: "Effect Schema (@effect/sql)", value: "effect" },
         ],
       });
     }
@@ -377,6 +396,19 @@ const makePluginsPrompt = () =>
         { title: "sql-queries - Raw SQL query functions", value: "sql-queries", selected: false },
       ],
     });
+
+    // Step 5: HTTP/RPC framework (only show if queries selected)
+    if (queryPlugins.length > 0) {
+      const httpPlugins = yield* Prompt.multiSelect({
+        message: "HTTP/RPC framework (optional)",
+        choices: [
+          { title: "Elysia routes", value: "http-elysia", selected: false },
+          { title: "tRPC routers", value: "http-trpc", selected: false },
+          { title: "oRPC routers", value: "http-orpc", selected: false },
+        ],
+      });
+      return [typePlugin, ...queryPlugins, ...httpPlugins] as readonly string[];
+    }
 
     return [typePlugin, ...queryPlugins] as readonly string[];
   });
@@ -483,7 +515,7 @@ const generateConfigContent = (answers: InitAnswers): string => {
   }
 
   // Plugins array - no config needed, all plugins have sensible defaults
-  const pluginCalls = selectedPlugins.map(plugin => conjure.id(plugin.importName).call([]).build());
+  const pluginCalls = selectedPlugins.map(p => conjure.id(p.importName).call([]).build());
   const pluginsArr = conjure.arr(...pluginCalls);
   configObj = configObj.prop("plugins", pluginsArr.build());
 

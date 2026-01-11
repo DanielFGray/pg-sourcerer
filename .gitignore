@@ -8,3 +8,4 @@ packages/pg-sourcerer/coverage
 # Local/temp files
 .worktrees/
 .prog-id-mapping.json
+mprocs.log

@@ -11,11 +11,10 @@ import { TypeHintsLive } from "./services/type-hints.js"
 import { ArtifactStoreLive } from "./services/artifact-store.js"
 import { PluginMeta } from "./services/plugin-meta.js"
 import { IR } from "./services/ir.js"
-import { PluginRunner } from "./services/plugin-runner.js"
 import type { SemanticIR } from "./ir/semantic-ir.js"
 
 /**
- * Base test layers for direct plugin testing (bypassing PluginRunner).
+ * Base test layers for direct plugin testing.
  *
  * Provides all shared services except IR and PluginMeta,
  * which are test-specific.
@@ -35,30 +34,6 @@ export const PluginTestLayers = Layer.mergeAll(
   SymbolsLive,
   TypeHintsLive([]),
   ArtifactStoreLive
-)
-
-/**
- * Test layer for PluginRunner integration tests.
- *
- * PluginRunner.Default includes InflectionLive by default.
- * Add TypeHintsLive for complete test setup.
- *
- * Usage:
- * ```typescript
- * layer(PluginRunnerTestLayer)("my tests", (it) => {
- *   it.effect("runs plugins", () =>
- *     Effect.gen(function* () {
- *       const runner = yield* PluginRunner
- *       const prepared = yield* runner.prepare(plugins)
- *       const result = yield* runner.run(prepared, ir)
- *     })
- *   )
- * })
- * ```
- */
-export const PluginRunnerTestLayer = Layer.mergeAll(
-  PluginRunner.Default,
-  TypeHintsLive([])
 )
 
 /**
@@ -97,5 +72,5 @@ export { IR } from "./services/ir.js"
 export { PluginMeta } from "./services/plugin-meta.js"
 export { Emissions } from "./services/emissions.js"
 export { Symbols } from "./services/symbols.js"
-export { PluginRunner } from "./services/plugin-runner.js"
+export { runPlugins } from "./services/plugin-runner.js"
 export { createIRBuilder, freezeIR } from "./ir/semantic-ir.js"

@@ -36,6 +36,8 @@ export interface PackageImportRef {
   readonly names?: readonly string[]
   readonly types?: readonly string[]
   readonly default?: string
+  /** Namespace import: import * as <namespace> from "..." */
+  readonly namespace?: string
   readonly from: string
 }
 
@@ -47,6 +49,8 @@ export interface RelativeImportRef {
   readonly names?: readonly string[]
   readonly types?: readonly string[]
   readonly default?: string
+  /** Namespace import: import * as <namespace> from "..." */
+  readonly namespace?: string
   readonly from: string
 }
 

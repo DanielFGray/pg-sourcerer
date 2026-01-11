@@ -1,7 +1,7 @@
 /**
- * Zod Plugin - Generate Zod schemas for entities
+ * Valibot Plugin - Generate Valibot schemas for entities
  *
- * Generates Zod schemas for Row, Insert, Update, and Patch shapes,
+ * Generates Valibot schemas for Row, Insert, Update, and Patch shapes,
  * with inferred TypeScript types.
  */
 import { Array as Arr, Option, pipe, Schema as S } from "effect";
@@ -16,13 +16,6 @@ import type {
   EnumEntity,
   CompositeEntity,
 } from "../ir/semantic-ir.js";
-import {
-  SCHEMA_BUILDER_KIND,
-  type SchemaBuilder,
-  type SchemaBuilderRequest,
-  type SchemaBuilderResult,
-} from "../ir/extensions/schema-builder.js";
-import type { QueryMethodParam } from "../ir/extensions/queries.js";
 import { getTableEntities, getEnumEntities, getCompositeEntities } from "../ir/semantic-ir.js";
 import { conjure } from "../lib/conjure.js";
 import type { SymbolStatement } from "../lib/conjure.js";
@@ -34,83 +27,80 @@ import {
   getPgTypeName,
   resolveFieldType,
 } from "../lib/field-utils.js";
+import {
+  SCHEMA_BUILDER_KIND,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
+} from "../ir/extensions/schema-builder.js";
+import type { QueryMethodParam } from "../ir/extensions/queries.js";
 
-const { ts, exp, obj } = conjure;
+const { ts, exp, obj, b } = conjure;
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-/**
- * Configuration for the zod provider
- */
-export interface ZodConfig {
+const ValibotConfigSchema = S.Struct({
   /** Output directory relative to main outputDir */
-  readonly outputDir?: string
+  outputDir: S.optionalWith(S.String, { default: () => "valibot" }),
   /** Export inferred types alongside schemas */
-  readonly exportTypes?: boolean
-  /** How to represent enum values: 'strings' uses z.enum([...]), 'enum' uses z.nativeEnum(TsEnum) */
-  readonly enumStyle?: "strings" | "enum"
-  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  readonly typeReferences?: "inline" | "separate"
-}
-
-const ZodConfigSchema = S.Struct({
-  outputDir: S.optionalWith(S.String, { default: () => "zod" }),
   exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
+  /** How to represent enum values: 'strings' uses v.picklist([...]), 'enum' uses v.enum(TsEnum) */
+  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
+    default: () => "strings" as const,
+  }),
+  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
+  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
+    default: () => "separate" as const,
+  }),
 });
 
-// ============================================================================
-// Types
-// ============================================================================
-
-/** Context for field resolution */
-interface FieldContext {
-  readonly enums: readonly EnumEntity[];
-  readonly extensions: readonly ExtensionInfo[];
-  readonly enumStyle: "strings" | "enum";
-  readonly typeReferences: "inline" | "separate";
-}
+/** Input config type (with optional fields) */
+export type ValibotConfig = S.Schema.Encoded<typeof ValibotConfigSchema>;
 
 // ============================================================================
-// Zod Schema Builders (pure functions)
+// Valibot Schema Builders (pure functions)
+// ============================================================================
+
+// ============================================================================
+// Valibot Schema Builders (pure functions)
 // ============================================================================
 
 /**
- * Build z.<method>() and chain additional methods
+ * Build v.<method>() call
  */
-const buildZodChain = (baseMethod: string, chainMethods: readonly string[]): n.Expression =>
-  chainMethods
-    .reduce((chain, method) => chain.method(method), conjure.id("z").method(baseMethod))
-    .build();
-
-/**
- * Build z.enum([...values])
- */
-const buildZodEnum = (values: readonly string[]): n.Expression =>
+const buildValibotCall = (method: string, args: readonly n.Expression[] = []): n.Expression =>
   conjure
-    .id("z")
-    .method("enum", [conjure.arr(...values.map(v => conjure.str(v))).build()])
+    .id("v")
+    .method(method, [...args])
     .build();
 
 /**
- * Build z.array(<inner>)
+ * Build v.picklist([...values])
  */
-const buildZodArray = (inner: n.Expression): n.Expression =>
-  conjure.id("z").method("array", [inner]).build();
+const buildValibotPicklist = (values: readonly string[]): n.Expression =>
+  buildValibotCall("picklist", [conjure.arr(...values.map(v => conjure.str(v))).build()]);
 
 /**
- * Add method calls to an existing expression
+ * Build v.array(<inner>)
  */
-const chainZodMethods = (expr: n.Expression, methods: readonly string[]): n.Expression =>
-  methods.reduce((chain, method) => chain.method(method), conjure.chain(expr)).build();
+const buildValibotArray = (inner: n.Expression): n.Expression => buildValibotCall("array", [inner]);
 
 /**
- * Map TypeScript type to Zod method name
+ * Wrap expression with v.nullable(...)
  */
-const tsTypeToZodMethod = (tsType: string): string => {
+const wrapNullable = (expr: n.Expression): n.Expression => buildValibotCall("nullable", [expr]);
+
+/**
+ * Wrap expression with v.optional(...)
+ */
+const wrapOptional = (expr: n.Expression): n.Expression => buildValibotCall("optional", [expr]);
+
+/**
+ * Map TypeScript type to Valibot method name
+ */
+const tsTypeToValibotMethod = (tsType: string): string => {
   switch (tsType) {
     case TsType.String:
       return "string";
@@ -130,88 +120,100 @@ const tsTypeToZodMethod = (tsType: string): string => {
 };
 
 // ============================================================================
-// Field → Zod Schema Resolution
+// Field → Valibot Schema Resolution
 // ============================================================================
 
+interface FieldContext {
+  readonly enums: Iterable<EnumEntity>;
+  readonly extensions: readonly ExtensionInfo[];
+  readonly enumStyle: "strings" | "enum";
+  readonly typeReferences: "inline" | "separate";
+}
+
 /**
- * Resolve a field to its Zod schema expression.
- *
- * Order of resolution (first match wins):
- * 1. UUID types → z.string().uuid()
- * 2. Date types → z.coerce.date()
- * 3. Enum types → z.enum([...]) or reference
- * 4. Fallback to resolved TypeScript type
- *
- * Then wraps with array/nullable/optional as needed.
+ * Apply nullable/optional/array modifiers to a base schema
+ * Order matters: array wraps first, then nullable, then optional
  */
-const resolveFieldZodSchema = (field: Field, ctx: FieldContext): n.Expression => {
-  // Get the base schema expression
-  let baseSchema: n.Expression;
+const applyFieldModifiers = (
+  schema: n.Expression,
+  field: Pick<Field, "isArray" | "nullable" | "optional">,
+): n.Expression => {
+  let result = schema;
 
-  // 1. UUID types get special treatment
-  if (isUuidType(field)) {
-    baseSchema = buildZodChain("string", ["uuid"]);
-  }
-  // 2. Date types use coercion for flexibility
-  else if (isDateType(field)) {
-    baseSchema = conjure.id("z").prop("coerce").method("date").build();
-  }
-  // 3. Enum types
-  else if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field);
-    const enumDef = pgTypeName
-      ? pipe(
-          findEnumByPgName(ctx.enums, pgTypeName),
-          Option.getOrUndefined,
-        )
-      : undefined;
-
-    if (enumDef) {
-      if (ctx.typeReferences === "inline") {
-        // Inline the enum values
-        baseSchema = buildZodEnum(enumDef.values);
-      } else {
-        // Reference the separate enum schema
-        baseSchema = conjure.id(enumDef.name).build();
-      }
-    } else {
-      baseSchema = buildZodChain("unknown", []);
-    }
-  }
-  // 4. Fallback to resolved TypeScript type
-  else {
-    const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
-    const zodMethod = tsTypeToZodMethod(resolved.tsType);
-    baseSchema = buildZodChain(zodMethod, []);
-  }
-
-  // Wrap with array if needed
+  // Array wrapping first
   if (field.isArray) {
-    baseSchema = buildZodArray(baseSchema);
+    result = buildValibotArray(result);
   }
 
-  // Collect modifiers to chain
-  const modifiers: string[] = [];
-  if (field.nullable) modifiers.push("nullable");
-  if (field.optional) modifiers.push("optional");
+  // Nullable wrapping
+  if (field.nullable) {
+    result = wrapNullable(result);
+  }
 
-  // Apply modifiers
-  return modifiers.length > 0 ? chainZodMethods(baseSchema, modifiers) : baseSchema;
+  // Optional wrapping
+  if (field.optional) {
+    result = wrapOptional(result);
+  }
+
+  return result;
+};
+
+/**
+ * Resolve a field to its Valibot schema expression
+ */
+const resolveFieldValibotSchema = (field: Field, ctx: FieldContext): n.Expression => {
+  const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
+
+  // Enum handling
+  if (resolved.enumDef) {
+    let enumSchema: n.Expression;
+
+    if (ctx.typeReferences === "separate") {
+      // Reference by name - the enum schema is imported
+      enumSchema = conjure.id(resolved.enumDef.name).build();
+    } else if (ctx.enumStyle === "enum") {
+      // Inline native enum: v.enum(EnumName)
+      // Note: This requires the TS enum to be generated separately
+      enumSchema = buildValibotCall("enum", [conjure.id(resolved.enumDef.name).build()]);
+    } else {
+      // Inline strings: v.picklist(['a', 'b', 'c'])
+      enumSchema = buildValibotPicklist(resolved.enumDef.values);
+    }
+
+    return applyFieldModifiers(enumSchema, field);
+  }
+
+  // UUID → v.pipe(v.string(), v.uuid())
+  if (isUuidType(field)) {
+    const uuidSchema = buildValibotCall("pipe", [
+      buildValibotCall("string"),
+      buildValibotCall("uuid"),
+    ]);
+    return applyFieldModifiers(uuidSchema, field);
+  }
+
+  // Date/timestamp → v.date()
+  if (isDateType(field)) {
+    return applyFieldModifiers(buildValibotCall("date"), field);
+  }
+
+  // Standard type mapping
+  return applyFieldModifiers(buildValibotCall(tsTypeToValibotMethod(resolved.tsType)), field);
 };
 
 // ============================================================================
-// Statement Generators
+// Shape → Statement Generation
 // ============================================================================
 
 /**
- * Build z.object({...}) expression from shape fields
+ * Build v.object({...}) expression from shape fields
  */
-const buildShapeZodObject = (shape: Shape, ctx: FieldContext): n.Expression => {
+const buildShapeValibotObject = (shape: Shape, ctx: FieldContext): n.Expression => {
   const objBuilder = shape.fields.reduce(
-    (builder, field) => builder.prop(field.name, resolveFieldZodSchema(field, ctx)),
+    (builder, field) => builder.prop(field.name, resolveFieldValibotSchema(field, ctx)),
     obj(),
   );
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
+  return buildValibotCall("object", [objBuilder.build()]);
 };
 
 /**
@@ -225,7 +227,7 @@ const generateShapeStatements = (
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
   const schemaSymbolCtx = { capability: "schemas", entity: entityName, shape: shapeKind };
-  const schemaExpr = buildShapeZodObject(shape, ctx);
+  const schemaExpr = buildShapeValibotObject(shape, ctx);
 
   const schemaStatement = exp.const(shape.name, schemaSymbolCtx, schemaExpr);
 
@@ -233,10 +235,10 @@ const generateShapeStatements = (
     return [schemaStatement];
   }
 
-  // Generate: export type ShapeName = z.infer<typeof ShapeName>
+  // Generate: export type ShapeName = v.InferOutput<typeof ShapeName>
   // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shape.name)]);
+  const inferType = ts.qualifiedRef("v", "InferOutput", [ts.typeof(shape.name)]);
   const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
@@ -275,14 +277,17 @@ const generateEntityStatements = (
 // ============================================================================
 
 /**
- * Build z.object({...}) expression from composite fields
+ * Build v.object({...}) expression from composite fields
  */
-const buildCompositeZodObject = (composite: CompositeEntity, ctx: FieldContext): n.Expression => {
+const buildCompositeValibotObject = (
+  composite: CompositeEntity,
+  ctx: FieldContext,
+): n.Expression => {
   const objBuilder = composite.fields.reduce(
-    (builder, field) => builder.prop(field.name, resolveFieldZodSchema(field, ctx)),
+    (builder, field) => builder.prop(field.name, resolveFieldValibotSchema(field, ctx)),
     obj(),
   );
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
+  return buildValibotCall("object", [objBuilder.build()]);
 };
 
 /**
@@ -294,7 +299,7 @@ const generateCompositeStatements = (
   exportTypes: boolean,
 ): readonly SymbolStatement[] => {
   const schemaSymbolCtx = { capability: "schemas", entity: composite.name };
-  const schemaExpr = buildCompositeZodObject(composite, ctx);
+  const schemaExpr = buildCompositeValibotObject(composite, ctx);
 
   const schemaStatement = exp.const(composite.name, schemaSymbolCtx, schemaExpr);
 
@@ -302,10 +307,10 @@ const generateCompositeStatements = (
     return [schemaStatement];
   }
 
-  // Generate: export type CompositeName = z.infer<typeof CompositeName>
+  // Generate: export type CompositeName = v.InferOutput<typeof CompositeName>
   // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: composite.name };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(composite.name)]);
+  const inferType = ts.qualifiedRef("v", "InferOutput", [ts.typeof(composite.name)]);
   const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
@@ -316,7 +321,7 @@ const generateCompositeStatements = (
 // ============================================================================
 
 /**
- * Generate enum schema statement: export const EnumName = z.enum(['a', 'b', ...])
+ * Generate enum schema statement: export const EnumName = v.picklist(['a', 'b', ...])
  * or for native enums: export enum EnumName { A = 'a', ... } + schema
  */
 const generateEnumStatement = (
@@ -328,7 +333,7 @@ const generateEnumStatement = (
 
   if (enumStyle === "enum") {
     // Generate: export enum EnumName { A = 'a', B = 'b', ... }
-    // Then: export const EnumNameSchema = z.nativeEnum(EnumName)
+    // Then: export const EnumNameSchema = v.enum(EnumName)
     const enumStatement = exp.tsEnum(
       enumEntity.name,
       { capability: "types", entity: enumEntity.name },
@@ -336,27 +341,24 @@ const generateEnumStatement = (
     );
 
     const schemaName = `${enumEntity.name}Schema`;
-    const schemaExpr = conjure
-      .id("z")
-      .method("nativeEnum", [conjure.id(enumEntity.name).build()])
-      .build();
+    const schemaExpr = buildValibotCall("enum", [conjure.id(enumEntity.name).build()]);
     const schemaStatement = exp.const(schemaName, schemaSymbolCtx, schemaExpr);
 
     return [enumStatement, schemaStatement];
   }
 
-  // strings style: export const EnumName = z.enum(['a', 'b', ...])
-  const schemaExpr = buildZodEnum(enumEntity.values);
+  // strings style: export const EnumName = v.picklist(['a', 'b', ...])
+  const schemaExpr = buildValibotPicklist(enumEntity.values);
   const schemaStatement = exp.const(enumEntity.name, schemaSymbolCtx, schemaExpr);
 
   if (!exportTypes) {
     return [schemaStatement];
   }
 
-  // Generate: export type EnumName = z.infer<typeof EnumName>
+  // Generate: export type EnumName = v.InferOutput<typeof EnumName>
   // Register under "types" capability so other plugins can import
   const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(enumEntity.name)]);
+  const inferType = ts.qualifiedRef("v", "InferOutput", [ts.typeof(enumEntity.name)]);
   const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
 
   return [schemaStatement, typeStatement];
@@ -384,12 +386,12 @@ const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
   }));
 
 // ============================================================================
-// Schema Builder Service
+// Param Schema Builder (for HTTP plugins)
 // ============================================================================
 
 /**
- * Build Zod schema expression for a single param.
- * Uses z.coerce for numeric types since URL params are always strings.
+ * Build Valibot schema expression for a single param.
+ * Uses v.pipe(v.string(), v.transform(...)) for type coercion since URL params are strings.
  */
 const buildParamFieldSchema = (param: QueryMethodParam): n.Expression => {
   const tsType = param.type.toLowerCase();
@@ -397,64 +399,85 @@ const buildParamFieldSchema = (param: QueryMethodParam): n.Expression => {
 
   switch (tsType) {
     case "number":
-      // z.coerce.number() - converts string "10" to number 10
-      fieldSchema = conjure.id("z").prop("coerce").method("number").build();
+      // v.pipe(v.string(), v.transform(Number))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [conjure.id("Number").build()]),
+      ]);
       break;
     case "boolean":
-      // z.coerce.boolean() - converts "true"/"false" strings
-      fieldSchema = conjure.id("z").prop("coerce").method("boolean").build();
+      // v.pipe(v.string(), v.transform(v => v === 'true'))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [
+          b.arrowFunctionExpression(
+            [b.identifier("v")],
+            b.binaryExpression("===", b.identifier("v"), b.stringLiteral("true")),
+          ),
+        ]),
+      ]);
       break;
     case "bigint":
-      // z.coerce.bigint()
-      fieldSchema = conjure.id("z").prop("coerce").method("bigint").build();
+      // v.pipe(v.string(), v.transform(BigInt))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [conjure.id("BigInt").build()]),
+      ]);
       break;
     case "date":
-      // z.coerce.date() - converts ISO strings to Date objects
-      fieldSchema = conjure.id("z").prop("coerce").method("date").build();
+      // v.pipe(v.string(), v.transform(s => new Date(s)))
+      fieldSchema = buildValibotCall("pipe", [
+        buildValibotCall("string"),
+        buildValibotCall("transform", [
+          b.arrowFunctionExpression(
+            [b.identifier("s")],
+            b.newExpression(b.identifier("Date"), [b.identifier("s")]),
+          ),
+        ]),
+      ]);
       break;
     case "string":
     default:
-      // z.string() - no coercion needed
-      fieldSchema = buildZodChain("string", []);
+      // v.string()
+      fieldSchema = buildValibotCall("string");
       break;
   }
 
-  // Add .optional() for non-required params
+  // Add v.optional(...) for non-required params
   if (!param.required) {
-    fieldSchema = chainZodMethods(fieldSchema, ["optional"]);
+    fieldSchema = wrapOptional(fieldSchema);
   }
 
   return fieldSchema;
 };
 
 /**
- * Build z.object({ ... }) expression from QueryMethodParam[].
- * For path/query parameter validation in HTTP handlers.
+ * Build v.object({ ... }) expression from QueryMethodParam[].
  */
-const buildParamZodObject = (params: readonly QueryMethodParam[]): n.Expression => {
+const buildParamValibotObject = (params: readonly QueryMethodParam[]): n.Expression => {
   const objBuilder = params.reduce(
     (builder, param) => builder.prop(param.name, buildParamFieldSchema(param)),
     obj(),
   );
 
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
+  return buildValibotCall("object", [objBuilder.build()]);
 };
 
 /**
- * Create a SchemaBuilder implementation for Zod.
+ * Create a SchemaBuilder implementation for Valibot.
  */
-const createZodSchemaBuilder = (): SchemaBuilder => ({
+const createValibotSchemaBuilder = (): SchemaBuilder => ({
   build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
     if (request.params.length === 0) {
       return undefined;
     }
 
-    const ast = buildParamZodObject(request.params);
+    const ast = buildParamValibotObject(request.params);
     return {
       ast,
       importSpec: {
-        names: ["z"],
-        from: "zod",
+        namespace: "v",
+        from: "valibot",
       },
     };
   },
@@ -465,25 +488,25 @@ const createZodSchemaBuilder = (): SchemaBuilder => ({
 // ============================================================================
 
 /**
- * Create a zod provider that generates Zod schemas.
+ * Create a valibot provider that generates Valibot schemas.
  *
  * @example
  * ```typescript
- * import { zod } from "pg-sourcerer"
+ * import { valibot } from "pg-sourcerer"
  *
  * export default defineConfig({
  *   plugins: [
- *     zod(),
- *     zod({ outputDir: "schemas", exportTypes: false }),
+ *     valibot(),
+ *     valibot({ outputDir: "schemas", exportTypes: false }),
  *   ],
  * })
  * ```
  */
-export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
-  const parsed = S.decodeUnknownSync(ZodConfigSchema)(config);
+export function valibot(config: ValibotConfig = {}) {
+  const parsed = S.decodeUnknownSync(ValibotConfigSchema)(config);
 
   return definePlugin({
-    name: "zod",
+    name: "valibot",
     kind: "schemas",
     singleton: true,
 
@@ -494,7 +517,7 @@ export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
       const enumEntities = getEnumEntities(ir);
 
       // Register schema-builder service for on-demand param/query schema generation
-      ctx.registerHandler(SCHEMA_BUILDER_KIND, createZodSchemaBuilder().build);
+      ctx.registerHandler(SCHEMA_BUILDER_KIND, createValibotSchemaBuilder().build);
 
       const fieldCtx: FieldContext = {
         enums: enumEntities,
@@ -504,19 +527,22 @@ export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
       };
 
       // Helper to build file path
-      const buildFilePath = (entityName: string): string =>
-        `${parsed.outputDir}/${entityName}.ts`;
+      const buildFilePath = (entityName: string): string => `${parsed.outputDir}/${entityName}.ts`;
 
       // Generate separate enum files if configured
       if (parsed.typeReferences === "separate") {
         enumEntities
           .filter(e => e.tags.omit !== true)
           .forEach(enumEntity => {
-            const statements = generateEnumStatement(enumEntity, parsed.enumStyle, parsed.exportTypes);
+            const statements = generateEnumStatement(
+              enumEntity,
+              parsed.enumStyle,
+              parsed.exportTypes,
+            );
 
             ctx
               .file(buildFilePath(enumEntity.name))
-              .import({ kind: "package", names: ["z"], from: "zod" })
+              .import({ kind: "package", namespace: "v", from: "valibot" })
               .ast(conjure.symbolProgram(...statements))
               .emit();
           });
@@ -542,7 +568,7 @@ export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
 
           const fileBuilder = ctx
             .file(buildFilePath(entityName))
-            .import({ kind: "package", names: ["z"], from: "zod" });
+            .import({ kind: "package", namespace: "v", from: "valibot" });
 
           // Add enum imports when using separate files
           buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
@@ -564,16 +590,12 @@ export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
 
           const fileBuilder = ctx
             .file(buildFilePath(composite.name))
-            .import({ kind: "package", names: ["z"], from: "zod" });
+            .import({ kind: "package", namespace: "v", from: "valibot" });
 
           buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
 
           fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
         });
-
-      return undefined;
     },
   });
 }
-
-

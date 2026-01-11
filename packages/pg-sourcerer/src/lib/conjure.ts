@@ -33,8 +33,8 @@
  *   .build()
  * ```
  */
-import recast from "recast"
-import type { namedTypes as n } from "ast-types"
+import recast from "recast";
+import type { namedTypes as n } from "ast-types";
 import type {
   ExpressionKind,
   StatementKind,
@@ -54,9 +54,9 @@ import type {
   TSIndexSignatureKind,
   TSMethodSignatureKind,
   TSPropertySignatureKind,
-} from "ast-types/lib/gen/kinds.js"
+} from "ast-types/lib/gen/kinds.js";
 
-const b = recast.types.builders
+const b = recast.types.builders;
 
 // =============================================================================
 // Recast Interop Types
@@ -73,23 +73,23 @@ const b = recast.types.builders
 
 /** Cast n.Expression to ExpressionKind for recast builder compatibility */
 function toExpr(node: n.Expression): ExpressionKind {
-  return node as ExpressionKind
+  return node as ExpressionKind;
 }
 
 /** Cast n.Statement to StatementKind for recast builder compatibility */
 function toStmt(node: n.Statement): StatementKind {
-  return node as StatementKind
+  return node as StatementKind;
 }
 
 /** Cast n.TSType to TSTypeKind for recast builder compatibility */
 function toTSType(node: n.TSType): TSTypeKind {
-  return node as TSTypeKind
+  return node as TSTypeKind;
 }
 
 /**
  * Array element types that recast accepts
  */
-type ArrayElementLike = ExpressionKind | SpreadElementKind | RestElementKind | null
+type ArrayElementLike = ExpressionKind | SpreadElementKind | RestElementKind | null;
 
 /**
  * Object property types that recast accepts for objectExpression
@@ -99,12 +99,12 @@ type ObjectPropertyLike =
   | ObjectMethodKind
   | ObjectPropertyKind
   | SpreadPropertyKind
-  | SpreadElementKind
+  | SpreadElementKind;
 
 /**
  * Function parameter types that recast accepts
  */
-type FnParamKind = IdentifierKind | RestElementKind | ArrayPatternKind | ObjectPatternKind
+type FnParamKind = IdentifierKind | RestElementKind | ArrayPatternKind | ObjectPatternKind;
 
 /**
  * Interface body member types that recast accepts
@@ -114,7 +114,7 @@ type InterfaceBodyMember =
   | TSConstructSignatureDeclarationKind
   | TSIndexSignatureKind
   | TSMethodSignatureKind
-  | TSPropertySignatureKind
+  | TSPropertySignatureKind;
 
 // =============================================================================
 // Type Casts (Public API)
@@ -131,13 +131,12 @@ export const cast = {
   /** Cast n.Expression to ExpressionKind */
   toExpr,
   /** Cast array element (expression or spread) */
-  asArrayElem: (node: n.Expression | n.SpreadElement): ArrayElementLike =>
-    node as ArrayElementLike,
+  asArrayElem: (node: n.Expression | n.SpreadElement): ArrayElementLike => node as ArrayElementLike,
   /** Cast n.Statement to StatementKind */
   toStmt,
   /** Cast n.TSType to TSTypeKind */
   toTSType,
-} as const
+} as const;
 
 // =============================================================================
 // Symbol Metadata Types
@@ -147,21 +146,21 @@ export const cast = {
  * Context for symbol registration - identifies what entity/shape this symbol represents.
  */
 export interface SymbolContext {
-  readonly capability: string
-  readonly entity: string
-  readonly shape?: string
+  readonly capability: string;
+  readonly entity: string;
+  readonly shape?: string;
 }
 
 /**
  * Metadata attached to an exported symbol.
  */
 export interface SymbolMeta {
-  readonly name: string
-  readonly capability: string
-  readonly entity: string
-  readonly shape?: string
-  readonly isType: boolean
-  readonly isDefault?: boolean
+  readonly name: string;
+  readonly capability: string;
+  readonly entity: string;
+  readonly shape?: string;
+  readonly isType: boolean;
+  readonly isDefault?: boolean;
 }
 
 /**
@@ -169,9 +168,9 @@ export interface SymbolMeta {
  * Used by exp.* helpers to track exports.
  */
 export interface SymbolStatement {
-  readonly _tag: "SymbolStatement"
-  readonly node: n.Statement
-  readonly symbol: SymbolMeta
+  readonly _tag: "SymbolStatement";
+  readonly node: n.Statement;
+  readonly symbol: SymbolMeta;
 }
 
 /**
@@ -179,9 +178,9 @@ export interface SymbolStatement {
  * Returned by program() when SymbolStatements are included.
  */
 export interface SymbolProgram {
-  readonly _tag: "SymbolProgram"
-  readonly node: n.Program
-  readonly symbols: readonly SymbolMeta[]
+  readonly _tag: "SymbolProgram";
+  readonly node: n.Program;
+  readonly symbols: readonly SymbolMeta[];
 }
 
 // =============================================================================
@@ -193,22 +192,22 @@ export interface SymbolProgram {
  */
 export interface ChainBuilder {
   /** The underlying AST node */
-  readonly node: n.Expression
+  readonly node: n.Expression;
 
   /** Property access: `.name` */
-  prop(name: string): ChainBuilder
+  prop(name: string): ChainBuilder;
 
   /** Method call: `.name(args)` */
-  method(name: string, args?: n.Expression[]): ChainBuilder
+  method(name: string, args?: n.Expression[]): ChainBuilder;
 
   /** Direct call: `(args)` */
-  call(args?: n.Expression[]): ChainBuilder
+  call(args?: n.Expression[]): ChainBuilder;
 
   /** Computed property access: `[expr]` */
-  index(expr: n.Expression): ChainBuilder
+  index(expr: n.Expression): ChainBuilder;
 
   /** Finalize and return the expression */
-  build(): n.Expression
+  build(): n.Expression;
 }
 
 function createChain(start: n.Expression): ChainBuilder {
@@ -216,36 +215,30 @@ function createChain(start: n.Expression): ChainBuilder {
     node: start,
 
     prop(name) {
-      return createChain(
-        b.memberExpression(toExpr(this.node), b.identifier(name))
-      )
+      return createChain(b.memberExpression(toExpr(this.node), b.identifier(name)));
     },
 
     method(name, args = []) {
       return createChain(
         b.callExpression(
           b.memberExpression(toExpr(this.node), b.identifier(name)),
-          args.map(toExpr)
-        )
-      )
+          args.map(toExpr),
+        ),
+      );
     },
 
     call(args = []) {
-      return createChain(
-        b.callExpression(toExpr(this.node), args.map(toExpr))
-      )
+      return createChain(b.callExpression(toExpr(this.node), args.map(toExpr)));
     },
 
     index(expr) {
-      return createChain(
-        b.memberExpression(toExpr(this.node), toExpr(expr), true)
-      )
+      return createChain(b.memberExpression(toExpr(this.node), toExpr(expr), true));
     },
 
     build() {
-      return this.node
+      return this.node;
     },
-  }
+  };
 }
 
 // =============================================================================
@@ -257,64 +250,58 @@ function createChain(start: n.Expression): ChainBuilder {
  */
 export interface ObjBuilder {
   /** Add a property: `key: value` */
-  prop(key: string, value: n.Expression): ObjBuilder
+  prop(key: string, value: n.Expression): ObjBuilder;
 
   /** Add a property with string literal key: `"key": value` (for keys with special chars) */
-  stringProp(key: string, value: n.Expression): ObjBuilder
+  stringProp(key: string, value: n.Expression): ObjBuilder;
 
   /** Add a computed property: `[key]: value` */
-  computed(key: n.Expression, value: n.Expression): ObjBuilder
+  computed(key: n.Expression, value: n.Expression): ObjBuilder;
 
   /** Add a spread: `...expr` */
-  spread(expr: n.Expression): ObjBuilder
+  spread(expr: n.Expression): ObjBuilder;
 
   /** Add a shorthand property: `key` (where key is also the value identifier) */
-  shorthand(key: string): ObjBuilder
+  shorthand(key: string): ObjBuilder;
 
   /** Finalize and return the object expression */
-  build(): n.ObjectExpression
+  build(): n.ObjectExpression;
 }
 
 // Internal: properly typed for recast builder compatibility
 function createObj(props: ObjectPropertyLike[] = []): ObjBuilder {
   return {
     prop(key, value) {
-      const newProp = b.objectProperty(
-        b.identifier(key),
-        toExpr(value)
-      )
-      return createObj([...props, newProp])
+      const newProp = b.objectProperty(b.identifier(key), toExpr(value));
+      return createObj([...props, newProp]);
     },
 
     stringProp(key, value) {
-      const newProp = b.objectProperty(
-        b.stringLiteral(key),
-        toExpr(value)
-      )
-      return createObj([...props, newProp])
+      const newProp = b.objectProperty(b.stringLiteral(key), toExpr(value));
+      return createObj([...props, newProp]);
     },
 
     computed(key, value) {
-      const prop = b.objectProperty(toExpr(key), toExpr(value))
-      prop.computed = true
-      return createObj([...props, prop])
+      const prop = b.objectProperty(toExpr(key), toExpr(value));
+      prop.computed = true;
+      return createObj([...props, prop]);
     },
 
     spread(expr) {
-      const spreadElem = b.spreadElement(toExpr(expr))
-      return createObj([...props, spreadElem])
+      const spreadElem = b.spreadElement(toExpr(expr));
+      return createObj([...props, spreadElem]);
     },
 
     shorthand(key) {
-      const prop = b.objectProperty(b.identifier(key), b.identifier(key))
-      prop.shorthand = true
-      return createObj([...props, prop])
+      const prop = b.objectProperty(b.identifier(key), b.identifier(key));
+      prop.shorthand = true;
+      return createObj([...props, prop]);
     },
 
     build() {
-      return b.objectExpression(props)
+      return b.objectExpression(props);
     },
-  }
+  };
 }
 
 // =============================================================================
@@ -326,32 +313,32 @@ function createObj(props: ObjectPropertyLike[] = []): ObjBuilder {
  */
 export interface ArrBuilder {
   /** Add one or more elements */
-  add(...exprs: n.Expression[]): ArrBuilder
+  add(...exprs: n.Expression[]): ArrBuilder;
 
   /** Add a spread element: `...expr` */
-  spread(expr: n.Expression): ArrBuilder
+  spread(expr: n.Expression): ArrBuilder;
 
   /** Finalize and return the array expression */
-  build(): n.ArrayExpression
+  build(): n.ArrayExpression;
 }
 
 // Internal: properly typed for recast builder compatibility
 function createArr(elems: ArrayElementLike[] = []): ArrBuilder {
   return {
     add(...exprs) {
-      const newElems = exprs.map((e) => toExpr(e) as ArrayElementLike)
-      return createArr([...elems, ...newElems])
+      const newElems = exprs.map(e => toExpr(e) as ArrayElementLike);
+      return createArr([...elems, ...newElems]);
     },
 
     spread(expr) {
-      const spreadElem = b.spreadElement(toExpr(expr))
-      return createArr([...elems, spreadElem])
+      const spreadElem = b.spreadElement(toExpr(expr));
+      return createArr([...elems, spreadElem]);
     },
 
     build() {
-      return b.arrayExpression(elems)
+      return b.arrayExpression(elems);
     },
-  }
+  };
 }
 
 // =============================================================================
@@ -359,20 +346,20 @@ function createArr(elems: ArrayElementLike[] = []): ArrBuilder {
 // =============================================================================
 
 interface FnParam {
-  name: string
-  type: n.TSType | undefined
-  optional: boolean
-  rest: boolean
-  defaultValue: n.Expression | undefined
+  name: string;
+  type: n.TSType | undefined;
+  optional: boolean;
+  rest: boolean;
+  defaultValue: n.Expression | undefined;
 }
 
 interface FnConfig {
-  params: FnParam[]
-  body: n.Statement[]
-  returnType: n.TSType | null
-  isAsync: boolean
-  isArrow: boolean
-  isGenerator: boolean
+  params: FnParam[];
+  body: n.Statement[];
+  returnType: n.TSType | null;
+  isAsync: boolean;
+  isArrow: boolean;
+  isGenerator: boolean;
 }
 
 const defaultParam = (name: string, type?: n.TSType): FnParam => ({
@@ -381,160 +368,155 @@ const defaultParam = (name: string, type?: n.TSType): FnParam => ({
   optional: false,
   rest: false,
   defaultValue: undefined,
-})
+});
 
 /**
  * Fluent builder for function expressions and declarations.
  */
 export interface FnBuilder {
   /** Add a required parameter */
-  param(name: string, type?: n.TSType): FnBuilder
+  param(name: string, type?: n.TSType): FnBuilder;
 
   /** Add an optional parameter */
-  optionalParam(name: string, type?: n.TSType): FnBuilder
+  optionalParam(name: string, type?: n.TSType): FnBuilder;
 
   /** Add a rest parameter: `...name` */
-  restParam(name: string, type?: n.TSType): FnBuilder
+  restParam(name: string, type?: n.TSType): FnBuilder;
 
   /** Add a parameter with a default value */
-  defaultParam(name: string, defaultValue: n.Expression, type?: n.TSType): FnBuilder
+  defaultParam(name: string, defaultValue: n.Expression, type?: n.TSType): FnBuilder;
 
   /** Set the return type annotation */
-  returns(type: n.TSType): FnBuilder
+  returns(type: n.TSType): FnBuilder;
 
   /** Set the function body */
-  body(...statements: n.Statement[]): FnBuilder
+  body(...statements: n.Statement[]): FnBuilder;
 
   /** Mark as async */
-  async(): FnBuilder
+  async(): FnBuilder;
 
   /** Make it an arrow function */
-  arrow(): FnBuilder
+  arrow(): FnBuilder;
 
   /** Make it a generator function */
-  generator(): FnBuilder
+  generator(): FnBuilder;
 
   /** Build as a function expression */
-  build(): n.Expression
+  build(): n.Expression;
 
   /** Build as a named function declaration */
-  toDeclaration(name: string): n.FunctionDeclaration
+  toDeclaration(name: string): n.FunctionDeclaration;
 }
 
 function createFn(config: FnConfig): FnBuilder {
   const buildParams = (): PatternKind[] =>
     config.params.map((p): PatternKind => {
       if (p.rest) {
-        const restId = b.identifier(p.name)
+        const restId = b.identifier(p.name);
         if (p.type) {
-          restId.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
+          restId.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type));
         }
-        return b.restElement(restId) as PatternKind
+        return b.restElement(restId) as PatternKind;
       } else if (p.defaultValue) {
         // For default params, type annotation goes on the identifier
-        const id = b.identifier(p.name)
+        const id = b.identifier(p.name);
         if (p.type) {
-          id.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
+          id.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type));
         }
-        return b.assignmentPattern(id, toExpr(p.defaultValue)) as PatternKind
+        return b.assignmentPattern(id, toExpr(p.defaultValue)) as PatternKind;
       } else {
-        const param = b.identifier(p.name)
+        const param = b.identifier(p.name);
         if (p.type) {
-          param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
+          param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type));
         }
         if (p.optional) {
-          param.optional = true
+          param.optional = true;
         }
-        return param as PatternKind
+        return param as PatternKind;
       }
-    })
+    });
 
   return {
     param(name, type) {
       return createFn({
         ...config,
         params: [...config.params, defaultParam(name, type)],
-      })
+      });
     },
 
     optionalParam(name, type) {
       return createFn({
         ...config,
         params: [...config.params, { ...defaultParam(name, type), optional: true }],
-      })
+      });
     },
 
     restParam(name, type) {
       return createFn({
         ...config,
         params: [...config.params, { ...defaultParam(name, type), rest: true }],
-      })
+      });
     },
 
     defaultParam(name, defaultValue, type) {
       return createFn({
         ...config,
         params: [...config.params, { ...defaultParam(name, type), defaultValue }],
-      })
+      });
     },
 
     returns(type) {
-      return createFn({ ...config, returnType: type })
+      return createFn({ ...config, returnType: type });
     },
 
     body(...statements) {
-      return createFn({ ...config, body: statements })
+      return createFn({ ...config, body: statements });
     },
 
     async() {
-      return createFn({ ...config, isAsync: true })
+      return createFn({ ...config, isAsync: true });
     },
 
     arrow() {
-      return createFn({ ...config, isArrow: true })
+      return createFn({ ...config, isArrow: true });
     },
 
     generator() {
-      return createFn({ ...config, isGenerator: true })
+      return createFn({ ...config, isGenerator: true });
     },
 
     build() {
-      const params = buildParams()
-      const block = b.blockStatement(config.body.map(toStmt))
+      const params = buildParams();
+      const block = b.blockStatement(config.body.map(toStmt));
 
       if (config.isArrow) {
-        const fn = b.arrowFunctionExpression(params, block, false)
-        fn.async = config.isAsync
+        const fn = b.arrowFunctionExpression(params, block, false);
+        fn.async = config.isAsync;
         if (config.returnType) {
-          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
+          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
         }
-        return fn
+        return fn;
       } else {
-        const fn = b.functionExpression(null, params, block, config.isGenerator)
-        fn.async = config.isAsync
+        const fn = b.functionExpression(null, params, block, config.isGenerator);
+        fn.async = config.isAsync;
         if (config.returnType) {
-          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
+          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
         }
-        return fn
+        return fn;
       }
     },
 
     toDeclaration(name) {
-      const params = buildParams()
-      const block = b.blockStatement(config.body.map(toStmt))
-      const fn = b.functionDeclaration(
-        b.identifier(name),
-        params,
-        block,
-        config.isGenerator
-      )
-      fn.async = config.isAsync
+      const params = buildParams();
+      const block = b.blockStatement(config.body.map(toStmt));
+      const fn = b.functionDeclaration(b.identifier(name), params, block, config.isGenerator);
+      fn.async = config.isAsync;
       if (config.returnType) {
-        fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType))
+        fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
       }
-      return fn
+      return fn;
     },
-  }
+  };
 }
 
 // =============================================================================
@@ -563,13 +545,13 @@ type BinaryOp =
   | ">>>"
   | "&"
   | "|"
-  | "^"
+  | "^";
 
-type LogicalOp = "&&" | "||" | "??"
+type LogicalOp = "&&" | "||" | "??";
 
-type UnaryOp = "!" | "-" | "+" | "typeof" | "void" | "delete" | "~"
+type UnaryOp = "!" | "-" | "+" | "typeof" | "void" | "delete" | "~";
 
-type AssignOp = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "??=" | "||=" | "&&="
+type AssignOp = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "??=" | "||=" | "&&=";
 
 /**
  * Operator helpers for building expressions.
@@ -591,16 +573,12 @@ const op = {
   assign: (
     left: n.Identifier | n.MemberExpression | n.Pattern,
     operator: AssignOp,
-    right: n.Expression
-  ) =>
-    b.assignmentExpression(operator, left as PatternKind, toExpr(right)),
+    right: n.Expression,
+  ) => b.assignmentExpression(operator, left as PatternKind, toExpr(right)),
 
   /** Ternary/conditional expression */
-  ternary: (
-    test: n.Expression,
-    consequent: n.Expression,
-    alternate: n.Expression
-  ) => b.conditionalExpression(toExpr(test), toExpr(consequent), toExpr(alternate)),
+  ternary: (test: n.Expression, consequent: n.Expression, alternate: n.Expression) =>
+    b.conditionalExpression(toExpr(test), toExpr(consequent), toExpr(alternate)),
 
   /** New expression */
   new: (callee: n.Expression, args: n.Expression[] = []) =>
@@ -629,7 +607,7 @@ const op = {
   /** Nullish coalescing: `??` */
   nullish: (left: n.Expression, right: n.Expression) =>
     b.logicalExpression("??", toExpr(left), toExpr(right)),
-} as const
+} as const;
 
 // =============================================================================
 // Statement Helpers
@@ -641,22 +619,20 @@ const op = {
 const stmt = {
   /** `const name = init` */
   const: (name: string, init: n.Expression, type?: n.TSType) => {
-    const id = b.identifier(name)
+    const id = b.identifier(name);
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
     }
-    return b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))])
+    return b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))]);
   },
 
   /** `let name = init` */
   let: (name: string, init?: n.Expression, type?: n.TSType) => {
-    const id = b.identifier(name)
+    const id = b.identifier(name);
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
     }
-    return b.variableDeclaration("let", [
-      b.variableDeclarator(id, init ? toExpr(init) : null),
-    ])
+    return b.variableDeclaration("let", [b.variableDeclarator(id, init ? toExpr(init) : null)]);
   },
 
   /** `return expr` */
@@ -667,15 +643,11 @@ const stmt = {
   expr: (expr: n.Expression) => b.expressionStatement(toExpr(expr)),
 
   /** If statement */
-  if: (
-    test: n.Expression,
-    consequent: n.Statement[],
-    alternate?: n.Statement[]
-  ) =>
+  if: (test: n.Expression, consequent: n.Statement[], alternate?: n.Statement[]) =>
     b.ifStatement(
       toExpr(test),
       b.blockStatement(consequent.map(toStmt)),
-      alternate ? b.blockStatement(alternate.map(toStmt)) : null
+      alternate ? b.blockStatement(alternate.map(toStmt)) : null,
     ),
 
   /** Throw statement */
@@ -686,52 +658,40 @@ const stmt = {
     block: n.Statement[],
     catchParam: string,
     catchBlock: n.Statement[],
-    finallyBlock?: n.Statement[]
+    finallyBlock?: n.Statement[],
   ) =>
     b.tryStatement(
       b.blockStatement(block.map(toStmt)),
-      b.catchClause(
-        b.identifier(catchParam),
-        null,
-        b.blockStatement(catchBlock.map(toStmt))
-      ),
-      finallyBlock ? b.blockStatement(finallyBlock.map(toStmt)) : null
+      b.catchClause(b.identifier(catchParam), null, b.blockStatement(catchBlock.map(toStmt))),
+      finallyBlock ? b.blockStatement(finallyBlock.map(toStmt)) : null,
     ),
 
   /** For...of statement */
-  forOf: (
-    varKind: "const" | "let",
-    varName: string,
-    iterable: n.Expression,
-    body: n.Statement[]
-  ) =>
+  forOf: (varKind: "const" | "let", varName: string, iterable: n.Expression, body: n.Statement[]) =>
     b.forOfStatement(
-      b.variableDeclaration(varKind, [
-        b.variableDeclarator(b.identifier(varName)),
-      ]),
+      b.variableDeclaration(varKind, [b.variableDeclarator(b.identifier(varName))]),
       toExpr(iterable),
-      b.blockStatement(body.map(toStmt))
+      b.blockStatement(body.map(toStmt)),
     ),
 
   /** Block statement */
-  block: (...statements: n.Statement[]) =>
-    b.blockStatement(statements.map(toStmt)),
+  block: (...statements: n.Statement[]) => b.blockStatement(statements.map(toStmt)),
 
   /** Async function declaration */
   asyncFn: (
     name: string,
     params: (n.Identifier | n.ObjectPattern)[],
-    body: n.Statement[]
+    body: n.Statement[],
   ): n.FunctionDeclaration => {
     const fn = b.functionDeclaration(
       b.identifier(name),
       params,
-      b.blockStatement(body.map(toStmt))
-    )
-    fn.async = true
-    return fn
+      b.blockStatement(body.map(toStmt)),
+    );
+    fn.async = true;
+    return fn;
   },
-} as const
+} as const;
 
 // =============================================================================
 // TypeScript Type Helpers
@@ -755,23 +715,26 @@ const ts = {
 
   /** Type reference: `TypeName` or `TypeName<T>` */
   ref: (name: string, typeParams?: n.TSType[]) => {
-    const ref = b.tsTypeReference(b.identifier(name))
+    const ref = b.tsTypeReference(b.identifier(name));
     if (typeParams && typeParams.length > 0) {
-      ref.typeParameters = b.tsTypeParameterInstantiation(
-        typeParams.map(toTSType)
-      )
+      ref.typeParameters = b.tsTypeParameterInstantiation(typeParams.map(toTSType));
     }
-    return ref
+    return ref;
   },
 
-  /** 
+  /**
    * Qualified name reference: `Namespace.Type` or `Namespace.Nested.Type`
-   * 
+   *
    * @param parts - Dot-separated path segments (e.g., "S", "Schema", "Type" for S.Schema.Type)
    *                or two strings for simple qualified names (e.g., "z", "infer")
    * @param typeParams - Optional type parameters
    */
-  qualifiedRef: (first: string, second: string, typeParamsOrThird?: n.TSType[] | string, ...rest: string[]) => {
+  qualifiedRef: (
+    first: string,
+    second: string,
+    typeParamsOrThird?: n.TSType[] | string,
+    ...rest: string[]
+  ) => {
     let parts: string[];
     let typeParams: n.TSType[] | undefined;
 
@@ -794,11 +757,9 @@ const ts = {
 
     const ref = b.tsTypeReference(qualifiedName);
     if (typeParams && typeParams.length > 0) {
-      ref.typeParameters = b.tsTypeParameterInstantiation(
-        typeParams.map(toTSType)
-      )
+      ref.typeParameters = b.tsTypeParameterInstantiation(typeParams.map(toTSType));
     }
-    return ref
+    return ref;
   },
 
   /**
@@ -812,11 +773,9 @@ const ts = {
     }
     const ref = b.tsTypeReference(qualifiedName);
     if (typeParams.length > 0) {
-      ref.typeParameters = b.tsTypeParameterInstantiation(
-        typeParams.map(toTSType)
-      )
+      ref.typeParameters = b.tsTypeParameterInstantiation(typeParams.map(toTSType));
     }
-    return ref
+    return ref;
   },
 
   /** Array type: `T[]` */
@@ -826,17 +785,16 @@ const ts = {
   union: (...types: n.TSType[]) => b.tsUnionType(types.map(toTSType)),
 
   /** Intersection type: `A & B` */
-  intersection: (...types: n.TSType[]) =>
-    b.tsIntersectionType(types.map(toTSType)),
+  intersection: (...types: n.TSType[]) => b.tsIntersectionType(types.map(toTSType)),
 
   /** Literal type: `"value"` or `42` */
   literal: (value: string | number | boolean) => {
     if (typeof value === "string") {
-      return b.tsLiteralType(b.stringLiteral(value))
+      return b.tsLiteralType(b.stringLiteral(value));
     } else if (typeof value === "number") {
-      return b.tsLiteralType(b.numericLiteral(value))
+      return b.tsLiteralType(b.numericLiteral(value));
     } else {
-      return b.tsLiteralType(b.booleanLiteral(value))
+      return b.tsLiteralType(b.booleanLiteral(value));
     }
   },
 
@@ -844,21 +802,18 @@ const ts = {
   tuple: (...types: n.TSType[]) => b.tsTupleType(types.map(toTSType)),
 
   /** Function type: `(a: A, b: B) => R` */
-  fn: (
-    params: { name: string; type: n.TSType; optional?: boolean }[],
-    returnType: n.TSType
-  ) => {
-    const fnParams: FnParamKind[] = params.map((p) => {
-      const param = b.identifier(p.name)
-      param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type))
+  fn: (params: { name: string; type: n.TSType; optional?: boolean }[], returnType: n.TSType) => {
+    const fnParams: FnParamKind[] = params.map(p => {
+      const param = b.identifier(p.name);
+      param.typeAnnotation = b.tsTypeAnnotation(toTSType(p.type));
       if (p.optional) {
-        param.optional = true
+        param.optional = true;
       }
-      return param as FnParamKind
-    })
-    const fnType = b.tsFunctionType(fnParams)
-    fnType.typeAnnotation = b.tsTypeAnnotation(toTSType(returnType))
-    return fnType
+      return param as FnParamKind;
+    });
+    const fnType = b.tsFunctionType(fnParams);
+    fnType.typeAnnotation = b.tsTypeAnnotation(toTSType(returnType));
+    return fnType;
   },
 
   /** Typeof type: `typeof x` */
@@ -882,10 +837,7 @@ const ts = {
 
   /** Promise type: `Promise<T>` */
   promise: (inner: n.TSType) =>
-    b.tsTypeReference(
-      b.identifier("Promise"),
-      b.tsTypeParameterInstantiation([toTSType(inner)])
-    ),
+    b.tsTypeReference(b.identifier("Promise"), b.tsTypeParameterInstantiation([toTSType(inner)])),
 
   /**
    * Object type literal: `{ name: string; age?: number }`
@@ -900,18 +852,88 @@ const ts = {
       props.map(p => {
         const sig = b.tsPropertySignature(
           b.identifier(p.name),
-          b.tsTypeAnnotation(toTSType(p.type))
-        )
-        if (p.optional) sig.optional = true
-        if (p.readonly) sig.readonly = true
-        return sig
-      })
+          b.tsTypeAnnotation(toTSType(p.type)),
+        );
+        if (p.optional) sig.optional = true;
+        if (p.readonly) sig.readonly = true;
+        return sig;
+      }),
     ),
 
   /** Indexed access type: `T["key"]` or `T[K]` */
   indexedAccess: (objectType: n.TSType, indexType: n.TSType) =>
     b.tsIndexedAccessType(toTSType(objectType), toTSType(indexType)),
-} as const
+
+  // === Type Modifiers ===
+
+  /** Make type nullable: `T | null` */
+  nullable: (type: n.TSType): n.TSType => b.tsUnionType([toTSType(type), b.tsNullKeyword()]),
+
+  /** Wrap type in array: `T[]` */
+  asArray: (type: n.TSType): n.TSType => b.tsArrayType(toTSType(type)),
+
+  /**
+   * Apply modifiers to a type.
+   * Order: array first, then nullable (so `T[] | null`, not `(T | null)[]`)
+   */
+  withModifiers: (type: n.TSType, opts: { nullable?: boolean; array?: boolean }): n.TSType => {
+    let result = type;
+    if (opts.array) result = b.tsArrayType(toTSType(result));
+    if (opts.nullable) result = b.tsUnionType([toTSType(result), b.tsNullKeyword()]);
+    return result;
+  },
+
+  /**
+   * Parse a type string into a TSType AST node.
+   *
+   * Handles:
+   * - Primitives: "string", "number", "boolean", "bigint", "unknown", "void", "null"
+   * - Built-ins: "Date", "Buffer"
+   * - Array suffix: "string[]", "MyType[]"
+   * - References: anything else becomes `ts.ref(typeName)`
+   *
+   * @example
+   * ts.fromString("string")      // TSStringKeyword
+   * ts.fromString("Date")        // TSTypeReference to "Date"
+   * ts.fromString("string[]")    // TSArrayType(TSStringKeyword)
+   * ts.fromString("User")        // TSTypeReference to "User"
+   */
+  fromString(typeName: string): n.TSType {
+    // Handle array suffix first
+    if (typeName.endsWith("[]")) {
+      const elemType = typeName.slice(0, -2);
+      return b.tsArrayType(toTSType(this.fromString(elemType)));
+    }
+
+    switch (typeName) {
+      case "string":
+        return b.tsStringKeyword();
+      case "number":
+        return b.tsNumberKeyword();
+      case "boolean":
+        return b.tsBooleanKeyword();
+      case "bigint":
+        return b.tsBigIntKeyword();
+      case "unknown":
+        return b.tsUnknownKeyword();
+      case "void":
+        return b.tsVoidKeyword();
+      case "null":
+        return b.tsNullKeyword();
+      case "undefined":
+        return b.tsUndefinedKeyword();
+      case "any":
+        return b.tsAnyKeyword();
+      case "never":
+        return b.tsNeverKeyword();
+      case "Date":
+      case "Buffer":
+      default:
+        // Everything else is a type reference
+        return b.tsTypeReference(b.identifier(typeName));
+    }
+  },
+} as const;
 
 // =============================================================================
 // Parameter Helpers
@@ -921,10 +943,10 @@ const ts = {
  * Field descriptor for destructured parameters
  */
 interface DestructuredField {
-  readonly name: string
-  readonly type: n.TSType
-  readonly optional?: boolean
-  readonly defaultValue?: n.Expression
+  readonly name: string;
+  readonly type: n.TSType;
+  readonly optional?: boolean;
+  readonly defaultValue?: n.Expression;
 }
 
 /**
@@ -935,61 +957,59 @@ const param = {
    * Create a typed parameter: `name: Type`
    */
   typed: (name: string, type: n.TSType): n.Identifier => {
-    const id = b.identifier(name)
-    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
-    return id
+    const id = b.identifier(name);
+    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
+    return id;
   },
 
   /**
    * Create an optional typed parameter: `name?: Type`
    */
   optional: (name: string, type: n.TSType): n.Identifier => {
-    const id = b.identifier(name)
-    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
-    id.optional = true
-    return id
+    const id = b.identifier(name);
+    id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
+    id.optional = true;
+    return id;
   },
 
   /**
    * Create a parameter with default value: `name: Type = defaultValue`
    */
   withDefault: (name: string, defaultValue: n.Expression, type?: n.TSType): n.AssignmentPattern => {
-    const id = b.identifier(name)
+    const id = b.identifier(name);
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
     }
-    return b.assignmentPattern(id, toExpr(defaultValue))
+    return b.assignmentPattern(id, toExpr(defaultValue));
   },
 
   /**
    * Create a destructured parameter with Pick type: `{ field }: Pick<Entity, 'field'>`
-   * 
+   *
    * @example
    * param.pick(["id", "name"], "UserRow")
    * // { id, name }: Pick<UserRow, "id" | "name">
    */
   pick: (fields: readonly string[], entityType: string): n.ObjectPattern => {
     const pattern = b.objectPattern(
-      fields.map((f) => {
-        const prop = b.objectProperty(b.identifier(f), b.identifier(f))
-        prop.shorthand = true
-        return prop
-      })
-    )
+      fields.map(f => {
+        const prop = b.objectProperty(b.identifier(f), b.identifier(f));
+        prop.shorthand = true;
+        return prop;
+      }),
+    );
     // Pick<Entity, 'field1' | 'field2'>
     const pickType = ts.ref("Pick", [
       ts.ref(entityType),
-      fields.length === 1
-        ? ts.literal(fields[0]!)
-        : ts.union(...fields.map((f) => ts.literal(f))),
-    ])
-    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(pickType))
-    return pattern
+      fields.length === 1 ? ts.literal(fields[0]!) : ts.union(...fields.map(f => ts.literal(f))),
+    ]);
+    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(pickType));
+    return pattern;
   },
 
   /**
    * Create a destructured parameter with explicit types and optional defaults.
-   * 
+   *
    * @example
    * param.destructured([
    *   { name: "limit", type: ts.number(), optional: true, defaultValue: conjure.num(50) },
@@ -999,25 +1019,23 @@ const param = {
    */
   destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
     const pattern = b.objectPattern(
-      fields.map((f) => {
-        const id = b.identifier(f.name)
+      fields.map(f => {
+        const id = b.identifier(f.name);
         // Use AssignmentPattern for default values: { limit = 50 }
-        const value = f.defaultValue
-          ? b.assignmentPattern(id, toExpr(f.defaultValue))
-          : id
-        const prop = b.objectProperty(b.identifier(f.name), value)
-        prop.shorthand = true
-        return prop
-      })
-    )
+        const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
+        const prop = b.objectProperty(b.identifier(f.name), value);
+        prop.shorthand = true;
+        return prop;
+      }),
+    );
     // Build the type annotation: { name: type; name?: type; }
     const typeAnnotation = ts.objectType(
-      fields.map((f) => ({ name: f.name, type: f.type, optional: f.optional }))
-    )
-    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation))
-    return pattern
+      fields.map(f => ({ name: f.name, type: f.type, optional: f.optional })),
+    );
+    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
+    return pattern;
   },
-} as const
+} as const;
 
 // =============================================================================
 // Export Statement Helpers (conjure.export.*)
@@ -1033,28 +1051,26 @@ const exportHelpers = {
    * Export const declaration: `export const name = init`
    */
   const: (name: string, init: n.Expression, type?: n.TSType): n.ExportNamedDeclaration => {
-    const id = b.identifier(name)
+    const id = b.identifier(name);
     if (type) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
     }
-    const decl = b.variableDeclaration("const", [
-      b.variableDeclarator(id, toExpr(init)),
-    ])
-    return b.exportNamedDeclaration(decl, [])
+    const decl = b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))]);
+    return b.exportNamedDeclaration(decl, []);
   },
 
   /**
    * Export function declaration: `export function name(...) { ... }`
    */
   fn: (fn: n.FunctionDeclaration): n.ExportNamedDeclaration => {
-    return b.exportNamedDeclaration(fn, [])
+    return b.exportNamedDeclaration(fn, []);
   },
 
   /**
    * Export default: `export default expr`
    */
   default: (expr: n.Expression): n.ExportDefaultDeclaration => {
-    return b.exportDefaultDeclaration(toExpr(expr) as ExpressionKind)
+    return b.exportDefaultDeclaration(toExpr(expr));
   },
 
   /**
@@ -1062,28 +1078,28 @@ const exportHelpers = {
    * Also supports renaming: `export { a as b }`
    */
   named: (...names: (string | { local: string; exported: string })[]): n.ExportNamedDeclaration => {
-    const specifiers = names.map((n) => {
+    const specifiers = names.map(n => {
       if (typeof n === "string") {
         return b.exportSpecifier.from({
           local: b.identifier(n),
           exported: b.identifier(n),
-        })
+        });
       } else {
         return b.exportSpecifier.from({
           local: b.identifier(n.local),
           exported: b.identifier(n.exported),
-        })
+        });
       }
-    })
-    return b.exportNamedDeclaration(null, specifiers)
+    });
+    return b.exportNamedDeclaration(null, specifiers);
   },
 
   /**
    * Export type alias: `export type Name = Type`
    */
   type: (name: string, type: n.TSType): n.ExportNamedDeclaration => {
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
-    return b.exportNamedDeclaration(decl, [])
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
+    return b.exportNamedDeclaration(decl, []);
   },
 
   /**
@@ -1091,24 +1107,18 @@ const exportHelpers = {
    */
   interface: (
     name: string,
-    properties: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[]
+    properties: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[],
   ): n.ExportNamedDeclaration => {
     const members = properties.map((p): InterfaceBodyMember => {
-      const sig = b.tsPropertySignature(
-        b.identifier(p.name),
-        b.tsTypeAnnotation(toTSType(p.type))
-      )
-      if (p.optional) sig.optional = true
-      if (p.readonly) sig.readonly = true
-      return sig
-    })
-    const decl = b.tsInterfaceDeclaration(
-      b.identifier(name),
-      b.tsInterfaceBody(members)
-    )
-    return b.exportNamedDeclaration(decl, [])
+      const sig = b.tsPropertySignature(b.identifier(p.name), b.tsTypeAnnotation(toTSType(p.type)));
+      if (p.optional) sig.optional = true;
+      if (p.readonly) sig.readonly = true;
+      return sig;
+    });
+    const decl = b.tsInterfaceDeclaration(b.identifier(name), b.tsInterfaceBody(members));
+    return b.exportNamedDeclaration(decl, []);
   },
-} as const
+} as const;
 
 // =============================================================================
 // Export Helpers with Symbol Tracking (exp.*)
@@ -1118,34 +1128,30 @@ const exportHelpers = {
  * Helper to create a SymbolStatement wrapper
  */
 function symbolStatement(node: n.Statement, symbol: SymbolMeta): SymbolStatement {
-  return { _tag: "SymbolStatement", node, symbol }
+  return { _tag: "SymbolStatement", node, symbol };
 }
 
 /**
  * Helper to create SymbolMeta with proper handling of optional shape
  */
-function createSymbolMeta(
-  name: string,
-  ctx: SymbolContext,
-  isType: boolean
-): SymbolMeta {
+function createSymbolMeta(name: string, ctx: SymbolContext, isType: boolean): SymbolMeta {
   const base = {
     name,
     capability: ctx.capability,
     entity: ctx.entity,
     isType,
-  }
-  return ctx.shape !== undefined ? { ...base, shape: ctx.shape } : base
+  };
+  return ctx.shape !== undefined ? { ...base, shape: ctx.shape } : base;
 }
 
 /**
  * TypeScript interface property signature
  */
 interface TSPropertySignature {
-  name: string
-  type: n.TSType
-  optional?: boolean
-  readonly?: boolean
+  name: string;
+  type: n.TSType;
+  optional?: boolean;
+  readonly?: boolean;
 }
 
 /**
@@ -1153,14 +1159,11 @@ interface TSPropertySignature {
  */
 function buildInterfaceProperties(props: TSPropertySignature[]): InterfaceBodyMember[] {
   return props.map((p): InterfaceBodyMember => {
-    const sig = b.tsPropertySignature(
-      b.identifier(p.name),
-      b.tsTypeAnnotation(toTSType(p.type))
-    )
-    if (p.optional) sig.optional = true
-    if (p.readonly) sig.readonly = true
-    return sig
-  })
+    const sig = b.tsPropertySignature(b.identifier(p.name), b.tsTypeAnnotation(toTSType(p.type)));
+    if (p.optional) sig.optional = true;
+    if (p.readonly) sig.readonly = true;
+    return sig;
+  });
 }
 
 /**
@@ -1174,27 +1177,23 @@ export const exp = {
   interface: (
     name: string,
     ctx: SymbolContext,
-    properties: TSPropertySignature[]
+    properties: TSPropertySignature[],
   ): SymbolStatement => {
     const decl = b.tsInterfaceDeclaration(
       b.identifier(name),
-      b.tsInterfaceBody(buildInterfaceProperties(properties))
-    )
-    const exportDecl = b.exportNamedDeclaration(decl, [])
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+      b.tsInterfaceBody(buildInterfaceProperties(properties)),
+    );
+    const exportDecl = b.exportNamedDeclaration(decl, []);
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
   },
 
   /**
    * Export type alias: `export type Name = Type`
    */
-  typeAlias: (
-    name: string,
-    ctx: SymbolContext,
-    type: n.TSType
-  ): SymbolStatement => {
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
-    const exportDecl = b.exportNamedDeclaration(decl, [])
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+  typeAlias: (name: string, ctx: SymbolContext, type: n.TSType): SymbolStatement => {
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
+    const exportDecl = b.exportNamedDeclaration(decl, []);
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
   },
 
   /**
@@ -1204,35 +1203,52 @@ export const exp = {
     name: string,
     ctx: SymbolContext,
     init: n.Expression,
-    typeAnnotation?: n.TSType
+    typeAnnotation?: n.TSType,
   ): SymbolStatement => {
-    const id = b.identifier(name)
+    const id = b.identifier(name);
     if (typeAnnotation) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation))
+      id.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
     }
-    const decl = b.variableDeclaration("const", [
-      b.variableDeclarator(id, toExpr(init)),
-    ])
-    const exportDecl = b.exportNamedDeclaration(decl, [])
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, false))
+    const decl = b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))]);
+    const exportDecl = b.exportNamedDeclaration(decl, []);
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, false));
   },
 
   /**
    * Export type alias for inferred types: `export type Name = typeof schema`
    * Useful for exporting the inferred type alongside a schema constant.
    */
-  type: (
-    name: string,
-    ctx: SymbolContext,
-    type: n.TSType
-  ): SymbolStatement => {
+  type: (name: string, ctx: SymbolContext, type: n.TSType): SymbolStatement => {
     // This is the same as typeAlias but semantically distinct -
     // used for inferred types like `z.infer<typeof Schema>`
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type))
-    const exportDecl = b.exportNamedDeclaration(decl, [])
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true))
+    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
+    const exportDecl = b.exportNamedDeclaration(decl, []);
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
   },
-} as const
+
+  /**
+   * Export TypeScript enum declaration: `export enum Name { A = 'a', B = 'b' }`
+   *
+   * Member names are normalized: uppercase with non-alphanumeric chars replaced by underscore.
+   *
+   * @example
+   * exp.tsEnum("Status", { capability: "types", entity: "Status" }, ["active", "pending"])
+   * // export enum Status { ACTIVE = "active", PENDING = "pending" }
+   */
+  tsEnum: (name: string, ctx: SymbolContext, values: readonly string[]): SymbolStatement => {
+    const enumDecl = b.tsEnumDeclaration(
+      b.identifier(name),
+      values.map(v =>
+        b.tsEnumMember(
+          b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
+          b.stringLiteral(v),
+        ),
+      ),
+    );
+    const exportDecl = b.exportNamedDeclaration(enumDecl, []);
+    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
+  },
+} as const;
 
 // =============================================================================
 // Program Builder
@@ -1241,33 +1257,26 @@ export const exp = {
 /**
  * Type guard for SymbolStatement
  */
-function isSymbolStatement(
-  stmt: n.Statement | SymbolStatement
-): stmt is SymbolStatement {
+function isSymbolStatement(stmt: n.Statement | SymbolStatement): stmt is SymbolStatement {
   return (
-    typeof stmt === "object" &&
-    stmt !== null &&
-    "_tag" in stmt &&
-    stmt._tag === "SymbolStatement"
-  )
+    typeof stmt === "object" && stmt !== null && "_tag" in stmt && stmt._tag === "SymbolStatement"
+  );
 }
 
 /**
  * Create a SymbolProgram from statements, extracting symbol metadata.
  * Accepts both regular statements and SymbolStatements.
  */
-function createSymbolProgram(
-  ...statements: (n.Statement | SymbolStatement)[]
-): SymbolProgram {
-  const nodes: n.Statement[] = []
-  const symbols: SymbolMeta[] = []
+function createSymbolProgram(...statements: (n.Statement | SymbolStatement)[]): SymbolProgram {
+  const nodes: n.Statement[] = [];
+  const symbols: SymbolMeta[] = [];
 
   for (const stmt of statements) {
     if (isSymbolStatement(stmt)) {
-      nodes.push(stmt.node)
-      symbols.push(stmt.symbol)
+      nodes.push(stmt.node);
+      symbols.push(stmt.symbol);
     } else {
-      nodes.push(stmt)
+      nodes.push(stmt);
     }
   }
 
@@ -1275,7 +1284,7 @@ function createSymbolProgram(
     _tag: "SymbolProgram",
     node: b.program(nodes.map(toStmt)),
     symbols,
-  }
+  };
 }
 
 // =============================================================================
@@ -1296,14 +1305,38 @@ export const conjure = {
   /** Start a chain from any expression */
   chain: (expr: n.Expression) => createChain(expr),
 
+  /**
+   * Quick method call: `callee.method(args)`
+   *
+   * More concise than `conjure.chain(callee).method(name, args).build()` for one-shot calls.
+   *
+   * @param callee - The object to call the method on (string or expression)
+   * @param method - The method name
+   * @param args - Optional arguments to pass
+   *
+   * @example
+   * conjure.call("db", "selectFrom", [conjure.str("users")])
+   * // db.selectFrom("users")
+   */
+  call: (
+    callee: n.Expression | string,
+    method: string,
+    args: n.Expression[] = [],
+  ): n.Expression => {
+    const calleeExpr = typeof callee === "string" ? b.identifier(callee) : callee;
+    return b.callExpression(
+      b.memberExpression(toExpr(calleeExpr), b.identifier(method)),
+      args.map(toExpr),
+    );
+  },
+
   // === Compound builders ===
 
   /** Start an object literal builder */
   obj: () => createObj(),
 
   /** Start an array literal builder */
-  arr: (...elements: n.Expression[]) =>
-    createArr(elements.map((e) => toExpr(e) as ArrayElementLike)),
+  arr: (...elements: n.Expression[]) => createArr(elements.map(e => toExpr(e) as ArrayElementLike)),
 
   /** Start a function builder */
   fn: () =>
@@ -1336,9 +1369,9 @@ export const conjure = {
   /** Template literal */
   template: (quasis: string[], ...expressions: n.Expression[]) => {
     const templateElements = quasis.map((raw, i) =>
-      b.templateElement({ raw, cooked: raw }, i === quasis.length - 1)
-    )
-    return b.templateLiteral(templateElements, expressions.map(toExpr))
+      b.templateElement({ raw, cooked: raw }, i === quasis.length - 1),
+    );
+    return b.templateLiteral(templateElements, expressions.map(toExpr));
   },
 
   // === Operators ===
@@ -1351,14 +1384,18 @@ export const conjure = {
   export: exportHelpers,
 
   /** Async function declaration */
-  asyncFn: (name: string, params: (n.Identifier | n.ObjectPattern)[], body: n.Statement[]): n.FunctionDeclaration => {
-    const fn = b.functionDeclaration(
-      b.identifier(name),
-      params,
-      b.blockStatement(body.map(toStmt))
-    )
-    fn.async = true
-    return fn
+  asyncFn: (
+    name: string,
+    params: (n.Identifier | n.ObjectPattern)[],
+    body: n.Statement[],
+  ): n.FunctionDeclaration => {
+    const fn = b.functionDeclaration.from({
+      id: b.identifier(name),
+      params: params,
+      body: b.blockStatement(body.map(toStmt)),
+      async: true,
+    });
+    return fn;
   },
 
   // === TypeScript types ===
@@ -1382,8 +1419,7 @@ export const conjure = {
   print: (node: n.Node) => recast.print(node).code,
 
   /** Create a program from statements (backwards compatible) */
-  program: (...statements: n.Statement[]) =>
-    b.program(statements.map(toStmt)),
+  program: (...statements: n.Statement[]) => b.program(statements.map(toStmt)),
 
   /**
    * Create a SymbolProgram from statements, extracting symbol metadata.
@@ -1396,6 +1432,6 @@ export const conjure = {
 
   /** Raw recast builders for advanced use cases */
   b,
-} as const
+} as const;
 
-export default conjure
+export default conjure;

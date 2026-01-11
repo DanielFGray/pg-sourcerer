@@ -237,6 +237,47 @@ export function buildReturnQuery(
 }
 
 // =============================================================================
+// Optional Field Helpers
+// =============================================================================
+
+/**
+ * Build an expression that uses DEFAULT when the field is undefined.
+ * 
+ * For tag style: `field !== undefined ? field : sql\`default\``
+ * For string style: Uses COALESCE in SQL (handled differently at query level)
+ * 
+ * @example
+ * buildDefaultIfUndefined("title")
+ * // title !== undefined ? title : sql`default`
+ */
+export function buildDefaultIfUndefined(
+  fieldName: string
+): n.ConditionalExpression {
+  // field !== undefined
+  const test = b.binaryExpression(
+    "!==",
+    b.identifier(fieldName),
+    b.identifier("undefined")
+  )
+  
+  // sql`default`
+  const sqlDefault = b.taggedTemplateExpression(
+    b.identifier("sql"),
+    b.templateLiteral(
+      [b.templateElement({ raw: "default", cooked: "default" }, true)],
+      []
+    )
+  )
+  
+  // field !== undefined ? field : sql`default`
+  return b.conditionalExpression(
+    test,
+    b.identifier(fieldName),
+    sqlDefault
+  )
+}
+
+// =============================================================================
 // Main API
 // =============================================================================
 
@@ -262,6 +303,9 @@ export const hex = {
   firstRowDecl: buildFirstRowDecl,
   allRowsDecl: buildAllRowsDecl,
   returnQuery: buildReturnQuery,
+  
+  // Optional field handling
+  defaultIfUndefined: buildDefaultIfUndefined,
 } as const
 
 export default hex

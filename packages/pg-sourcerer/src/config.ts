@@ -51,7 +51,7 @@ export const Config = S.Struct({
   /** Inflection configuration (validated as Any, properly typed in ConfigInput) */
   inflection: S.optional(S.Any),
 
-  /** Plugins to run (validated individually per plugin) */
+  /** Plugins to run */
   plugins: S.Array(S.Any),
 
   /** Formatter callback to transform generated code before writing (validated as Any, properly typed in ConfigInput) */

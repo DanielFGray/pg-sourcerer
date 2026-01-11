@@ -15,7 +15,7 @@ npm install @danielfgray/pg-sourcerer
 1. Create a config file `pgsourcerer.config.ts`:
 
 ```typescript
-import { defineConfig, typesPlugin, zodPlugin } from "@danielfgray/pg-sourcerer"
+import { defineConfig, typesPlugin, zod } from "@danielfgray/pg-sourcerer"
 
 export default defineConfig({
   connectionString: process.env.DATABASE_URL,
@@ -23,7 +23,7 @@ export default defineConfig({
   outputDir: "./src/generated",
   plugins: [
     typesPlugin({ outputDir: "types" }),
-    zodPlugin({ outputDir: "schemas" }),
+    zod({ outputDir: "schemas" }),
   ],
 })
 ```
@@ -51,11 +51,17 @@ Options:
 | Plugin | Provides | Description |
 |--------|----------|-------------|
 | `typesPlugin` | TypeScript interfaces | `User`, `UserInsert`, `UserUpdate` |
-| `zodPlugin` | Zod schemas | Runtime validation with inferred types |
-| `arktypePlugin` | ArkType validators | String-based type syntax with inference |
-| `effectModelPlugin` | Effect Model classes | Rich models with Schema integration |
-| `kyselyQueriesPlugin` | Kysely query builders | Type-safe CRUD operations |
-| `sqlQueriesPlugin` | Raw SQL functions | Parameterized query helpers |
+| `zod` | Zod schemas | Runtime validation with inferred types |
+| `arktype` | ArkType validators | String-based type syntax with inference |
+| `valibot` | Valibot schemas | Modular validation with tree-shaking |
+| `effect` | Effect SQL Models + Repositories | Models, repos, and optional HTTP API |
+| `kysely` | Kysely types + queries | DB interface + type-safe CRUD functions |
+| `sqlQueries` | Raw SQL functions | Parameterized query helpers |
+| `httpElysia` | Elysia routes | REST endpoints with TypeBox validation |
+| `httpExpress` | Express routes | REST endpoints with validation middleware |
+| `httpHono` | Hono routes | REST endpoints with standard-validator |
+| `httpTrpc` | tRPC routers | Type-safe RPC with Zod validation |
+| `httpOrpc` | oRPC handlers | Lightweight RPC with TypeScript inference |
 
 ## What Gets Generated
 
@@ -80,20 +86,11 @@ create table app_public.users (
 
 alter table app_public.users enable row level security;
 create index on app_public.users (username);
-create index on app_public.users using gin(username gin_trgm_ops);
 
--- We couldn't implement this relationship on the sessions table until the users table existed!
-alter table app_private.sessions
-  add constraint sessions_user_id_fkey
-  foreign key ("user_id") references app_public.users on delete cascade;
-
--- Users are publicly visible, like on GitHub, Twitter, Facebook, Trello, etc.
-create policy select_all on app_public.users for select using (true);
--- You can only update yourself.
-create policy update_self on app_public.users for update using (id = app_public.current_user_id());
-grant select on app_public.users to :DATABASE_VISITOR;
--- NOTE: `insert` is not granted, because we'll handle that separately
-grant update(username, name, bio, avatar_url) on app_public.users to :DATABASE_VISITOR;
+grant
+  select,
+  update(username, name, bio, avatar_url)
+  on app_public.users to :DATABASE_VISITOR;
 ```
 
 Each plugin generates different artifacts:
@@ -107,16 +104,18 @@ export interface User {
   id: string;
   username: string;
   name?: string | null;
+  avatar_url?: string | null;
   role: UserRole;
   bio: string;
-  isVerified: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+  is_verified: boolean;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface UserUpdate {
   username?: string;
   name?: string | null;
+  avatar_url?: string | null;
   bio?: string;
 }
 ```
@@ -124,44 +123,123 @@ export interface UserUpdate {
 ### `zodPlugin` — Zod Schemas
 
 ```typescript
+// UserRole.ts
 import { z } from "zod";
+
+export const UserRole = z.enum(["admin", "moderator", "user"]);
+
+export type UserRole = z.infer<typeof UserRole>;
+
+// User.ts
+import { z } from "zod";
+import { UserRole } from "./UserRole.js";
 
 export const User = z.object({
   id: z.string().uuid(),
   username: z.string(),
   name: z.string().nullable().optional(),
-  role: z.enum(["admin", "moderator", "user"]),
+  avatar_url: z.string().nullable().optional(),
+  role: UserRole,
   bio: z.string(),
-  isVerified: z.boolean(),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  is_verified: z.boolean(),
+  created_at: z.coerce.date(),
+  updated_at: z.coerce.date(),
 });
 
 export type User = z.infer<typeof User>;
+
+export const UserUpdate = z.object({
+  username: z.string().optional(),
+  name: z.string().nullable().optional(),
+  avatar_url: z.string().nullable().optional(),
+  bio: z.string().optional(),
+});
+
+export type UserUpdate = z.infer<typeof UserUpdate>;
 ```
 
 ### `arktypePlugin` — ArkType Validators
 
 ```typescript
+// UserRole.ts
 import { type } from "arktype";
+
+export const UserRole = type("'admin' | 'moderator' | 'user'");
+
+export type UserRole = typeof UserRole.infer;
+
+// User.ts
+import { type } from "arktype";
+import { UserRole } from "./UserRole.js";
 
 export const User = type({
   id: "string.uuid",
   username: "string",
   "name?": "string | null",
-  role: "'admin' | 'moderator' | 'user'",
+  "avatar_url?": "string | null",
+  role: UserRole,
   bio: "string",
-  isVerified: "boolean",
-  createdAt: "Date",
-  updatedAt: "Date",
+  is_verified: "boolean",
+  created_at: "Date",
+  updated_at: "Date",
 });
 
 export type User = typeof User.infer;
+
+export const UserUpdate = type({
+  "username?": "string",
+  "name?": "string | null",
+  "avatar_url?": "string | null",
+  "bio?": "string",
+});
+
+export type UserUpdate = typeof UserUpdate.infer;
 ```
 
-### `effectModelPlugin` — Effect SQL Models
+### `valibotPlugin` — Valibot Schemas
 
 ```typescript
+// UserRole.ts
+import * as v from "valibot";
+
+export const UserRole = v.picklist(["admin", "moderator", "user"]);
+
+export type UserRole = v.InferOutput<typeof UserRole>;
+
+// User.ts
+import * as v from "valibot";
+import { UserRole } from "./UserRole.js";
+
+export const User = v.object({
+  id: v.pipe(v.string(), v.uuid()),
+  username: v.string(),
+  name: v.optional(v.nullable(v.string())),
+  avatar_url: v.optional(v.nullable(v.string())),
+  role: UserRole,
+  bio: v.string(),
+  is_verified: v.boolean(),
+  created_at: v.date(),
+  updated_at: v.date(),
+});
+
+export type User = v.InferOutput<typeof User>;
+
+export const UserUpdate = v.object({
+  username: v.optional(v.string()),
+  name: v.optional(v.nullable(v.string())),
+  avatar_url: v.optional(v.nullable(v.string())),
+  bio: v.optional(v.string()),
+});
+
+export type UserUpdate = v.InferOutput<typeof UserUpdate>;
+```
+
+### `effect` — Effect SQL Models + Repositories
+
+The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
+
+```typescript
+// Model class with variant schemas
 import { Model } from "@effect/sql";
 import { Schema as S } from "effect";
 
@@ -175,75 +253,257 @@ export class User extends Model.Class<User>("User")({
   createdAt: Model.DateTimeInsertFromDate,
   updatedAt: Model.DateTimeUpdateFromDate,
 }) {}
+
+// Repository (when queryMode: "repository")
+import { Model, SqlClient } from "@effect/sql";
+import { User } from "./User.js";
+
+export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
+  effect: Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Model.makeRepository(User, {
+      tableName: "app_public.users",
+      spanPrefix: "UserRepo",
+      idColumn: "id",
+    });
+    return { ...repo };
+  }),
+}) {}
 ```
 
-### `sqlQueriesPlugin` — Raw SQL Query Functions
+### `sqlQueries` — Raw SQL Query Functions
 
-with `sqlQueriesPlugin({ sqlStyle: "tag" })`
+with `sqlQueries({ sqlStyle: "tag" })`
 ```typescript
-import { sql } from "./sql-tag.js";
-import type { User, UserInsert, UserUpdate } from "../types/User.js";
+import { sql } from "../../db.js";
+import type { User } from "../types/User.js";
 
 export async function findUserById({ id }: Pick<User, "id">) {
-  const [result] = await sql<User[]>`select * from app_public.users where id = ${id}`;
+  const [result] = await sql<User[]>`
+    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
+    from app_public.users where id = ${id}`;
   return result;
 }
 
-export async function findManyUsers({ limit = 50, offset = 0 }: { limit?: number; offset?: number; }) {
-  return await sql<User[]>`select * from app_public.users limit ${limit} offset ${offset}`;
+export async function findUserManys({ limit = 50, offset = 0 }: { limit?: number; offset?: number }) {
+  return await sql<User[]>`
+    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
+    from app_public.users limit ${limit} offset ${offset}`;
 }
 
-export async function getUserByUsername({ username }: Pick<User, "username">) {
-  const [result] = await sql<User[]>`select * from app_public.users where username = ${username}`;
+export async function getUserByUsername({ username }: { username: NonNullable<User["username"]> }) {
+  const [result] = await sql<User[]>`
+    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
+    from app_public.users where username = ${username}`;
   return result;
 }
 
-export async function getUsersByUsername({ username }: Pick<User, "username">) {
-  return await sql<User[]>`select * from app_public.users where username = ${username}`;
+export async function currentUser() {
+  const [result] = await sql<User[]>`select * from app_public.current_user()`;
+  return result;
 }
 ```
 
-not using tagged templates? got you covered with `sqlQueriesPlugin({ sqlStyle: "string" })`
+not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
 
-### `kyselyQueriesPlugin` — Kysely Query Builders
+### `kysely` — Kysely Types + Query Builders
+
+The unified `kysely` plugin generates both type definitions and query functions:
 
 ```typescript
-import type { Kysely, Updateable } from "kysely";
-import type { DB, AppPublicUsers } from "../DB.js";
+// DB interface (db.ts)
+import type { Generated, ColumnType } from "kysely";
 
-export const users = {
-  findById: (db: Kysely<DB>, id: string) => db
+export type UserRole = "admin" | "moderator" | "user";
+
+export interface UsersTable {
+  id: Generated<string>;
+  username: string;
+  name: string | null;
+  avatar_url: string | null;
+  role: UserRole;
+  bio: string;
+  is_verified: boolean;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface DB {
+  "app_public.users": UsersTable;
+}
+
+// Query functions (when generateQueries: true)
+import { db } from "../../db.js";
+import type { UsersTable } from "./db.js";
+import type { Insertable, Updateable } from "kysely";
+
+export const findById = ({ id }: { id: string }) =>
+  db
     .selectFrom("app_public.users")
-    .selectAll()
+    .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
     .where("id", "=", id)
-    .executeTakeFirst(),
-  update: (db: Kysely<DB>, id: string, data: Updateable<AppPublicUsers>) => db
-    .updateTable("app_public.users")
-    .set(data)
-    .where("id", "=", id)
-    .returningAll()
-    .executeTakeFirstOrThrow(),
-  findOneByUsername: (db: Kysely<DB>, username: string) => db
+    .executeTakeFirst();
+
+export const create = ({ data }: { data: Insertable<UsersTable> }) =>
+  db.insertInto("app_public.users").values(data).returningAll().executeTakeFirstOrThrow();
+
+export const update = ({ id, data }: { id: string; data: Updateable<UsersTable> }) =>
+  db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll().executeTakeFirstOrThrow();
+
+export const findByUsername = ({ username }: { username: string }) =>
+  db
     .selectFrom("app_public.users")
-    .selectAll()
+    .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
     .where("username", "=", username)
-    .executeTakeFirst()
-};
+    .executeTakeFirst();
 ```
 
-## Feature Support
+### `httpElysia` — Elysia REST Routes
 
-| Feature | types | zod | arktype | effect-model | kysely | sql |
-|---------|:-----:|:---:|:-------:|:------------:|:------:|:---:|
-| Row types | ✓ | ✓ | ✓ | ✓ | — | imports |
-| Insert shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
-| Update shapes | ✓ | ✓ | ✓ | via Model | — | ✓ |
-| Enums | ✓ | ✓ | ✓ | ✓ | — | — |
-| Composite types | ✓ | ✓ | ✓ | ✓ | — | — |
-| Views | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| CRUD queries | — | — | — | — | ✓ | ✓ |
-| Index lookups | — | — | — | — | ✓ | ✓ |
-| Runtime validation | — | ✓ | ✓ | ✓ | — | — |
+```typescript
+import { Elysia, t } from "elysia";
+import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+
+export const userRoutes = new Elysia({ prefix: "/api/users" })
+  .get(
+    "/:id",
+    async ({ params, status }) => {
+      const result = await findUserById({ id: params.id });
+      if (!result) return status(404, "Not found");
+      return result;
+    },
+    { params: t.Object({ id: t.String() }) },
+  )
+  .get(
+    "/",
+    async ({ query }) => {
+      return await findUserManys({ limit: query.limit, offset: query.offset });
+    },
+    { query: t.Object({ limit: t.Optional(t.Numeric()), offset: t.Optional(t.Numeric()) }) },
+  )
+  .get(
+    "/by-username/:username",
+    async ({ params, status }) => {
+      const result = await getUserByUsername({ username: params.username });
+      if (!result) return status(404, "Not found");
+      return result;
+    },
+    { params: t.Object({ username: t.String() }) },
+  );
+```
+
+### `httpExpress` — Express REST Routes
+
+```typescript
+import { Router } from "express";
+import { z } from "zod";
+import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
+import { UserUpdate } from "../schemas/User.js";
+
+export const userRoutes = Router();
+
+userRoutes.get("/:id", async (req, res) => {
+  const { id } = req.params;
+  const result = await findUserById({ id });
+  if (!result) return res.status(404).json({ error: "Not found" });
+  return res.json(result);
+});
+
+userRoutes.get("/", async (req, res) => {
+  const { limit, offset } = z.object({
+    limit: z.coerce.number().optional(),
+    offset: z.coerce.number().optional(),
+  }).parse(req.query);
+  return res.json(await findUserManys({ limit, offset }));
+});
+
+userRoutes.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  const data = UserUpdate.parse(req.body);
+  const result = await updateUser({ id, data });
+  return res.json(result);
+});
+```
+
+### `httpHono` — Hono REST Routes
+
+```typescript
+import { Hono } from "hono";
+import { sValidator } from "@hono/standard-validator";
+import { z } from "zod";
+import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
+import { UserUpdate } from "../schemas/User.js";
+
+export const userRoutes = new Hono()
+  .get("/:id", async (c) => {
+    const id = c.req.param("id");
+    const result = await findUserById({ id });
+    if (!result) return c.json({ error: "Not found" }, 404);
+    return c.json(result);
+  })
+  .get("/", sValidator("query", z.object({
+    limit: z.coerce.number().optional(),
+    offset: z.coerce.number().optional(),
+  })), async (c) => {
+    const { limit, offset } = c.req.valid("query");
+    return c.json(await findUserManys({ limit, offset }));
+  })
+  .put("/:id", sValidator("json", UserUpdate), async (c) => {
+    const id = c.req.param("id");
+    const data = c.req.valid("json");
+    const result = await updateUser({ id, data });
+    return c.json(result);
+  });
+```
+
+### `httpTrpc` — tRPC Routers
+
+```typescript
+import { z } from "zod";
+import { router, publicProcedure } from "../trpc.js";
+import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+
+export const userRouter = router({
+  findUserById: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input }) => {
+      return await findUserById({ id: input.id });
+    }),
+
+  findUserManys: publicProcedure
+    .input(z.object({ limit: z.coerce.number().optional(), offset: z.coerce.number().optional() }))
+    .query(async ({ input }) => {
+      return await findUserManys({ limit: input.limit, offset: input.offset });
+    }),
+
+  getUserByUsername: publicProcedure
+    .input(z.object({ username: z.string() }))
+    .query(async ({ input }) => {
+      return await getUserByUsername({ username: input.username });
+    }),
+});
+```
+
+### `httpOrpc` — oRPC Handlers
+
+```typescript
+import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+import { os, type } from "@orpc/server";
+
+export const findById = os
+  .input(type<{ id: string }>())
+  .handler(async ({ input }) => await findUserById(input));
+
+export const list = os
+  .input(type<{ limit?: number; offset?: number }>())
+  .handler(async ({ input }) => await findUserManys(input));
+
+export const findByUsername = os
+  .input(type<{ username: string }>())
+  .handler(async ({ input }) => await getUserByUsername(input));
+
+export const userRouter = { findById, list, findByUsername };
+```
 
 ## Smart Tags
 
