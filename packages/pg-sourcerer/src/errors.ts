@@ -2,11 +2,11 @@
  * Core error types for pg-sourcerer
  * Using Effect's Data.TaggedEnum for typed error handling
  */
-import { Data } from "effect"
+import { Data } from "effect";
 
 // Base error type with common fields
 interface ErrorBase {
-  readonly message: string
+  readonly message: string;
 }
 
 // Configuration errors
@@ -30,10 +30,10 @@ export class IntrospectionFailed extends Data.TaggedError("IntrospectionFailed")
 // Smart tags errors
 export class TagParseError extends Data.TaggedError("TagParseError")<
   ErrorBase & {
-    readonly objectType: "table" | "column" | "constraint" | "type"
-    readonly objectName: string
-    readonly comment: string
-    readonly cause: unknown
+    readonly objectType: "table" | "column" | "constraint" | "type";
+    readonly objectName: string;
+    readonly comment: string;
+    readonly cause: unknown;
   }
 > {}
 
@@ -60,11 +60,11 @@ export class PluginConfigInvalid extends Data.TaggedError("PluginConfigInvalid")
 
 export class PluginExecutionFailed extends Data.TaggedError("PluginExecutionFailed")<
   ErrorBase & {
-    readonly plugin: string
-    readonly entity?: string
-    readonly field?: string
-    readonly cause: unknown
-    readonly hint?: string
+    readonly plugin: string;
+    readonly entity?: string;
+    readonly field?: string;
+    readonly cause: unknown;
+    readonly hint?: string;
   }
 > {}
 
@@ -74,10 +74,10 @@ export class EmitConflict extends Data.TaggedError("EmitConflict")<
 > {}
 
 export class SymbolConflict extends Data.TaggedError("SymbolConflict")<
-  ErrorBase & { 
-    readonly symbol: string
-    readonly file: string
-    readonly plugins: readonly string[] 
+  ErrorBase & {
+    readonly symbol: string;
+    readonly file: string;
+    readonly plugins: readonly string[];
   }
 > {}
 
@@ -88,12 +88,12 @@ export class WriteError extends Data.TaggedError("WriteError")<
 export class UndefinedReference extends Data.TaggedError("UndefinedReference")<
   ErrorBase & {
     readonly references: readonly {
-      readonly capability: string
-      readonly entity: string
-      readonly shape?: string
-      readonly requestedBy: string
-      readonly inFile: string
-    }[]
+      readonly capability: string;
+      readonly entity: string;
+      readonly shape?: string;
+      readonly requestedBy: string;
+      readonly inFile: string;
+    }[];
   }
 > {}
 
@@ -118,4 +118,4 @@ export type SourcererError =
   | SymbolConflict
   | WriteError
   | UndefinedReference
-  | FormatError
+  | FormatError;

@@ -1,8 +1,8 @@
 /**
  * Configuration schema for pg-sourcerer
  */
-import { Schema as S } from "effect"
-import type { InflectionConfig } from "./services/inflection.js"
+import { Schema as S } from "effect";
+import type { InflectionConfig } from "./services/inflection.js";
 
 /**
  * Type hint match criteria
@@ -12,8 +12,8 @@ export const TypeHintMatch = S.Struct({
   table: S.optional(S.String),
   column: S.optional(S.String),
   pgType: S.optional(S.String),
-})
-export type TypeHintMatch = S.Schema.Type<typeof TypeHintMatch>
+});
+export type TypeHintMatch = S.Schema.Type<typeof TypeHintMatch>;
 
 /**
  * Type hint - user-configured type override
@@ -21,8 +21,8 @@ export type TypeHintMatch = S.Schema.Type<typeof TypeHintMatch>
 export const TypeHint = S.Struct({
   match: TypeHintMatch,
   hints: S.Record({ key: S.String, value: S.Unknown }),
-})
-export type TypeHint = S.Schema.Type<typeof TypeHint>
+});
+export type TypeHint = S.Schema.Type<typeof TypeHint>;
 
 /**
  * Main configuration schema
@@ -56,32 +56,32 @@ export const Config = S.Struct({
 
   /** Formatter callback to transform generated code before writing (validated as Any, properly typed in ConfigInput) */
   formatter: S.optional(S.String),
-})
+});
 
-export type Config = S.Schema.Type<typeof Config>
+export type Config = S.Schema.Type<typeof Config>;
 
 /**
  * User-facing configuration input type.
- * 
+ *
  * This provides proper TypeScript types for `inflection` and `plugins`
  * which are stored as `S.Any` in the schema for runtime flexibility.
  * Use this type for `defineConfig()` to give users proper autocomplete.
  */
 export interface ConfigInput {
   /** Database connection string */
-  readonly connectionString: string
+  readonly connectionString: string;
 
   /** PostgreSQL role to assume during introspection (for RLS-aware generation) */
-  readonly role?: string
+  readonly role?: string;
 
   /** PostgreSQL schemas to introspect (default: ["public"]) */
-  readonly schemas?: readonly string[]
+  readonly schemas?: readonly string[];
 
   /** Output directory root (default: "src/generated") */
-  readonly outputDir?: string
+  readonly outputDir?: string;
 
   /** Type hints for custom type mapping */
-  readonly typeHints?: readonly TypeHint[]
+  readonly typeHints?: readonly TypeHint[];
 
   /**
    * Inflection configuration for customizing naming conventions.
@@ -90,7 +90,7 @@ export interface ConfigInput {
    * @example
    * ```typescript
    * import { inflect } from "pg-sourcerer"
-   * 
+   *
    * inflection: {
    *   entityName: (name) => inflect.pascalCase(inflect.singularize(name)), // users → User
    *   fieldName: inflect.camelCase,                   // created_at → createdAt
@@ -98,10 +98,10 @@ export interface ConfigInput {
    * }
    * ```
    */
-  readonly inflection?: InflectionConfig
+  readonly inflection?: InflectionConfig;
 
   /** Plugins to run */
-  readonly plugins: readonly unknown[]
+  readonly plugins: readonly unknown[];
 
   /**
    * Formatter command to run on generated files after writing.
@@ -115,19 +115,19 @@ export interface ConfigInput {
    * formatter: "biome format --write"
    * ```
    */
-  readonly formatter?: string
+  readonly formatter?: string;
 }
 
 /**
  * Resolved configuration with all defaults applied
  */
 export interface ResolvedConfig {
-  readonly connectionString: string
-  readonly role?: string
-  readonly schemas: readonly string[]
-  readonly outputDir: string
-  readonly typeHints: readonly TypeHint[]
-  readonly inflection?: InflectionConfig
-  readonly plugins: readonly unknown[]
-  readonly formatter?: string
+  readonly connectionString: string;
+  readonly role?: string;
+  readonly schemas: readonly string[];
+  readonly outputDir: string;
+  readonly typeHints: readonly TypeHint[];
+  readonly inflection?: InflectionConfig;
+  readonly plugins: readonly unknown[];
+  readonly formatter?: string;
 }

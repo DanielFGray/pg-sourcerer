@@ -1,76 +1,188 @@
 /**
  * Testing Utilities
  *
- * Provides reusable test layers and helpers for plugin testing.
+ * Helpers for testing plugins and the generation pipeline.
+ *
+ * ## Plugin Testing
+ *
+ * ```typescript
+ * import { testPlugin, testIR, testConfig } from "pg-sourcerer/testing"
+ *
+ * it.effect("generates types", () =>
+ *   Effect.gen(function* () {
+ *     const result = yield* testPlugin(myPlugin, {
+ *       ir: testIR({ entities: [...] }),
+ *     })
+ *     expect(result.declarations).toHaveLength(1)
+ *   })
+ * )
+ * ```
+ *
+ * ## IR Building
+ *
+ * Use testIRWithEntities with real entities from ir-builder, or create
+ * minimal stubs for unit tests that don't need full introspection data.
  */
-import { Layer } from "effect"
-import { InflectionLive } from "./services/inflection.js"
-import { EmissionsLive } from "./services/emissions.js"
-import { SymbolsLive } from "./services/symbols.js"
-import { TypeHintsLive } from "./services/type-hints.js"
-import { ArtifactStoreLive } from "./services/artifact-store.js"
-import { PluginMeta } from "./services/plugin-meta.js"
-import { IR } from "./services/ir.js"
-import type { SemanticIR } from "./ir/semantic-ir.js"
+
+import { Effect } from "effect";
+import type { Plugin } from "./runtime/types.js";
+import {
+  runPlugins,
+  type OrchestratorConfig,
+  type OrchestratorResult,
+} from "./runtime/orchestrator.js";
+import { emitFiles, type EmittedFile } from "./runtime/emit.js";
+import type { SemanticIR, Entity } from "./ir/semantic-ir.js";
+import { defaultInflection, type CoreInflection } from "./services/inflection.js";
+import { emptyTypeHintRegistry, type TypeHintRegistry } from "./services/type-hints.js";
+import type { FileAssignmentConfig } from "./runtime/file-assignment.js";
+
+// =============================================================================
+// Test IR Builders
+// =============================================================================
 
 /**
- * Base test layers for direct plugin testing.
+ * Create a minimal SemanticIR for testing.
  *
- * Provides all shared services except IR and PluginMeta,
- * which are test-specific.
+ * Most tests just need an empty or partial IR. For tests that need
+ * real entity structures, use actual IRBuilder or provide entities directly.
+ */
+export function testIR(overrides?: Partial<SemanticIR>): SemanticIR {
+  return {
+    schemas: ["public"],
+    entities: new Map(),
+    artifacts: new Map(),
+    extensions: [],
+    introspectedAt: new Date(),
+    ...overrides,
+  };
+}
+
+/**
+ * Create a SemanticIR with entities from a map or array.
  *
- * Usage:
+ * @example
  * ```typescript
- * const TestLayer = Layer.mergeAll(
- *   PluginTestLayers,
- *   Layer.succeed(IR, testIR),
- *   Layer.succeed(PluginMeta, { name: "test-plugin" }),
+ * // From array (uses entity.name as key)
+ * const ir = testIRWithEntities([userEntity, postEntity])
+ *
+ * // From map
+ * const ir = testIRWithEntities(new Map([["User", userEntity]]))
+ * ```
+ */
+export function testIRWithEntities(
+  entities: ReadonlyMap<string, Entity> | readonly Entity[],
+): SemanticIR {
+  const entityMap = Array.isArray(entities) ? new Map(entities.map(e => [e.name, e])) : entities;
+  return testIR({ entities: entityMap as Map<string, Entity> });
+}
+
+// =============================================================================
+// Test Orchestrator Config
+// =============================================================================
+
+/**
+ * Default file assignment rules for testing.
+ */
+export const defaultTestFileRules: FileAssignmentConfig = {
+  outputDir: "src/generated",
+  rules: [
+    { pattern: "type:", file: "types.ts" },
+    { pattern: "schema:", file: "schemas.ts" },
+    { pattern: "query:", file: "queries.ts" },
+  ],
+  defaultFile: "index.ts",
+};
+
+/**
+ * Create an OrchestratorConfig for testing.
+ */
+export function testConfig(overrides?: Partial<OrchestratorConfig>): OrchestratorConfig {
+  return {
+    ir: testIR(),
+    inflection: defaultInflection,
+    typeHints: emptyTypeHintRegistry,
+    fileAssignment: defaultTestFileRules,
+    ...overrides,
+  };
+}
+
+// =============================================================================
+// Plugin Test Helpers
+// =============================================================================
+
+/**
+ * Options for testing a plugin.
+ */
+export interface TestPluginOptions {
+  /** IR to use (defaults to empty testIR) */
+  ir?: SemanticIR;
+  /** Inflection config */
+  inflection?: CoreInflection;
+  /** Type hints */
+  typeHints?: TypeHintRegistry;
+  /** File assignment rules */
+  fileAssignment?: FileAssignmentConfig;
+  /** Additional plugins to run before this one (for dependencies) */
+  dependencies?: readonly Plugin[];
+}
+
+/**
+ * Run a single plugin through the orchestrator and return results.
+ *
+ * Useful for unit testing plugins in isolation.
+ *
+ * @example
+ * ```typescript
+ * it.effect("declares User type", () =>
+ *   Effect.gen(function* () {
+ *     const result = yield* testPlugin(typesPlugin)
+ *     expect(result.declarations).toContainEqual(
+ *       expect.objectContaining({ name: "User" })
+ *     )
+ *   })
  * )
  * ```
  */
-export const PluginTestLayers = Layer.mergeAll(
-  InflectionLive,
-  EmissionsLive,
-  SymbolsLive,
-  TypeHintsLive([]),
-  ArtifactStoreLive
-)
+export function testPlugin(
+  plugin: Plugin,
+  options: TestPluginOptions = {},
+): Effect.Effect<OrchestratorResult, unknown> {
+  const config = testConfig({
+    ir: options.ir,
+    inflection: options.inflection,
+    typeHints: options.typeHints,
+    fileAssignment: options.fileAssignment,
+  });
 
-/**
- * Create a complete test layer for a specific plugin test.
- *
- * @param ir - The SemanticIR to provide
- * @param pluginName - The plugin name for PluginMeta
- * @returns Layer with all services for plugin testing
- *
- * Usage:
- * ```typescript
- * const testIR = freezeIR(createIRBuilder(["public"]))
- * const TestLayer = createPluginTestLayer(testIR, "my-plugin")
- *
- * layer(TestLayer)("MyPlugin tests", (it) => {
- *   it.effect("generates types", () =>
- *     Effect.gen(function* () {
- *       yield* myPlugin.run(config)
- *       const emissions = yield* Emissions
- *       expect(emissions.getAll()).toHaveLength(1)
- *     })
- *   )
- * })
- * ```
- */
-export function createPluginTestLayer(ir: SemanticIR, pluginName: string) {
-  return Layer.mergeAll(
-    PluginTestLayers,
-    Layer.succeed(IR, ir),
-    Layer.succeed(PluginMeta, { name: pluginName })
-  )
+  const allPlugins = [...(options.dependencies ?? []), plugin];
+
+  return runPlugins(allPlugins, config);
 }
 
-// Re-export commonly needed items for tests
-export { IR } from "./services/ir.js"
-export { PluginMeta } from "./services/plugin-meta.js"
-export { Emissions } from "./services/emissions.js"
-export { Symbols } from "./services/symbols.js"
-export { runPlugins } from "./services/plugin-runner.js"
-export { createIRBuilder, freezeIR } from "./ir/semantic-ir.js"
+/**
+ * Run a plugin and emit files, returning both orchestration and emit results.
+ *
+ * @example
+ * ```typescript
+ * it.effect("generates valid TypeScript", () =>
+ *   Effect.gen(function* () {
+ *     const { files } = yield* testPluginEmit(typesPlugin, {
+ *       ir: testIRWithEntities([...]),
+ *     })
+ *     expect(files[0].content).toContain("export type User")
+ *   })
+ * )
+ * ```
+ */
+export function testPluginEmit(
+  plugin: Plugin,
+  options: TestPluginOptions = {},
+): Effect.Effect<{ result: OrchestratorResult; files: readonly EmittedFile[] }, unknown> {
+  return testPlugin(plugin, options).pipe(
+    Effect.map(result => ({
+      result,
+      files: emitFiles(result),
+    })),
+  );
+}

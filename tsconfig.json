@@ -9,13 +9,8 @@
     "module": "nodenext",
     "target": "esnext",
     // For nodejs:
-    "lib": [
-      "esnext",
-      "es2024"
-    ],
-    "types": [
-      "node"
-    ],
+    "lib": ["esnext", "es2024"],
+    "types": ["node"],
     // and npm install -D @types/node
     // Other Outputs
     "sourceMap": true,
@@ -40,6 +35,6 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
+    "skipLibCheck": true
   }
 }

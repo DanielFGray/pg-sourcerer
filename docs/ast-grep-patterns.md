@@ -4,11 +4,11 @@ Common code transformation patterns using ast-grep.
 
 ## Basic Syntax
 
-| Pattern | Meaning |
-|---------|---------|
-| `$VAR` | Match any single AST node |
+| Pattern   | Meaning                                         |
+| --------- | ----------------------------------------------- |
+| `$VAR`    | Match any single AST node                       |
 | `$$$ARGS` | Match zero or more nodes (for args, statements) |
-| `$_VAR` | Match but don't capture |
+| `$_VAR`   | Match but don't capture                         |
 
 ## CLI Commands
 

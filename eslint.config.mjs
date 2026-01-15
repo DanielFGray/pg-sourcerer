@@ -44,12 +44,6 @@ export default tseslint.config(
   },
   {
     // Ignore non-TS files and build outputs
-    ignores: [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/*.js",
-      "**/*.mjs",
-      "**/*.cjs",
-    ],
-  }
+    ignores: ["**/node_modules/**", "**/dist/**", "**/*.js", "**/*.mjs", "**/*.cjs"],
+  },
 );

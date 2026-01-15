@@ -7,9 +7,7 @@ export interface PgSmartTagsAndDescription {
   description: string | undefined;
 }
 
-export const parseSmartComment = (
-  str: string | undefined,
-): PgSmartTagsAndDescription => {
+export const parseSmartComment = (str: string | undefined): PgSmartTagsAndDescription => {
   const result: PgSmartTagsAndDescription = {
     tags: Object.create(null),
     description: undefined,

@@ -96,7 +96,7 @@ function getRole(introspection: Introspection, oid: string): PgRoles {
   if (oid === "0") {
     return PUBLIC_ROLE;
   }
-  const role = introspection.roles.find((r) => r._id === oid);
+  const role = introspection.roles.find(r => r._id === oid);
   if (!role) {
     throw new Error(`Could not find role with identifier '${oid}'`);
   }
@@ -110,7 +110,7 @@ function getRoleByName(introspection: Introspection, name: string): PgRoles {
   if (name === "public") {
     return PUBLIC_ROLE;
   }
-  const role = introspection.roles.find((r) => r.rolname === name);
+  const role = introspection.roles.find(r => r.rolname === name);
   if (!role) {
     throw new Error(`Could not find role with name '${name}'`);
   }
@@ -204,9 +204,7 @@ export type ResolvedPermissions = Omit<AclObject, "role" | "granter">;
 const parseIdentifier = (str: string): string => {
   if (str.startsWith('"')) {
     if (!str.endsWith('"')) {
-      throw new Error(
-        `Invalid identifier - if it starts with '"' it must also end with '"'`,
-      );
+      throw new Error(`Invalid identifier - if it starts with '"' it must also end with '"'`);
     }
     return str.substring(1, str.length - 1).replace(/""/g, '"');
   } else {
@@ -243,9 +241,7 @@ const ACL_MAP_ENTRIES = Object.entries(ACL_MAP).sort((a, z) => {
   const zi = ACL_ALL_RIGHTS_STR.indexOf(z[0]);
   if (zi < 0) throw new Error(`${z[0]} not found in ACL_ALL_RIGHTS_STR`);
   return ai - zi;
-}) as ReadonlyArray<
-  { [K in AclCharacter]: [K, (typeof ACL_MAP)[K]] }[AclCharacter]
->;
+}) as ReadonlyArray<{ [K in AclCharacter]: [K, (typeof ACL_MAP)[K]] }[AclCharacter]>;
 
 const NO_PERMISSIONS: AclObject = ACL_MAP_ENTRIES.reduce(
   (acc, [_char, perm]) => {
@@ -270,9 +266,7 @@ export function parseAcl(aclString: string): AclObject {
   /** Where the name of the role ends */
   const equalsSignIndex = aclString.indexOf("=");
   if (equalsSignIndex === -1) {
-    throw new Error(
-      `Could not parse ACL string '${aclString}' - no '=' symbol`,
-    );
+    throw new Error(`Could not parse ACL string '${aclString}' - no '=' symbol`);
   } else if (equalsSignIndex > 0) {
     acl.role = parseIdentifier(aclString.substring(0, equalsSignIndex));
   }
@@ -304,9 +298,7 @@ export function parseAcl(aclString: string): AclObject {
       acl[`${currentPerm}Grant`] = true;
     }
   } // end token processing
-  throw new Error(
-    `Invalid or unsupported ACL string '${aclString}' - no '/' character?`,
-  );
+  throw new Error(`Invalid or unsupported ACL string '${aclString}' - no '/' character?`);
 }
 
 function escapeRole(role: string) {
@@ -477,7 +469,7 @@ export function expandRoles(
     if (!allRoles.includes(member)) {
       allRoles.push(member);
       if (includeNoInherit || member.rolinherit !== false) {
-        introspection.auth_members.forEach((am) => {
+        introspection.auth_members.forEach(am => {
           // auth_members - role `am.member` gains the privileges of
           // `am.roleid`
 
@@ -527,7 +519,7 @@ export function resolvePermissions(
   isOwnerAndHasNoExplicitACLs = false,
 ): ResolvedPermissions {
   const expandedRoles = expandRoles(introspection, [role], includeNoInherit);
-  const isSuperuser = expandedRoles.some((role) => role.rolsuper);
+  const isSuperuser = expandedRoles.some(role => role.rolsuper);
 
   // Superusers have all permissions. An owner of an object has all permissions
   // _unless_ there's a specific ACL for that owner. In all other cases, just as
@@ -567,12 +559,7 @@ export function resolvePermissions(
   }
 
   for (const acl of acls) {
-    const appliesToRole = aclContainsRole(
-      introspection,
-      acl,
-      role,
-      includeNoInherit,
-    );
+    const appliesToRole = aclContainsRole(introspection, acl, role, includeNoInherit);
     if (appliesToRole) {
       permissions.select = permissions.select || acl.select;
       permissions.selectGrant = permissions.selectGrant || acl.selectGrant;
@@ -583,11 +570,9 @@ export function resolvePermissions(
       permissions.delete = permissions.delete || acl.delete;
       permissions.deleteGrant = permissions.deleteGrant || acl.deleteGrant;
       permissions.truncate = permissions.truncate || acl.truncate;
-      permissions.truncateGrant =
-        permissions.truncateGrant || acl.truncateGrant;
+      permissions.truncateGrant = permissions.truncateGrant || acl.truncateGrant;
       permissions.references = permissions.references || acl.references;
-      permissions.referencesGrant =
-        permissions.referencesGrant || acl.referencesGrant;
+      permissions.referencesGrant = permissions.referencesGrant || acl.referencesGrant;
       permissions.trigger = permissions.trigger || acl.trigger;
       permissions.triggerGrant = permissions.triggerGrant || acl.triggerGrant;
       permissions.execute = permissions.execute || acl.execute;
@@ -599,11 +584,9 @@ export function resolvePermissions(
       permissions.connect = permissions.connect || acl.connect;
       permissions.connectGrant = permissions.connectGrant || acl.connectGrant;
       permissions.temporary = permissions.temporary || acl.temporary;
-      permissions.temporaryGrant =
-        permissions.temporaryGrant || acl.temporaryGrant;
+      permissions.temporaryGrant = permissions.temporaryGrant || acl.temporaryGrant;
       permissions.maintain = permissions.maintain || acl.maintain;
-      permissions.maintainGrant =
-        permissions.maintainGrant || acl.maintainGrant;
+      permissions.maintainGrant = permissions.maintainGrant || acl.maintainGrant;
     }
   }
 
@@ -617,20 +600,17 @@ export function entityPermissions(
   includeNoInherit = false,
 ) {
   const acls = entity.getACL();
-  const owner =
-    entity._type === "PgAttribute"
-      ? entity.getClass()?.getOwner()
-      : entity.getOwner();
+  const owner = entity._type === "PgAttribute" ? entity.getClass()?.getOwner() : entity.getOwner();
   // If the role is the owner, and no explicit ACLs have been granted to this role, then the owner has all privileges.
   const isOwnerAndHasNoExplicitACLs =
     owner &&
     owner === role &&
-    !acls.some((acl) => acl.role === owner.rolname) &&
+    !acls.some(acl => acl.role === owner.rolname) &&
     (entity._type !== "PgAttribute" ||
       !entity
         .getClass()
         ?.getACL()
-        .some((acl) => acl.role === owner.rolname));
+        .some(acl => acl.role === owner.rolname));
   return resolvePermissions(
     introspection,
     acls,

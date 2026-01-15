@@ -39,8 +39,22 @@ git push
 - **Bun** - Runtime and package manager. Never use `npm` or `npx`.
 - **Vitest + @effect/vitest** - Testing framework with Effect integration
 - **Effect-ts** - Core framework for services, errors, and composition
+- **effect-solutions** - CLI for browsing Effect best practices documentation
+
+### learning about effect
+
+Browse Effect patterns and best practices from the terminal:
+
+```bash
+effect-solutions list
+effect-solutions show basics services-and-layers error-handling testing
+effect-solutions search retry
+```
+
+`context7` can also help, see also effect source at ~/.local/share/effect-solutions/effect/
 
 ### Running Tests
+
 ```bash
 cd packages/pg-sourcerer
 bun run test     # never `bun test`
@@ -49,15 +63,19 @@ bun run typecheck   # Type check without emit
 ```
 
 ### Database for Integration Tests
+
 Some tests require the example PostgreSQL database. To start it:
+
 ```bash
 cd packages/example && bun db:ensure
 ```
+
 This runs Docker, initializes database, applies migrations, and post-migration hook runs the generate script. The database stays running for subsequent test runs.
 
 ## Key Libraries
 
 ### Effect-ts
+
 - Docs: Query Context7 with library ID `/effect-ts/effect` or `/llmstxt/effect_website_llms-full_txt`
 - Key patterns used:
   - `Context.Tag` for service definitions
@@ -67,30 +85,33 @@ This runs Docker, initializes database, applies migrations, and post-migration h
   - `Schema` for validation (use `S.optionalWith({ default: () => value })` for defaults)
 
 ### @effect/vitest
+
 - Import `{ it, describe, expect, layer }` from `@effect/vitest`
 - Use `it.effect("name", () => Effect.gen(...))` for effect tests
 - Use `layer(MyLayer)("suite name", (it) => { ... })` to provide layers to test suites
 - The `it` inside layer callback has the layer's services available
 
 ### pg-introspection
+
 - Provides `PgAttribute`, `PgClass`, `PgType`, `PgConstraint`, etc.
 - **Important patterns:**
+
   ```typescript
   // Get type from attribute (NOT attr.type)
-  const pgType = pgAttribute.getType()
-  
+  const pgType = pgAttribute.getType();
+
   // Check for arrays
-  const isArray = pgType?.typcategory === 'A'
-  
+  const isArray = pgType?.typcategory === "A";
+
   // Get enum values
-  const isEnum = pgType?.typtype === 'e'
-  const values = pgType?.getEnumValues()
-  
+  const isEnum = pgType?.typtype === "e";
+  const values = pgType?.getEnumValues();
+
   // Get table columns
-  const columns = pgClass.getAttributes().filter(a => a.attnum > 0)
-  
+  const columns = pgClass.getAttributes().filter(a => a.attnum > 0);
+
   // Get foreign keys
-  const fks = pgClass.getConstraints().filter(c => c.contype === 'f')
+  const fks = pgClass.getConstraints().filter(c => c.contype === "f");
   ```
 
 ## Architecture Overview
@@ -98,6 +119,7 @@ This runs Docker, initializes database, applies migrations, and post-migration h
 See `./docs/ARCHITECTURE.md` in the repo root for the full plan.
 
 ### Core Principle
+
 **The core plugin system shouldn't know what it's generating.** Core orchestrates plugins that declare capabilities and dependencies.
 
 ### IR Structure
@@ -124,41 +146,45 @@ SemanticIR
 ## Testing Patterns
 
 ### Basic Effect Test
+
 ```typescript
 it.effect("description", () =>
   Effect.gen(function* () {
-    const result = yield* someEffect
-    expect(result).toBe(expected)
-  })
-)
+    const result = yield* someEffect;
+    expect(result).toBe(expected);
+  }),
+);
 ```
 
 ### Test with Layer
+
 ```typescript
-layer(MyServiceLayer)("suite name", (it) => {
+layer(MyServiceLayer)("suite name", it => {
   it.effect("has access to service", () =>
     Effect.gen(function* () {
-      const svc = yield* MyService
+      const svc = yield* MyService;
       // use svc
-    })
-  )
-})
+    }),
+  );
+});
 ```
 
 ### Creating Test IR
-```typescript
-import { createIRBuilder, freezeIR } from "../index.js"
 
-const builder = createIRBuilder(["public"])
+```typescript
+import { createIRBuilder, freezeIR } from "../index.js";
+
+const builder = createIRBuilder(["public"]);
 // Add entities, enums to builder
-const ir = freezeIR(builder)
+const ir = freezeIR(builder);
 ```
 
 ### Stub Plugin Context for Unit Tests
-```typescript
-import { createStubPluginContext } from "../index.js"
 
-const ctx = createStubPluginContext(ir, "test-plugin")
+```typescript
+import { createStubPluginContext } from "../index.js";
+
+const ctx = createStubPluginContext(ir, "test-plugin");
 // ctx has all services stubbed for isolation
 ```
 
@@ -212,6 +238,7 @@ packages/pg-sourcerer/src/
 **MANDATORY**: Read `./docs/EFFECT_STYLE.md` before writing or modifying Effect code.
 
 Effect has specific idioms that differ from typical TypeScript. The style guide covers:
+
 - Method `.pipe()` vs function `pipe()` (critical distinction)
 - Import conventions (no single-letter abbreviations)
 - Functional patterns (`Effect.reduce`, find-first, `Effect.if`)
@@ -249,6 +276,7 @@ import { Array as A } from "effect"  // NO
 **NEVER commit git submodules** without explicit user direction. The `vendor/` directory may contain local submodule checkouts for development - these should not be committed.
 
 Before committing, verify no submodules are staged:
+
 ```bash
 git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
 ```
@@ -258,13 +286,15 @@ git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
 **ALWAYS defer to the user on design decisions.**
 
 When you identify multiple approaches/options:
+
 1. **STOP** - Do not pick one and proceed
 2. **Present the options clearly** - Brief description of each, with your recommendation if you have one
 3. **Wait for user input** - Let the user decide which approach to take
 
 This applies to:
+
 - Architecture choices
-- API design decisions  
+- API design decisions
 - Implementation strategies
 - Naming conventions
 - Any situation with 2+ reasonable paths forward
@@ -350,18 +380,19 @@ prog concepts -p pg-sourcerer
 prog context -c concept-name -p pg-sourcerer --summary
 ```
 
-**What to capture** (facts about external libraries/APIs):
-- pg-introspection: `pgAttribute.getType()` not `attr.type`
-- Kysely: `Generated<T>` wraps columns with defaults
-- Effect Schema: use `S.optionalWith({ default: () => val })` for defaults
-- API patterns for Hono, Express, tRPC, etc.
-
 **What NOT to capture** (project state that can become stale):
+
 - "QueryArtifact is in ir/query-artifact.ts" (file locations change)
-- "http-elysia uses TypeBox" (implementation details change)
 - Task status or progress
+- Implementation details of what you just built (use `prog log` instead)
+
+**The key test**: Would this help an agent working on a _different_ task in 6 months?
+
+- YES → `prog learn` (e.g., "Effect has a Graph module at ~/.local/share/effect-solutions/effect/packages/effect/src/Graph.ts")
+- NO → `prog log` (e.g., "Created emit.ts with cross-file import tracking")
 
 **When to use:**
+
 - After researching a library API via Context7 or docs
 - After discovering a non-obvious pattern through trial/error
 - Before ending a session, if you learned something reusable
@@ -372,11 +403,11 @@ Good learnings are **stable facts** that won't change with our code.
 
 **Core issues take priority over plugin issues at every priority level.**
 
-| Priority | Core Examples | Plugin Examples |
-|----------|---------------|-----------------|
-| **P1** | Infrastructure, test coverage, foundation | Critical bug fixes only |
-| **P2** | Code quality, refactoring | Important features, stable plugins |
-| **P3** | Documentation, polish | Advanced features, non-blocking |
-| **P4** | Nice-to-have cleanup | Experimental plugins |
+| Priority | Core Examples                             | Plugin Examples                    |
+| -------- | ----------------------------------------- | ---------------------------------- |
+| **P1**   | Infrastructure, test coverage, foundation | Critical bug fixes only            |
+| **P2**   | Code quality, refactoring                 | Important features, stable plugins |
+| **P3**   | Documentation, polish                     | Advanced features, non-blocking    |
+| **P4**   | Nice-to-have cleanup                      | Experimental plugins               |
 
 When choosing between same-priority core vs plugin → Pick core.

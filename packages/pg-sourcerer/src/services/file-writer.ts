@@ -1,21 +1,21 @@
 /**
  * File Writer Service
  *
- * Writes buffered emissions to disk using @effect/platform FileSystem.
+ * Writes generated files to disk using @effect/platform FileSystem.
  */
-import { Context, Effect, Layer, pipe, Array as Arr } from "effect"
-import { FileSystem, Path } from "@effect/platform"
-import type { PlatformError } from "@effect/platform/Error"
-import type { EmissionEntry } from "./emissions.js"
-import { WriteError } from "../errors.js"
+import { Context, Effect, Layer, pipe, Array as Arr } from "effect";
+import { FileSystem, Path } from "@effect/platform";
+import type { PlatformError } from "@effect/platform/Error";
+import type { EmittedFile } from "../runtime/emit.js";
+import { WriteError } from "../errors.js";
 
 /**
  * Result of a write operation
  */
 export interface WriteResult {
-  readonly path: string
-  readonly written: boolean
-  readonly reason?: string
+  readonly path: string;
+  readonly written: boolean;
+  readonly reason?: string;
 }
 
 /**
@@ -23,11 +23,11 @@ export interface WriteResult {
  */
 export interface WriteOptions {
   /** Output directory root */
-  readonly outputDir: string
+  readonly outputDir: string;
   /** Dry run mode - don't actually write, just return what would be written */
-  readonly dryRun?: boolean
+  readonly dryRun?: boolean;
   /** Header to prepend to generated files */
-  readonly header?: string
+  readonly header?: string;
 }
 
 /**
@@ -38,28 +38,27 @@ export interface FileWriter {
    * Write all emissions to disk
    */
   readonly writeAll: (
-    emissions: readonly EmissionEntry[],
-    options: WriteOptions
-  ) => Effect.Effect<readonly WriteResult[], WriteError, FileSystem.FileSystem | Path.Path>
+    emissions: readonly EmittedFile[],
+    options: WriteOptions,
+  ) => Effect.Effect<readonly WriteResult[], WriteError, FileSystem.FileSystem | Path.Path>;
 }
 
 /**
  * FileWriter service tag
  */
-export class FileWriterSvc extends Context.Tag("FileWriter")<
-  FileWriterSvc,
-  FileWriter
->() {}
+export class FileWriterSvc extends Context.Tag("FileWriter")<FileWriterSvc, FileWriter>() {}
 
 /**
  * Map a PlatformError to a WriteError
  */
-const toWriteError = (path: string) => (err: PlatformError): WriteError =>
-  new WriteError({
-    message: `File operation failed: ${path} - ${err.message}`,
-    path,
-    cause: err,
-  })
+const toWriteError =
+  (path: string) =>
+  (err: PlatformError): WriteError =>
+    new WriteError({
+      message: `File operation failed: ${path} - ${err.message}`,
+      path,
+      cause: err,
+    });
 
 /**
  * Create a file writer
@@ -68,70 +67,74 @@ export function createFileWriter(): FileWriter {
   return {
     writeAll: (emissions, options) =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const pathSvc = yield* Path.Path
+        const fs = yield* FileSystem.FileSystem;
+        const pathSvc = yield* Path.Path;
 
-        const outputDir = options.outputDir
+        const outputDir = options.outputDir;
 
         // Collect unique directories that need to be created
         const directories = pipe(
           emissions,
-          Arr.map((e) => pathSvc.dirname(pathSvc.join(outputDir, e.path))),
-          Arr.dedupe
-        )
+          Arr.map(e => pathSvc.dirname(pathSvc.join(outputDir, e.path))),
+          Arr.dedupe,
+        );
 
         // In dry-run mode, just return what would be written
         if (options.dryRun) {
           return pipe(
             emissions,
-            Arr.map((e): WriteResult => ({
-              path: pathSvc.join(outputDir, e.path),
-              written: false,
-              reason: "dry-run",
-            }))
-          )
+            Arr.map(
+              (e): WriteResult => ({
+                path: pathSvc.join(outputDir, e.path),
+                written: false,
+                reason: "dry-run",
+              }),
+            ),
+          );
         }
 
         // Create directories
         yield* Effect.forEach(
           directories,
-          (dir) =>
+          dir =>
             fs.makeDirectory(dir, { recursive: true }).pipe(
-              Effect.catchAll((err) =>
+              Effect.catchAll(err =>
                 // Ignore "already exists" errors
                 err._tag === "SystemError" && err.reason === "AlreadyExists"
                   ? Effect.void
-                  : Effect.fail(toWriteError(dir)(err))
-              )
+                  : Effect.fail(toWriteError(dir)(err)),
+              ),
             ),
-          { concurrency: 1 } // Sequential to avoid race conditions
-        )
+          { concurrency: 1 }, // Sequential to avoid race conditions
+        );
 
         // Write files
         const results = yield* Effect.forEach(
           emissions,
           (entry): Effect.Effect<WriteResult, WriteError> => {
-            const fullPath = pathSvc.join(outputDir, entry.path)
+            const fullPath = pathSvc.join(outputDir, entry.path);
             // Plugins control their own headers via .header() - no global header
-            const content = entry.content
+            const content = entry.content;
 
             return fs.writeFileString(fullPath, content).pipe(
-              Effect.map((): WriteResult => ({
-                path: fullPath,
-                written: true,
-              })),
-              Effect.catchAll((err) => Effect.fail(toWriteError(fullPath)(err)))
-            )
+              Effect.map(
+                (): WriteResult => ({
+                  path: fullPath,
+                  written: true,
+                }),
+              ),
+              Effect.catchAll(err => Effect.fail(toWriteError(fullPath)(err))),
+            );
           },
-          { concurrency: 10 } // Parallel file writes
-        )
+          { concurrency: 10 }, // Parallel file writes
+        );
 
-        return results
+        return results;
       }),
-  }
+  };
 }
 
 /**
  * Live layer - provides the file writer with real filesystem operations
  */
-export const FileWriterLive = Layer.succeed(FileWriterSvc, createFileWriter())
+export const FileWriterLive = Layer.succeed(FileWriterSvc, createFileWriter());

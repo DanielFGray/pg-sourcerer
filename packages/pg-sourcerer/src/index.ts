@@ -1,11 +1,17 @@
 /**
  * pg-sourcerer - PostgreSQL code generation framework
- * 
+ *
  * Main entry point
  */
 
 // Config
-export { Config, TypeHint, TypeHintMatch, type ResolvedConfig, type ConfigInput } from "./config.js"
+export {
+  Config,
+  TypeHint,
+  TypeHintMatch,
+  type ResolvedConfig,
+  type ConfigInput,
+} from "./config.js";
 
 // Config Loader Service
 export {
@@ -14,19 +20,28 @@ export {
   ConfigLoaderLive,
   createConfigLoader,
   defineConfig,
-} from "./services/config-loader.js"
+} from "./services/config-loader.js";
 
 // Config Service (Effect DI)
 export {
+  // Service tag
   ConfigService,
+  // Provider interface and implementations
+  type ConfigProvider,
+  FileConfigProvider,
+  InMemoryConfigProvider,
+  withFallback,
+  // Layer constructors
   ConfigFromFile,
-  ConfigWithInit,
+  ConfigFromMemory,
   ConfigTest,
+  ConfigWithFallback,
+  // Utilities
   getConfigSearchPaths,
-} from "./services/config.js"
+} from "./services/config.js";
 
 // Errors
-export * from "./errors.js"
+export * from "./errors.js";
 
 // IR
 export {
@@ -69,9 +84,9 @@ export {
   type AllRelations,
   getReverseRelations,
   getAllRelations,
-} from "./ir/index.js"
+} from "./ir/index.js";
 
-export { SmartTags, ShapeKind } from "./ir/index.js"
+export { SmartTags, ShapeKind } from "./ir/index.js";
 
 // IR Extensions - Contracts between providers
 export {
@@ -86,34 +101,10 @@ export {
   type FunctionsExtension,
   EntityQueriesExtension as EntityQueriesExtensionSchema,
   FunctionsExtension as FunctionsExtensionSchema,
-} from "./ir/extensions/queries.js"
+} from "./ir/extensions/queries.js";
 
 // Services - IR
-export { IR } from "./services/ir.js"
-
-// Services - Artifact Store
-export { ArtifactStore, type ArtifactStoreImpl, createArtifactStore, ArtifactStoreLive } from "./services/artifact-store.js"
-
-// Services - Plugin Meta
-export { PluginMeta, type PluginMetaInfo } from "./services/plugin-meta.js"
-
-// Services - Plugin Types (new plugin API)
-export {
-  type Plugin,
-  type PluginContext,
-  type PluginRegistry,
-  type PluginError,
-  type ResourceRequest,
-  type DeferredResource,
-  PluginNotFound,
-  PluginCycle,
-  PluginExecutionFailed,
-  ResourceNotResolved,
-  Plugins,
-  PluginsLive,
-  definePlugin,
-  createPluginRegistry,
-} from "./services/plugin.js"
+export { IR } from "./services/ir.js";
 
 // Services - Inflection
 export {
@@ -129,7 +120,7 @@ export {
   composeInflectionConfigs,
   composeInflection,
   InflectionLive,
-} from "./services/inflection.js"
+} from "./services/inflection.js";
 
 // Services - Type Hints
 export {
@@ -139,7 +130,7 @@ export {
   createTypeHintRegistry,
   emptyTypeHintRegistry,
   TypeHintsLive,
-} from "./services/type-hints.js"
+} from "./services/type-hints.js";
 
 // Services - PostgreSQL Type Mapping
 export {
@@ -157,46 +148,7 @@ export {
   wrapNullable,
   findEnumByPgName,
   findCompositeByPgName,
-} from "./services/pg-types.js"
-
-// Services - Symbols
-export {
-  type SymbolRegistry,
-  type Symbol,
-  type SymbolRef,
-  type ImportStatement,
-  type SymbolCollision,
-  type MethodSymbol,
-  type EntityMethods,
-  Symbols,
-  createSymbolRegistry,
-  SymbolsLive,
-} from "./services/symbols.js"
-
-// Services - Service Registry (plugin-to-plugin communication)
-export {
-  type ServiceRegistry,
-  Services,
-  createServiceRegistry,
-  ServicesLive,
-} from "./services/service-registry.js"
-
-// Services - Emissions
-export {
-  type EmissionBuffer,
-  type EmissionEntry,
-  Emissions,
-  createEmissionBuffer,
-  EmissionsLive,
-} from "./services/emissions.js"
-
-// Services - Plugin Runner
-export {
-  runPlugins,
-  type PluginRunContext,
-  type PluginRunResult,
-  type PluginRunError,
-} from "./services/plugin-runner.js"
+} from "./services/pg-types.js";
 
 // Services - File Writer
 export {
@@ -206,14 +158,14 @@ export {
   FileWriterSvc,
   createFileWriter,
   FileWriterLive,
-} from "./services/file-writer.js"
+} from "./services/file-writer.js";
 
 // Services - Smart Tags Parser
 export {
   type ParsedComment,
   type TagContext,
   parseSmartTags,
-} from "./services/smart-tags-parser.js"
+} from "./services/smart-tags-parser.js";
 
 // Services - IR Builder
 export {
@@ -222,13 +174,7 @@ export {
   IRBuilderSvc,
   IRBuilderLive,
   createIRBuilderService,
-} from "./services/ir-builder.js"
-
-// Testing utilities
-export {
-  PluginTestLayers,
-  createPluginTestLayer,
-} from "./testing.js"
+} from "./services/ir-builder.js";
 
 // Conjure - AST builder DSL
 export {
@@ -242,51 +188,35 @@ export {
   type SymbolMeta,
   type SymbolStatement,
   type SymbolProgram,
-} from "./lib/conjure.js"
+} from "./conjure/index.js";
 
 // Hex - SQL query building primitives
 export {
   hex,
-  type SqlStyle,
+  // Query object (primary plugin interface)
+  Query,
+  createQuery,
+  type TemplateParts,
+  type TaggedTemplateOptions,
+  type ParameterizedCallOptions,
+  // Query specs
   type QueryParts,
-  buildTemplateLiteral,
-  buildAwaitSqlTag,
-  buildAwaitSqlString,
-  buildQuery,
-  buildFirstRowDecl,
-  buildAllRowsDecl,
-  buildReturnQuery,
-} from "./lib/hex.js"
-
-// Plugins (new API)
-export { typesPlugin, types } from "./plugins/types.js"
-export { zod, type ZodConfig } from "./plugins/zod.js"
-export { arktype, type ArkTypeConfig } from "./plugins/arktype.js"
-export { valibot, type ValibotConfig } from "./plugins/valibot.js"
-export { sqlQueries, sqlQueries as sqlQueriesPlugin, type SqlQueriesConfig } from "./plugins/sql-queries.js"
-
-// Effect plugin (unified model + repository + http)
-export { effect, effectPlugin, type EffectConfig } from "./plugins/effect.js"
-
-// Kysely plugin
-export { kysely, type KyselyConfig } from "./plugins/kysely.js"
-
-// HTTP plugins (new API)
-export { httpElysia, type HttpElysiaConfig } from "./plugins/http-elysia.js"
-export { httpExpress, type HttpExpressConfig } from "./plugins/http-express.js"
-export { httpHono, type HttpHonoConfig } from "./plugins/http-hono.js"
-export { httpTrpc, type HttpTrpcConfig } from "./plugins/http-trpc.js"
-export { httpOrpc, type HttpOrpcConfig } from "./plugins/http-orpc.js"
-
-// Generate orchestration
-export {
-  generate,
-  runGenerate,
-  GenerateLive,
-  type GenerateOptions,
-  type GenerateResult,
-  type GenerateError,
-} from "./generate.js"
+  type SelectSpec,
+  type SelectItem,
+  type FromItem,
+  type JoinItem,
+  type WhereCondition,
+  type OrderByItem,
+  type GroupByItem,
+  type MutationSpec,
+  type ParamSpec,
+  type Expression,
+  // Legacy/raw builders
+  toQueryDescriptor,
+  buildReturnDescriptor,
+  buildParamDescriptor,
+  buildFieldDescriptor,
+} from "./hex/index.js";
 
 // Database introspection
 export {
@@ -296,4 +226,87 @@ export {
   DatabaseIntrospectionLive,
   createDatabaseIntrospection,
   introspectDatabase,
-} from "./services/introspection.js"
+} from "./services/introspection.js";
+
+// =============================================================================
+// Runtime - New Plugin System
+// =============================================================================
+
+// Runtime Types
+export {
+  type Plugin,
+  type Capability,
+  type SymbolDeclaration,
+  type SymbolRef,
+  type SymbolHandle,
+  type RenderedSymbol,
+  type DeclareServices,
+  type RenderServices,
+} from "./runtime/types.js";
+
+// Runtime Errors
+export { DeclareError, RenderError } from "./runtime/errors.js";
+
+// Runtime Registry
+export {
+  SymbolRegistry,
+  SymbolRegistryImpl,
+  SymbolCollision,
+  CapabilityNotFound,
+  createSymbolHandle,
+} from "./runtime/registry.js";
+
+// Runtime Orchestrator
+export {
+  runPlugins,
+  type OrchestratorConfig,
+  type OrchestratorResult,
+  type PluginExecutionError,
+} from "./runtime/orchestrator.js";
+
+// Runtime Validation
+export {
+  validateAll,
+  validateConsumes,
+  validateDependencyGraph,
+  UnsatisfiedCapability,
+  CircularDependency,
+} from "./runtime/validation.js";
+
+// Runtime File Assignment
+export {
+  assignSymbolsToFiles,
+  groupByFile,
+  type FileAssignmentConfig,
+  type FileRule,
+  type AssignedSymbol,
+} from "./runtime/file-assignment.js";
+
+// Runtime Emit
+export {
+  emitFiles,
+  type EmittedFile,
+  type EmitConfig,
+  type ExternalImport,
+  type RenderedSymbolWithImports,
+} from "./runtime/emit.js";
+
+// =============================================================================
+// Plugins
+// =============================================================================
+
+export { typesPlugin } from "./plugins/types.js";
+
+// =============================================================================
+// Testing Utilities
+// =============================================================================
+
+export {
+  testIR,
+  testIRWithEntities,
+  testConfig,
+  testPlugin,
+  testPluginEmit,
+  defaultTestFileRules,
+  type TestPluginOptions,
+} from "./testing.js";

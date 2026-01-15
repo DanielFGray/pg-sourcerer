@@ -5,8 +5,8 @@
  * This is a simple value service - the IR is built once per run
  * and provided to all plugins.
  */
-import { Context } from "effect"
-import type { SemanticIR } from "../ir/semantic-ir.js"
+import { Context } from "effect";
+import type { SemanticIR } from "../ir/semantic-ir.js";
 
 /**
  * IR service tag - provides SemanticIR to plugins
