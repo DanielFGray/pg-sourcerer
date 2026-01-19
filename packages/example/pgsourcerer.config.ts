@@ -1,58 +1,38 @@
 import {
   defineConfig,
+  type FileNamingContext,
   arktype,
   kysely,
-  sqlQueriesPlugin,
-  zod,
-  httpElysia,
-  httpExpress,
-  httpHono,
-  httpTrpc,
-  httpOrpc,
-  valibot,
-  typesPlugin,
-  effect,
+  // sqlQueries,
+  // zod,
+  // elysia,
+  // httpExpress,
+  // httpHono,
+  trpc,
+  // httpOrpc,
+  // valibot,
+  // typesPlugin,
+  // effect,
 } from "@danielfgray/pg-sourcerer";
-
 export default defineConfig({
   connectionString: process.env.DATABASE_URL!,
   schemas: ["app_public", "app_private"],
   outputDir: "./generated",
   formatter: "bunx oxfmt --write",
   plugins: [
-    // typesPlugin(),
-    // zod({ exportTypes: true }),
-    // arktype({ exportTypes: true }),
-    valibot({ exportTypes: true }),
-
+    arktype({
+      exportTypes: true,
+      schemasFile: ({ baseEntityName }: FileNamingContext) => `${baseEntityName}/schemas.ts`,
+    }),
     kysely({
       generateQueries: true,
-      explicitColumns: true,
       dbAsParameter: false,
       header: `import { db } from "../../db.js";`,
+      typesFile: "db.ts",
+      queriesFile: ({ entityName }: FileNamingContext) => `${entityName}/queries.ts`,
     }),
-
-    // sqlQueriesPlugin({
-    //   sqlStyle: "tag",
-    //   header: `import { sql } from "../../db.js";`,
-    // }),
-
-    // httpElysia({ basePath: "/api" }),
-    // httpExpress({ basePath: "/api" }),
-    // httpHono({ basePath: "/api" }),
-
-    // httpTrpc({
-    //   outputDir: "trpc",
-    //   header: `import { router, publicProcedure } from "../../trpc.js";`,
-    // }),
-
-    // httpOrpc({
-    //   outputDir: "orpc",
-    //   header: `import { os } from "@orpc/server";`,
-    // }),
-    httpExpress({}),
-    // httpHono(),
-
-    // effect(),
+    trpc({
+      routesFile: ({ entityName }: FileNamingContext) => `${entityName}/router.ts`,
+    }),
   ],
 });

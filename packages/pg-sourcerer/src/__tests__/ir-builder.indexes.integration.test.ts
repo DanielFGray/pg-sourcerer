@@ -2,38 +2,35 @@
  * IR Builder Index Tests
  *
  * Tests for Index representation in SemanticIR.
- * These tests verify that indexes are correctly captured from database introspection.
+ * These tests run against the introspection fixture (pre-captured from example database).
+ * For tests against a live database, use ir-builder.indexes.live-integration.test.ts.
  */
 import { it, describe, expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Introspection } from "@danielfgray/pg-introspection";
+import { beforeAll } from "vitest";
 import { createIRBuilderService } from "../services/ir-builder.js";
 import { InflectionLive } from "../services/inflection.js";
-import { introspectDatabase } from "../services/introspection.js";
-import { beforeAll } from "vitest";
-
-// Connection string for example database
-const DATABASE_URL =
-  process.env["DATABASE_URL"] ??
-  "postgresql://pgsourcerer_demo:YwxPS2MX9o1LKBweB6Dgha3v@localhost:5432/pgsourcerer_demo";
+import { loadIntrospectionFixture } from "./fixtures/index.js";
+import { isTableEntity, type TableEntity, type Entity } from "../ir/semantic-ir.js";
 
 let introspection: Introspection;
 
-beforeAll(async () => {
-  try {
-    introspection = await Effect.runPromise(
-      introspectDatabase({
-        connectionString: DATABASE_URL,
-        role: "visitor",
-      }),
-    );
-  } catch (error) {
-    console.warn(
-      "Skipping integration tests - database not available. Run: cd packages/example && docker compose up",
-    );
-    throw error;
+beforeAll(() => {
+  introspection = loadIntrospectionFixture();
+});
+
+function getTable(ir: { entities: ReadonlyMap<string, unknown> }, name: string): TableEntity {
+  const entity = ir.entities.get(name);
+  if (!entity) {
+    throw new Error(`Entity ${name} not found`);
   }
-}, 30000);
+  const entityAsRecord = entity as Record<string, unknown>;
+  if (entityAsRecord.kind !== "table" && entityAsRecord.kind !== "view") {
+    throw new Error(`Entity ${name} is not a table or view`);
+  }
+  return entity as TableEntity;
+}
 
 /**
  * Helper to build IR with inflection service
@@ -45,17 +42,15 @@ const buildIR = (schemas: readonly string[]) =>
   }).pipe(Effect.provide(InflectionLive));
 
 describe("IR Builder Indexes", () => {
-  describe("with real database", () => {
+  describe("with introspection fixture", () => {
     it.effect("entities have indexes array (not undefined)", () =>
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const users = result.entities.get("User");
-        expect(users).toBeDefined();
+        const users = getTable(result, "User");
 
-        // indexes should be an array, even if empty
-        expect(users?.indexes).toBeDefined();
-        expect(Array.isArray(users?.indexes)).toBe(true);
+        expect(users.indexes).toBeDefined();
+        expect(Array.isArray(users.indexes)).toBe(true);
       }),
     );
 
@@ -63,11 +58,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const users = result.entities.get("User");
-        expect(users).toBeDefined();
+        const users = getTable(result, "User");
 
-        // Find idx_users_username index
-        const usernameIndex = users?.indexes.find(idx => idx.name === "idx_users_username");
+        const usernameIndex = users.indexes.find(idx => idx.name === "idx_users_username");
         expect(usernameIndex).toBeDefined();
         expect(usernameIndex?.method).toBe("btree");
         expect(usernameIndex?.columns).toEqual(["username"]);
@@ -83,15 +76,12 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const users = result.entities.get("User");
-        expect(users).toBeDefined();
+        const users = getTable(result, "User");
 
-        // Find idx_users_username_trgm (GIN index with gin_trgm_ops)
-        const trgmIndex = users?.indexes.find(idx => idx.name === "idx_users_username_trgm");
+        const trgmIndex = users.indexes.find(idx => idx.name === "idx_users_username_trgm");
         expect(trgmIndex).toBeDefined();
         expect(trgmIndex?.method).toBe("gin");
         expect(trgmIndex?.columns).toEqual(["username"]);
-        // Verify opclassNames includes gin_trgm_ops
         expect(trgmIndex?.opclassNames).toBeDefined();
         expect(trgmIndex?.opclassNames).toContain("gin_trgm_ops");
       }),
@@ -101,18 +91,14 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const userEmails = result.entities.get("UserEmail");
-        expect(userEmails).toBeDefined();
+        const userEmails = getTable(result, "UserEmail");
 
-        // Find uniq_user_emails_verified_email - unique partial index
-        const verifiedEmailIndex = userEmails?.indexes.find(
+        const verifiedEmailIndex = userEmails.indexes.find(
           idx => idx.name === "uniq_user_emails_verified_email",
         );
         expect(verifiedEmailIndex).toBeDefined();
         expect(verifiedEmailIndex?.isUnique).toBe(true);
         expect(verifiedEmailIndex?.isPartial).toBe(true);
-        expect(verifiedEmailIndex?.predicate).toBeDefined();
-        // Predicate should reference is_verified column (column 4 in the table)
         expect(verifiedEmailIndex?.predicate).toBeDefined();
         expect(verifiedEmailIndex?.method).toBe("btree");
       }),
@@ -122,11 +108,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const userEmails = result.entities.get("UserEmail");
-        expect(userEmails).toBeDefined();
+        const userEmails = getTable(result, "UserEmail");
 
-        // Find idx_user_emails_primary - composite index on (is_primary, user_id)
-        const primaryIndex = userEmails?.indexes.find(
+        const primaryIndex = userEmails.indexes.find(
           idx => idx.name === "idx_user_emails_primary",
         );
         expect(primaryIndex).toBeDefined();
@@ -141,11 +125,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const posts = result.entities.get("Post");
-        expect(posts).toBeDefined();
+        const posts = getTable(result, "Post");
 
-        // Find GIN index on tags array
-        const ginIndex = posts?.indexes.find(idx => idx.method === "gin");
+        const ginIndex = posts.indexes.find(idx => idx.method === "gin");
         expect(ginIndex).toBeDefined();
         expect(ginIndex?.columns).toContain("tags");
       }),
@@ -155,13 +137,10 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const posts = result.entities.get("Post");
-        expect(posts).toBeDefined();
+        const posts = getTable(result, "Post");
 
-        // Find GIST index on search tsvector
-        const gistIndex = posts?.indexes.find(idx => idx.method === "gist");
+        const gistIndex = posts.indexes.find(idx => idx.method === "gist");
         expect(gistIndex).toBeDefined();
-        // Verify opclassNames is populated (tsvector_ops)
         expect(gistIndex?.opclassNames).toBeDefined();
         expect(gistIndex?.opclassNames.length).toBeGreaterThan(0);
       }),
@@ -171,11 +150,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const users = result.entities.get("User");
-        expect(users).toBeDefined();
+        const users = getTable(result, "User");
 
-        // Primary key should be captured as an index
-        const pkIndex = users?.indexes.find(idx => idx.isPrimary === true);
+        const pkIndex = users.indexes.find(idx => idx.isPrimary === true);
         expect(pkIndex).toBeDefined();
         expect(pkIndex?.isUnique).toBe(true);
         expect(pkIndex?.columns).toEqual(["id"]);
@@ -186,11 +163,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const posts = result.entities.get("Post");
-        expect(posts).toBeDefined();
+        const posts = getTable(result, "Post");
 
-        // Index on user_id (FK) - field names are snake_case by default
-        const userIdIndex = posts?.indexes.find(idx => idx.columns.includes("user_id"));
+        const userIdIndex = posts.indexes.find(idx => idx.columns.includes("user_id"));
         expect(userIdIndex).toBeDefined();
         expect(userIdIndex?.method).toBe("btree");
       }),
@@ -200,11 +175,9 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const postsVotes = result.entities.get("PostsVote");
-        expect(postsVotes).toBeDefined();
+        const postsVotes = getTable(result, "PostsVote");
 
-        // Should at least have the primary key index
-        expect(postsVotes?.indexes.length).toBeGreaterThanOrEqual(1);
+        expect(postsVotes.indexes.length).toBeGreaterThanOrEqual(1);
       }),
     );
 
@@ -212,12 +185,10 @@ describe("IR Builder Indexes", () => {
       Effect.gen(function* () {
         const result = yield* buildIR(["app_public"]);
 
-        const recentPosts = result.entities.get("RecentPost");
-        expect(recentPosts).toBeDefined();
+        const recentPosts = getTable(result, "RecentPost");
 
-        // Views should have empty indexes array (indexes don't apply to views)
-        expect(recentPosts?.indexes).toBeDefined();
-        expect(recentPosts?.indexes?.length).toBe(0);
+        expect(recentPosts.indexes).toBeDefined();
+        expect(recentPosts.indexes.length).toBe(0);
       }),
     );
   });

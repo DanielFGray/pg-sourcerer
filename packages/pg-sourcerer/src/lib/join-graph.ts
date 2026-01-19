@@ -68,6 +68,22 @@ export interface FilterableIndex {
 }
 
 /**
+ * Suggested foreign key based on naming patterns and type analysis
+ */
+export interface ForeignKeySuggestion {
+  /** Column name that could be a foreign key */
+  readonly column: string;
+  /** Suggested target table name */
+  readonly targetTable: string;
+  /** Suggested target column (typically the PK) */
+  readonly targetColumn: string;
+  /** Confidence level based on heuristics */
+  readonly confidence: "high" | "medium" | "low";
+  /** Reason for the suggestion */
+  readonly reason: string;
+}
+
+/**
  * The JoinGraph provides navigation APIs for building queries
  */
 export interface JoinGraph {
@@ -88,6 +104,9 @@ export interface JoinGraph {
 
   /** Get indexes that could be used for filtering on an entity */
   readonly getFilterableIndexes: (entityName: string) => readonly FilterableIndex[];
+
+  /** Suggest foreign keys based on column naming and type patterns */
+  readonly suggestForeignKeys: (entityName: string) => readonly ForeignKeySuggestion[];
 
   /** Generate SQL JOIN clause from a path */
   readonly toJoinClause: (path: JoinPath) => string;
@@ -146,6 +165,123 @@ function inferAliasFromConstraint(constraintName: string, targetEntity: string):
 
   // Fall back to lowercase target entity
   return targetEntity.charAt(0).toLowerCase() + targetEntity.slice(1);
+}
+
+function analyzeColumnForFk(
+  entityName: string,
+  columnName: string,
+  columnType: string | undefined,
+  entities: Map<string, TableEntity>,
+): ForeignKeySuggestion | null {
+  const colLower = columnName.toLowerCase();
+
+  for (const [targetName, targetEntity] of entities) {
+    if (targetName === entityName) continue;
+    if (!isTableEntity(targetEntity)) continue;
+
+    const targetLower = targetName.toLowerCase();
+    const targetPk = targetEntity.primaryKey;
+    const targetPkColumn = targetPk?.columns[0];
+    if (!targetPkColumn) continue;
+
+    const targetField = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
+    const targetType = targetField?.pgAttribute.getType()?.typname;
+
+    const idSuffixes = ["_id", "_ids", "id", "_by", "_at"];
+    const isLikelyFkColumn = idSuffixes.some(suffix => colLower.endsWith(suffix)) || colLower.includes("_ref_");
+
+    if (!isLikelyFkColumn) continue;
+
+    const singularTarget = singularize(targetLower);
+    const pluralTarget = pluralize(targetLower);
+    const possibleTargets = [targetLower, singularTarget, pluralTarget, targetName];
+
+    const matchingTarget = possibleTargets.find(t => {
+      const patterns = [
+        `${t}_id`,
+        `${t}id`,
+        `${t}_ids`,
+        `${t}_by`,
+        `${t}_at`,
+        `ref_${t}`,
+      ];
+      return patterns.some(p => colLower === p || colLower.endsWith(`_${p}`));
+    });
+
+    if (!matchingTarget) continue;
+
+    if (columnType && targetType && !typesMatch(columnType, targetType)) {
+      continue;
+    }
+
+    const targetFieldForColumn = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
+    const confidence = determineConfidence(columnName, targetName, columnType, targetType, targetFieldForColumn);
+
+    return {
+      column: columnName,
+      targetTable: targetName,
+      targetColumn: targetPkColumn,
+      confidence,
+      reason: confidence === "high"
+        ? `Column "${columnName}" matches ${targetName}.${targetPkColumn} by naming convention`
+        : `Column "${columnName}" may reference ${targetName}.${targetPkColumn}`,
+    };
+  }
+
+  return null;
+}
+
+function singularize(word: string): string {
+  if (word.endsWith("ies")) return word.slice(0, -3) + "y";
+  if (word.endsWith("ses")) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
+function pluralize(word: string): string {
+  if (word.endsWith("y")) return word.slice(0, -1) + "ies";
+  if (word.endsWith("s")) return word + "es";
+  return word + "s";
+}
+
+function typesMatch(colType: string, targetType: string): boolean {
+  if (colType === targetType) return true;
+
+  const intTypes = new Set(["int2", "int4", "int8", "serial", "bigserial"]);
+  const uuidTypes = new Set(["uuid", "char", "bpchar"]);
+  const textTypes = new Set(["text", "varchar", "char"]);
+
+  if (intTypes.has(colType) && intTypes.has(targetType)) return true;
+  if (uuidTypes.has(colType) && uuidTypes.has(targetType)) return true;
+  if (textTypes.has(colType) && textTypes.has(targetType)) return true;
+
+  return false;
+}
+
+function determineConfidence(
+  columnName: string,
+  targetName: string,
+  columnType: string | undefined,
+  targetType: string | undefined,
+  targetField: any,
+): "high" | "medium" | "low" {
+  const colLower = columnName.toLowerCase();
+  const targetLower = targetName.toLowerCase();
+  const singularTarget = singularize(targetLower);
+
+  const exactMatch = colLower === `${targetLower}_id` || colLower === `${singularTarget}_id`;
+  const typeMatch = columnType && targetType && typesMatch(columnType, targetType);
+  const nonNullable = targetField && !targetField.nullable;
+
+  if (exactMatch && typeMatch) {
+    return nonNullable ? "high" : "medium";
+  }
+
+  if (exactMatch || (typeMatch && colLower.includes(targetLower))) {
+    return "medium";
+  }
+
+  return "low";
 }
 
 /**
@@ -289,7 +425,37 @@ export function createJoinGraph(ir: SemanticIR): JoinGraph {
       clauses.push(`${joinType} ${tableName} AS ${alias} ON ${onConditions.join(" AND ")}`);
     }
 
-    return clauses.join("\n  ");
+      return clauses.join("\n  ");
+  };
+
+  const suggestForeignKeys = (entityName: string): readonly ForeignKeySuggestion[] => {
+    const entity = entities.get(entityName);
+    if (!entity) return [];
+
+    const suggestions: ForeignKeySuggestion[] = [];
+    const existingFkColumns = new Set<string>();
+
+    for (const rel of entity.relations) {
+      if (rel.kind === "belongsTo") {
+        for (const col of rel.columns) {
+          existingFkColumns.add(col.local);
+        }
+      }
+    }
+
+    for (const field of entity.shapes.row.fields) {
+      if (existingFkColumns.has(field.columnName)) continue;
+
+      const suggestion = analyzeColumnForFk(entityName, field.columnName, field.pgAttribute.getType()?.typname, entities);
+      if (suggestion) {
+        suggestions.push(suggestion);
+      }
+    }
+
+    return suggestions.sort((a, b) => {
+      const confidenceOrder = { high: 0, medium: 1, low: 2 };
+      return confidenceOrder[a.confidence] - confidenceOrder[b.confidence];
+    });
   };
 
   return {
@@ -299,6 +465,7 @@ export function createJoinGraph(ir: SemanticIR): JoinGraph {
     findPath,
     getReachable,
     getFilterableIndexes,
+    suggestForeignKeys,
     toJoinClause,
   };
 }

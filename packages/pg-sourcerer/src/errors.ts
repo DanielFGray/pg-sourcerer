@@ -1,121 +1,72 @@
 /**
  * Core error types for pg-sourcerer
- * Using Effect's Data.TaggedEnum for typed error handling
+ * Using Effect's Schema.TaggedError for typed error handling
  */
-import { Data } from "effect";
+import { Schema } from "effect";
 
-// Base error type with common fields
-interface ErrorBase {
-  readonly message: string;
-}
-
-// Configuration errors
-export class ConfigNotFound extends Data.TaggedError("ConfigNotFound")<
-  ErrorBase & { readonly searchPaths: readonly string[] }
-> {}
-
-export class ConfigInvalid extends Data.TaggedError("ConfigInvalid")<
-  ErrorBase & { readonly path: string; readonly errors: readonly string[] }
-> {}
-
-// Database errors
-export class ConnectionFailed extends Data.TaggedError("ConnectionFailed")<
-  ErrorBase & { readonly connectionString: string; readonly cause: unknown }
-> {}
-
-export class IntrospectionFailed extends Data.TaggedError("IntrospectionFailed")<
-  ErrorBase & { readonly schema: string; readonly cause: unknown }
-> {}
-
-// Smart tags errors
-export class TagParseError extends Data.TaggedError("TagParseError")<
-  ErrorBase & {
-    readonly objectType: "table" | "column" | "constraint" | "type";
-    readonly objectName: string;
-    readonly comment: string;
-    readonly cause: unknown;
+export class ConfigNotFound extends Schema.TaggedError<ConfigNotFound>()(
+  "ConfigNotFound",
+  {
+    message: Schema.String,
+    searchPaths: Schema.Array(Schema.String),
   }
-> {}
+) {}
 
-// Plugin errors
-export class DuplicatePlugin extends Data.TaggedError("DuplicatePlugin")<
-  ErrorBase & { readonly plugin: string }
-> {}
-
-export class CapabilityNotSatisfied extends Data.TaggedError("CapabilityNotSatisfied")<
-  ErrorBase & { readonly required: string; readonly requiredBy: string }
-> {}
-
-export class CapabilityConflict extends Data.TaggedError("CapabilityConflict")<
-  ErrorBase & { readonly capability: string; readonly providers: readonly string[] }
-> {}
-
-export class CapabilityCycle extends Data.TaggedError("CapabilityCycle")<
-  ErrorBase & { readonly cycle: readonly string[] }
-> {}
-
-export class PluginConfigInvalid extends Data.TaggedError("PluginConfigInvalid")<
-  ErrorBase & { readonly plugin: string; readonly errors: readonly string[] }
-> {}
-
-export class PluginExecutionFailed extends Data.TaggedError("PluginExecutionFailed")<
-  ErrorBase & {
-    readonly plugin: string;
-    readonly entity?: string;
-    readonly field?: string;
-    readonly cause: unknown;
-    readonly hint?: string;
+export class ConfigInvalid extends Schema.TaggedError<ConfigInvalid>()(
+  "ConfigInvalid",
+  {
+    message: Schema.String,
+    path: Schema.String,
+    errors: Schema.Array(Schema.String),
   }
-> {}
+) {}
 
-// Emission errors
-export class EmitConflict extends Data.TaggedError("EmitConflict")<
-  ErrorBase & { readonly path: string; readonly plugins: readonly string[] }
-> {}
-
-export class SymbolConflict extends Data.TaggedError("SymbolConflict")<
-  ErrorBase & {
-    readonly symbol: string;
-    readonly file: string;
-    readonly plugins: readonly string[];
+export class ConnectionFailed extends Schema.TaggedError<ConnectionFailed>()(
+  "ConnectionFailed",
+  {
+    message: Schema.String,
+    connectionString: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
   }
-> {}
+) {}
 
-export class WriteError extends Data.TaggedError("WriteError")<
-  ErrorBase & { readonly path: string; readonly cause: unknown }
-> {}
-
-export class UndefinedReference extends Data.TaggedError("UndefinedReference")<
-  ErrorBase & {
-    readonly references: readonly {
-      readonly capability: string;
-      readonly entity: string;
-      readonly shape?: string;
-      readonly requestedBy: string;
-      readonly inFile: string;
-    }[];
+export class IntrospectionFailed extends Schema.TaggedError<IntrospectionFailed>()(
+  "IntrospectionFailed",
+  {
+    message: Schema.String,
+    schema: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
   }
-> {}
+) {}
 
-export class FormatError extends Data.TaggedError("FormatError")<
-  ErrorBase & { readonly path: string; readonly cause: unknown }
-> {}
+export class TagParseError extends Schema.TaggedError<TagParseError>()(
+  "TagParseError",
+  {
+    message: Schema.String,
+    objectType: Schema.Union(Schema.Literal("table"), Schema.Literal("column"), Schema.Literal("constraint"), Schema.Literal("type")),
+    objectName: Schema.String,
+    comment: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
+  }
+) {}
 
-// Union of all errors for convenience
-export type SourcererError =
-  | ConfigNotFound
-  | ConfigInvalid
-  | ConnectionFailed
-  | IntrospectionFailed
-  | TagParseError
-  | DuplicatePlugin
-  | CapabilityNotSatisfied
-  | CapabilityConflict
-  | CapabilityCycle
-  | PluginConfigInvalid
-  | PluginExecutionFailed
-  | EmitConflict
-  | SymbolConflict
-  | WriteError
-  | UndefinedReference
-  | FormatError;
+export class WriteError extends Schema.TaggedError<WriteError>()(
+  "WriteError",
+  {
+    message: Schema.String,
+    path: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
+  }
+) {}
+
+export class ExportCollisionError extends Schema.TaggedError<ExportCollisionError>()(
+  "ExportCollisionError",
+  {
+    file: Schema.String,
+    exportName: Schema.String,
+    exportKind: Schema.String,
+    capability1: Schema.String,
+    capability2: Schema.String,
+    message: Schema.String,
+  }
+) {}

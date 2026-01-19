@@ -7,6 +7,7 @@ import {
   createInflection,
   inflect,
   composeInflection,
+  createInflectionRegistry,
 } from "../services/inflection.js";
 import type { PgAttribute, PgClass, PgType } from "@danielfgray/pg-introspection";
 import type { SmartTags } from "../ir/index.js";
@@ -23,6 +24,7 @@ const emptyTags: SmartTags = {};
 
 // Identity inflection for testing composition in isolation
 const identityInflection: CoreInflection = {
+  registry: createInflectionRegistry(),
   camelCase: inflect.camelCase,
   pascalCase: inflect.pascalCase,
   pluralize: inflect.pluralize,
@@ -35,6 +37,7 @@ const identityInflection: CoreInflection = {
   enumValueName: value => value,
   relationName: name => name,
   functionName: (pgProc, tags) => tags.name ?? `${pgProc.proname}_${pgProc.pronargs}`,
+  folderName: entityName => entityName.toLowerCase(),
 };
 
 describe("Inflection Service", () => {
@@ -193,9 +196,19 @@ describe("Inflection Service", () => {
 
 describe("createInflection", () => {
   describe("with no config", () => {
-    it("returns defaultInflection", () => {
-      const inflection = createInflection();
-      expect(inflection).toBe(defaultInflection);
+    it("creates a fresh instance with its own registry", () => {
+      const inflection1 = createInflection();
+      const inflection2 = createInflection();
+
+      // Each call creates a new instance (for registry isolation)
+      expect(inflection1).not.toBe(inflection2);
+
+      // But they behave the same
+      expect(inflection1.entityName(mockPgClass("users"), emptyTags)).toBe("User");
+      expect(inflection2.entityName(mockPgClass("users"), emptyTags)).toBe("User");
+
+      // Each has its own registry
+      expect(inflection1.registry).not.toBe(inflection2.registry);
     });
   });
 
@@ -587,5 +600,229 @@ describe("composeInflection", () => {
       expect(composed.shapeName("User", "row")).toBe("User");
       expect(composed.shapeName("User", "insert")).toBe("UserINSERT");
     });
+  });
+});
+
+describe("InflectionRegistry", () => {
+  describe("createInflectionRegistry", () => {
+    it("creates an empty registry", () => {
+      const registry = createInflectionRegistry();
+      expect(registry.lookup("NonExistent")).toBeUndefined();
+      expect(registry.getVariants("User")).toEqual([]);
+      expect(registry.hasConflict("User")).toBe(false);
+    });
+  });
+
+  describe("register and lookup", () => {
+    it("registers and retrieves inflected names", () => {
+      const registry = createInflectionRegistry();
+
+      registry.register({
+        name: "UserInsert",
+        baseEntity: "User",
+        variant: "insert",
+        origin: "shapeName(User, insert)",
+      });
+
+      const info = registry.lookup("UserInsert");
+      expect(info).toEqual({
+        name: "UserInsert",
+        baseEntity: "User",
+        variant: "insert",
+        origin: "shapeName(User, insert)",
+      });
+    });
+
+    it("returns undefined for unregistered names", () => {
+      const registry = createInflectionRegistry();
+      expect(registry.lookup("Unknown")).toBeUndefined();
+    });
+  });
+
+  describe("getVariants", () => {
+    it("returns all variants for a base entity", () => {
+      const registry = createInflectionRegistry();
+
+      registry.register({
+        name: "User",
+        baseEntity: "User",
+        variant: "row",
+        origin: "shapeName(User, row)",
+      });
+      registry.register({
+        name: "UserInsert",
+        baseEntity: "User",
+        variant: "insert",
+        origin: "shapeName(User, insert)",
+      });
+      registry.register({
+        name: "UserUpdate",
+        baseEntity: "User",
+        variant: "update",
+        origin: "shapeName(User, update)",
+      });
+
+      const variants = registry.getVariants("User");
+      expect(variants).toHaveLength(3);
+      expect(variants.map(v => v.name)).toEqual(["User", "UserInsert", "UserUpdate"]);
+    });
+
+    it("returns empty array for unknown base entity", () => {
+      const registry = createInflectionRegistry();
+      expect(registry.getVariants("Unknown")).toEqual([]);
+    });
+  });
+
+  describe("hasConflict", () => {
+    it("returns true if name is already registered", () => {
+      const registry = createInflectionRegistry();
+
+      registry.register({
+        name: "User",
+        baseEntity: "User",
+        variant: "entity",
+        origin: "entityName(users)",
+      });
+
+      expect(registry.hasConflict("User")).toBe(true);
+      expect(registry.hasConflict("Unknown")).toBe(false);
+    });
+  });
+
+  describe("conflict handling", () => {
+    it("warns and overwrites on conflict with different base entity", () => {
+      const registry = createInflectionRegistry();
+
+      // Capture console.warn
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(msg);
+
+      try {
+        registry.register({
+          name: "Conflict",
+          baseEntity: "Entity1",
+          variant: "entity",
+          origin: "first",
+        });
+
+        registry.register({
+          name: "Conflict",
+          baseEntity: "Entity2",
+          variant: "entity",
+          origin: "second",
+        });
+
+        // Should have logged a warning
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("Name conflict");
+        expect(warnings[0]).toContain("Entity1");
+        expect(warnings[0]).toContain("Entity2");
+
+        // Last registration wins
+        expect(registry.lookup("Conflict")?.baseEntity).toBe("Entity2");
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    it("silently updates same base entity registration", () => {
+      const registry = createInflectionRegistry();
+
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(msg);
+
+      try {
+        registry.register({
+          name: "User",
+          baseEntity: "User",
+          variant: "entity",
+          origin: "first",
+        });
+
+        registry.register({
+          name: "User",
+          baseEntity: "User",
+          variant: "entity",
+          origin: "second",
+        });
+
+        // No warning for same base entity
+        expect(warnings).toHaveLength(0);
+
+        // Updated with new origin
+        expect(registry.lookup("User")?.origin).toBe("second");
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+  });
+});
+
+describe("CoreInflection registry integration", () => {
+  it("auto-registers entity names", () => {
+    const inflection = createInflection();
+
+    inflection.entityName(mockPgClass("users"), emptyTags);
+
+    const info = inflection.registry.lookup("User");
+    expect(info).toBeDefined();
+    expect(info?.baseEntity).toBe("User");
+    expect(info?.variant).toBe("entity");
+  });
+
+  it("auto-registers shape names with correct base entity", () => {
+    const inflection = createInflection();
+
+    // Register shapes
+    inflection.shapeName("User", "row");
+    inflection.shapeName("User", "insert");
+    inflection.shapeName("User", "update");
+
+    // Verify registrations
+    expect(inflection.registry.lookup("User")?.baseEntity).toBe("User");
+    expect(inflection.registry.lookup("UserInsert")?.baseEntity).toBe("User");
+    expect(inflection.registry.lookup("UserUpdate")?.baseEntity).toBe("User");
+
+    // Verify variants
+    expect(inflection.registry.lookup("User")?.variant).toBe("row");
+    expect(inflection.registry.lookup("UserInsert")?.variant).toBe("insert");
+    expect(inflection.registry.lookup("UserUpdate")?.variant).toBe("update");
+  });
+
+  it("auto-registers enum names", () => {
+    const inflection = createInflection();
+
+    inflection.enumName(mockPgType("user_status"), emptyTags);
+
+    const info = inflection.registry.lookup("UserStatus");
+    expect(info).toBeDefined();
+    expect(info?.baseEntity).toBe("UserStatus");
+    expect(info?.variant).toBe("enum");
+  });
+
+  it("getVariants returns all shapes for an entity", () => {
+    const inflection = createInflection();
+
+    inflection.shapeName("Comment", "row");
+    inflection.shapeName("Comment", "insert");
+    inflection.shapeName("Comment", "update");
+
+    const variants = inflection.registry.getVariants("Comment");
+    expect(variants).toHaveLength(3);
+    expect(variants.map(v => v.variant)).toEqual(["row", "insert", "update"]);
+  });
+
+  it("composed inflection shares base registry", () => {
+    const base = createInflection();
+    const composed = composeInflection(base, { entityName: inflect.uppercase });
+
+    // Both should use the same registry
+    expect(composed.registry).toBe(base.registry);
+
+    // Registration via composed should appear in base's registry
+    composed.shapeName("User", "insert");
+    expect(base.registry.lookup("UserInsert")).toBeDefined();
   });
 });

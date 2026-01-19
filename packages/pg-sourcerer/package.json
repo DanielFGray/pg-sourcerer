@@ -24,7 +24,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/cli.js",
+    "prebuild": "bun run clean",
+    "build": "tsc",
+    "postbuild": "chmod +x dist/cli.js",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",

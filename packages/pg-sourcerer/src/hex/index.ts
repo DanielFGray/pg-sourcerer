@@ -40,16 +40,18 @@ export * from "./types.js";
 export * from "./builder.js";
 export * from "./primitives.js";
 export * from "./query.js";
+export * from "./ddl.js";
 
 // Re-export Query class and factory
 export { Query, createQuery } from "./query.js";
 
 // Main hex object
 import type { SemanticIR } from "../ir/semantic-ir.js";
-import type { SelectSpec, MutationSpec, ParamSpec } from "./types.js";
+import type { SelectSpec, MutationSpec, ParamSpec, CreateTableSpec, AlterTableSpec, IndexSpec, ForeignKeySpec, DropSpec } from "./types.js";
 import { select, mutate, call } from "./builder.js";
 import { toQueryDescriptor, buildReturnDescriptor, buildParamDescriptor, buildFieldDescriptor } from "./primitives.js";
 import { createQuery } from "./query.js";
+import { createTable, createIndex, createPrimaryKeyIndex, addForeignKey, dropForeignKey, dropIndex, dropTable, alterTable, drop, renameTable, renameColumn, renameConstraint, setSchema } from "./ddl.js";
 
 export const hex = {
   // Declarative API (returns Query objects)
@@ -70,6 +72,21 @@ export const hex = {
   rawSelect: select,
   rawMutate: mutate,
   rawCall: call,
+
+  // DDL builders
+  createTable: (ir: SemanticIR, spec: CreateTableSpec) => createTable(ir, spec),
+  createIndex: (ir: SemanticIR, tableName: string, index: IndexSpec, options?: { concurrently?: boolean; ifNotExists?: boolean; schema?: string }) => createIndex(ir, tableName, index, options),
+  createPrimaryKeyIndex: (ir: SemanticIR, tableName: string, columns: string[], indexName: string, options?: { concurrently?: boolean; schema?: string }) => createPrimaryKeyIndex(ir, tableName, columns, indexName, options),
+  addForeignKey: (ir: SemanticIR, tableName: string, foreignKey: ForeignKeySpec, options?: { schema?: string }) => addForeignKey(ir, tableName, foreignKey, options),
+  dropForeignKey: (ir: SemanticIR, tableName: string, constraintName: string, options?: { schema?: string; ifExists?: boolean; cascade?: boolean }) => dropForeignKey(ir, tableName, constraintName, options),
+  dropIndex: (indexName: string, options?: { ifExists?: boolean; cascade?: boolean; concurrently?: boolean }) => dropIndex(indexName, options),
+  dropTable: (tableName: string, options?: { schema?: string; ifExists?: boolean; cascade?: boolean }) => dropTable(tableName, options),
+  alterTable: (ir: SemanticIR, spec: AlterTableSpec) => alterTable(ir, spec),
+  drop: (spec: DropSpec) => drop(spec),
+  renameTable: (oldName: string, newName: string, options?: { schema?: string }) => renameTable(oldName, newName, options),
+  renameColumn: (tableName: string, oldColumn: string, newColumn: string, options?: { schema?: string }) => renameColumn(tableName, oldColumn, newColumn, options),
+  renameConstraint: (tableName: string, oldConstraint: string, newConstraint: string, options?: { schema?: string }) => renameConstraint(tableName, oldConstraint, newConstraint, options),
+  setSchema: (objectName: string, newSchema: string, options?: { schema?: string; cascade?: boolean }) => setSchema(objectName, newSchema, options),
 } as const;
 
 export default hex;

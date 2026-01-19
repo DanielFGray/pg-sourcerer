@@ -363,8 +363,17 @@ interface FnParam {
   defaultValue: n.Expression | undefined;
 }
 
+/** Raw pattern param - for destructured objects, etc. */
+interface FnRawParam {
+  pattern: PatternKind;
+}
+
+function isFnRawParam(p: FnParam | FnRawParam): p is FnRawParam {
+  return "pattern" in p;
+}
+
 interface FnConfig {
-  params: FnParam[];
+  params: (FnParam | FnRawParam)[];
   body: n.Statement[];
   returnType: n.TSType | null;
   isAsync: boolean;
@@ -396,6 +405,9 @@ export interface FnBuilder {
   /** Add a parameter with a default value */
   defaultParam(name: string, defaultValue: n.Expression, type?: n.TSType): FnBuilder;
 
+  /** Add a raw pattern parameter (e.g., destructured object from param.destructured()) */
+  rawParam(pattern: PatternKind): FnBuilder;
+
   /** Set the return type annotation */
   returns(type: n.TSType): FnBuilder;
 
@@ -421,6 +433,10 @@ export interface FnBuilder {
 function createFn(config: FnConfig): FnBuilder {
   const buildParams = (): PatternKind[] =>
     config.params.map((p): PatternKind => {
+      // Raw pattern params (e.g., destructured objects)
+      if (isFnRawParam(p)) {
+        return p.pattern;
+      }
       if (p.rest) {
         const restId = b.identifier(p.name);
         if (p.type) {
@@ -472,6 +488,13 @@ function createFn(config: FnConfig): FnBuilder {
       return createFn({
         ...config,
         params: [...config.params, { ...defaultParam(name, type), defaultValue }],
+      });
+    },
+
+    rawParam(pattern) {
+      return createFn({
+        ...config,
+        params: [...config.params, { pattern }],
       });
     },
 
@@ -1027,24 +1050,24 @@ const param = {
    * ])
    * // { limit = 50, offset = 0 }: { limit?: number; offset?: number }
    */
-  destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
-    const pattern = b.objectPattern(
-      fields.map(f => {
-        const id = b.identifier(f.name);
-        // Use AssignmentPattern for default values: { limit = 50 }
-        const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
-        const prop = b.objectProperty(b.identifier(f.name), value);
-        prop.shorthand = true;
-        return prop;
-      }),
-    );
-    // Build the type annotation: { name: type; name?: type; }
-    const typeAnnotation = ts.objectType(
-      fields.map(f => ({ name: f.name, type: f.type, optional: f.optional })),
-    );
-    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
-    return pattern;
-  },
+   destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
+     const pattern = b.objectPattern(
+       fields.map(f => {
+         const id = b.identifier(f.name);
+         // Use AssignmentPattern for default values: { limit = 50 }
+         const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
+         const prop = b.objectProperty(b.identifier(f.name), value);
+         prop.shorthand = true;
+         return prop;
+       }),
+     );
+     // Build the type annotation: { name: type; name?: type; }
+     const typeAnnotation = ts.objectType(
+       fields.map(f => ({ name: f.name, type: toTSType(f.type), optional: f.optional })),
+     );
+     pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
+     return pattern;
+   },
 } as const;
 
 // =============================================================================

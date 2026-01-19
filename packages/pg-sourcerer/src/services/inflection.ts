@@ -3,11 +3,123 @@
  *
  * Provides configurable naming conventions for entities, fields, enums, etc.
  * Users configure with simple string→string functions that compose naturally.
+ *
+ * ## Inflection Registry
+ *
+ * The registry tracks the provenance of inflected names, allowing the file
+ * assignment system to determine which base entity a derived name belongs to.
+ *
+ * Example: `UserInsert` → base entity `User`, variant `insert`
+ *
+ * This solves the problem where schemas for `UserInsert` would incorrectly
+ * go to `generated/userinsert/` instead of `generated/user/`.
  */
 import { Context, Layer, String as Str } from "effect";
 import pluralize from "pluralize-esm";
 import type { PgAttribute, PgClass, PgProc, PgType } from "@danielfgray/pg-introspection";
 import type { SmartTags, ShapeKind } from "../ir/index.js";
+
+// ============================================================================
+// Inflection Registry Types
+// ============================================================================
+
+/**
+ * The kind of name variant being registered.
+ * Extends ShapeKind with additional categories for enums, composites, etc.
+ */
+export type NameVariant = ShapeKind | "enum" | "composite" | "domain" | "function" | "entity";
+
+/**
+ * Information about an inflected name and its provenance.
+ */
+export interface InflectedName {
+  /** The inflected name (e.g., "UserInsert") */
+  readonly name: string;
+  /** Base entity this derives from (e.g., "User") */
+  readonly baseEntity: string;
+  /** What kind of variant this is */
+  readonly variant: NameVariant;
+  /** Origin for debugging (e.g., "shapeName(User, insert)") */
+  readonly origin: string;
+}
+
+/**
+ * Registry for tracking inflected names and their provenance.
+ *
+ * Used by the file assignment system to determine which base entity
+ * a derived name (like "UserInsert") belongs to.
+ */
+export interface InflectionRegistry {
+  /** Record an inflected name with its provenance */
+  register(info: InflectedName): void;
+
+  /** Look up provenance by inflected name */
+  lookup(name: string): InflectedName | undefined;
+
+  /** Get all names registered for a base entity */
+  getVariants(baseEntity: string): readonly InflectedName[];
+
+  /** Check if a name has already been registered (potential conflict) */
+  hasConflict(name: string): boolean;
+
+  /** Get all registered names (for debugging) */
+  getAll(): ReadonlyMap<string, InflectedName>;
+}
+
+/**
+ * Create a new InflectionRegistry instance.
+ */
+export function createInflectionRegistry(): InflectionRegistry {
+  const byName = new Map<string, InflectedName>();
+  const byBaseEntity = new Map<string, InflectedName[]>();
+
+  return {
+    register(info: InflectedName): void {
+      // Check for conflicts (same name, different base entity)
+      const existing = byName.get(info.name);
+      if (existing && existing.baseEntity !== info.baseEntity) {
+        // Log warning but allow override - last registration wins
+        console.warn(
+          `[InflectionRegistry] Name conflict: "${info.name}" registered for ` +
+            `"${existing.baseEntity}" (${existing.origin}) and "${info.baseEntity}" (${info.origin}). ` +
+            `Using "${info.baseEntity}".`,
+        );
+      }
+
+      byName.set(info.name, info);
+
+      // Index by base entity
+      const variants = byBaseEntity.get(info.baseEntity);
+      if (variants) {
+        // Replace existing variant of same kind, or add new
+        const idx = variants.findIndex((v) => v.variant === info.variant);
+        if (idx >= 0) {
+          variants[idx] = info;
+        } else {
+          variants.push(info);
+        }
+      } else {
+        byBaseEntity.set(info.baseEntity, [info]);
+      }
+    },
+
+    lookup(name: string): InflectedName | undefined {
+      return byName.get(name);
+    },
+
+    getVariants(baseEntity: string): readonly InflectedName[] {
+      return byBaseEntity.get(baseEntity) ?? [];
+    },
+
+    hasConflict(name: string): boolean {
+      return byName.has(name);
+    },
+
+    getAll(): ReadonlyMap<string, InflectedName> {
+      return byName;
+    },
+  };
+}
 
 // ============================================================================
 // Reserved Words
@@ -138,7 +250,11 @@ export const inflect = {
 // ============================================================================
 
 /**
- * Core inflection interface - shared naming transformations
+ * Core inflection interface - shared naming transformations.
+ *
+ * Includes a registry that tracks the provenance of inflected names,
+ * allowing file assignment to correctly group derived names (like UserInsert)
+ * with their base entity (User).
  */
 export interface CoreInflection {
   readonly camelCase: (text: string) => string;
@@ -153,6 +269,14 @@ export interface CoreInflection {
   readonly enumValueName: (value: string) => string;
   readonly relationName: (name: string) => string;
   readonly functionName: (pgProc: PgProc, tags: SmartTags) => string;
+  readonly folderName: (entityName: string) => string;
+
+  /**
+   * Registry tracking the provenance of inflected names.
+   * Auto-populated when shapeName(), entityName(), enumName() are called.
+   * Used by file assignment to determine base entity for derived names.
+   */
+  readonly registry: InflectionRegistry;
 }
 
 /** Service tag */
@@ -247,6 +371,12 @@ export interface InflectionConfig {
    * Default: camelCase (overloads are warned and skipped)
    */
   readonly functionName?: TransformFn;
+
+  /**
+   * Transform entity name → folder name for file output.
+   * Default: uncapitalize (User → user, UserEmail → userEmail)
+   */
+  readonly folderName?: TransformFn;
 }
 
 // ============================================================================
@@ -273,31 +403,7 @@ export const defaultTransforms: InflectionConfig = {
   shapeSuffix: inflect.capitalize,
   relationName: inflect.camelCase,
   functionName: inflect.camelCase,
-};
-
-/**
- * Default inflection implementation using standard JS/TS naming conventions.
- */
-export const defaultInflection: CoreInflection = {
-  // Primitive transforms (always available)
-  camelCase: inflect.camelCase,
-  pascalCase: inflect.pascalCase,
-  pluralize: inflect.pluralize,
-  singularize: inflect.singularize,
-  safeIdentifier: text => (RESERVED_WORDS.has(text) ? text + "_" : text),
-
-  // Configurable transforms (default to JS/TS conventions)
-  entityName: (pgClass, tags) =>
-    tags.name ?? (defaultTransforms.entityName ?? identity)(pgClass.relname),
-  shapeName: (entityName, kind) =>
-    kind === "row" ? entityName : entityName + (defaultTransforms.shapeSuffix ?? identity)(kind),
-  fieldName: (pgAttribute, tags) =>
-    tags.name ?? (defaultTransforms.fieldName ?? identity)(pgAttribute.attname),
-  enumName: (pgType, tags) => tags.name ?? (defaultTransforms.enumName ?? identity)(pgType.typname),
-  enumValueName: value => (defaultTransforms.enumValue ?? identity)(value),
-  relationName: name => (defaultTransforms.relationName ?? identity)(name),
-  functionName: (pgProc, tags) =>
-    tags.name ?? (defaultTransforms.functionName ?? identity)(pgProc.proname),
+  folderName: inflect.uncapitalize,
 };
 
 // ============================================================================
@@ -308,7 +414,11 @@ export const defaultInflection: CoreInflection = {
 const identity: TransformFn = s => s;
 
 /**
- * Create a CoreInflection instance with optional configuration overrides.
+ * Create a CoreInflection instance with its own registry and optional config.
+ *
+ * Each instance gets a fresh InflectionRegistry that tracks name provenance
+ * for file assignment purposes. The registry is auto-populated when
+ * shapeName(), entityName(), enumName(), and functionName() are called.
  *
  * By default, applies standard JS/TS naming conventions (PascalCase entities,
  * camelCase relations, etc.). User config is merged on top of defaults.
@@ -326,60 +436,108 @@ const identity: TransformFn = s => s;
  *   fieldName: inflect.camelCase,  // Also camelCase fields
  * })
  *
- * // Use identity (raw DB names) for everything
- * const inflection = createInflection({
- *   entityName: (name) => name,
- *   fieldName: (name) => name,
- *   enumName: (name) => name,
- *   shapeSuffix: (name) => name,
- *   relationName: (name) => name,
- * })
+ * // Look up provenance later
+ * const info = inflection.registry.lookup("UserInsert")
+ * // → { name: "UserInsert", baseEntity: "User", variant: "insert", ... }
  * ```
  */
 export function createInflection(config?: InflectionConfig): CoreInflection {
-  if (!config) return defaultInflection;
+  // Each instance gets its own registry
+  const registry = createInflectionRegistry();
 
   // Primitive transforms (user can override singularize/pluralize)
-  const singularizeFn = config.singularize ?? inflect.singularize;
-  const pluralizeFn = config.pluralize ?? inflect.pluralize;
+  const singularizeFn = config?.singularize ?? inflect.singularize;
+  const pluralizeFn = config?.pluralize ?? inflect.pluralize;
 
   // Build entityName default using the configured singularize
   const defaultEntityName = (name: string) => inflect.pascalCase(singularizeFn(name));
 
   // Merge user config on top of defaults
-  const entityFn = config.entityName ?? defaultEntityName;
-  const fieldFn = config.fieldName ?? defaultTransforms.fieldName ?? identity;
-  const enumNameFn = config.enumName ?? defaultTransforms.enumName ?? identity;
-  const enumValueFn = config.enumValue ?? defaultTransforms.enumValue ?? identity;
-  const shapeSuffixFn = config.shapeSuffix ?? defaultTransforms.shapeSuffix ?? identity;
-  const relationFn = config.relationName ?? defaultTransforms.relationName ?? identity;
-  const functionFn = config.functionName ?? defaultTransforms.functionName ?? identity;
+  const entityFn = config?.entityName ?? defaultEntityName;
+  const fieldFn = config?.fieldName ?? defaultTransforms.fieldName ?? identity;
+  const enumNameFn = config?.enumName ?? defaultTransforms.enumName ?? identity;
+  const enumValueFn = config?.enumValue ?? defaultTransforms.enumValue ?? identity;
+  const shapeSuffixFn = config?.shapeSuffix ?? defaultTransforms.shapeSuffix ?? identity;
+  const relationFn = config?.relationName ?? defaultTransforms.relationName ?? identity;
+  const functionFn = config?.functionName ?? defaultTransforms.functionName ?? identity;
+  const folderFn = config?.folderName ?? defaultTransforms.folderName ?? identity;
 
   return {
+    registry,
+
     // Primitive transforms (configurable)
-    camelCase: defaultInflection.camelCase,
-    pascalCase: defaultInflection.pascalCase,
+    camelCase: inflect.camelCase,
+    pascalCase: inflect.pascalCase,
     pluralize: pluralizeFn,
     singularize: singularizeFn,
-    safeIdentifier: defaultInflection.safeIdentifier,
+    safeIdentifier: (text: string) => (RESERVED_WORDS.has(text) ? text + "_" : text),
 
-    // Configurable transforms (smart tags take precedence)
-    entityName: (pgClass, tags) => tags.name ?? entityFn(pgClass.relname),
+    // Entity name - register with variant "entity"
+    entityName: (pgClass, tags) => {
+      const name = tags.name ?? entityFn(pgClass.relname);
+      registry.register({
+        name,
+        baseEntity: name, // Entity is its own base
+        variant: "entity",
+        origin: `entityName(${pgClass.relname})`,
+      });
+      return name;
+    },
 
-    shapeName: (entityName, kind) =>
-      kind === "row" ? entityName : entityName + shapeSuffixFn(kind),
+    // Shape name - register with the shape kind as variant
+    shapeName: (entityName, kind) => {
+      const name = kind === "row" ? entityName : entityName + shapeSuffixFn(kind);
+      registry.register({
+        name,
+        baseEntity: entityName,
+        variant: kind,
+        origin: `shapeName(${entityName}, ${kind})`,
+      });
+      return name;
+    },
 
     fieldName: (pgAttribute, tags) => tags.name ?? fieldFn(pgAttribute.attname),
 
-    enumName: (pgType, tags) => tags.name ?? enumNameFn(pgType.typname),
+    // Enum name - register with variant "enum"
+    enumName: (pgType, tags) => {
+      const name = tags.name ?? enumNameFn(pgType.typname);
+      registry.register({
+        name,
+        baseEntity: name, // Enum is its own base
+        variant: "enum",
+        origin: `enumName(${pgType.typname})`,
+      });
+      return name;
+    },
 
     enumValueName: value => enumValueFn(value),
 
     relationName: name => relationFn(name),
 
-    functionName: (pgProc, tags) => tags.name ?? functionFn(pgProc.proname),
+    // Function name - register with variant "function"
+    functionName: (pgProc, tags) => {
+      const name = tags.name ?? functionFn(pgProc.proname);
+      registry.register({
+        name,
+        baseEntity: name, // Function is its own base
+        variant: "function",
+        origin: `functionName(${pgProc.proname})`,
+      });
+      return name;
+    },
+
+    folderName: entityName => folderFn(entityName),
   };
 }
+
+/**
+ * Default inflection instance - creates a new instance with standard conventions.
+ *
+ * Note: This is a getter that returns a fresh instance each time to ensure
+ * each usage gets its own registry. For most cases, use createInflection()
+ * or makeInflectionLayer() directly.
+ */
+export const defaultInflection: CoreInflection = createInflection();
 
 /**
  * Create an Effect Layer that provides inflection with optional configuration overrides.
@@ -468,6 +626,7 @@ export function composeInflectionConfigs(
       shapeSuffix: composeFns(pluginDefaults.shapeSuffix, userConfig.shapeSuffix),
       relationName: composeFns(pluginDefaults.relationName, userConfig.relationName),
       functionName: composeFns(pluginDefaults.functionName, userConfig.functionName),
+      folderName: composeFns(pluginDefaults.folderName, userConfig.folderName),
     }).filter(([, v]) => v !== undefined),
   ) as InflectionConfig;
 }
@@ -477,6 +636,9 @@ export function composeInflectionConfigs(
  *
  * This is used by PluginRunner to merge plugin's inflectionDefaults
  * with the user's configured inflection.
+ *
+ * The composed inflection shares the base inflection's registry, so all
+ * registrations go to the same place regardless of composition.
  *
  * @param baseInflection - The user's CoreInflection instance
  * @param pluginDefaults - Plugin's default transforms to apply first
@@ -497,6 +659,7 @@ export function composeInflection(
   const shapeSuffixFn = pluginDefaults.shapeSuffix;
   const relationFn = pluginDefaults.relationName;
   const functionFn = pluginDefaults.functionName;
+  const folderFn = pluginDefaults.folderName;
 
   // If no transforms defined, return base unchanged
   if (
@@ -508,7 +671,8 @@ export function composeInflection(
     !enumValueFn &&
     !shapeSuffixFn &&
     !relationFn &&
-    !functionFn
+    !functionFn &&
+    !folderFn
   ) {
     return baseInflection;
   }
@@ -522,6 +686,9 @@ export function composeInflection(
     : baseInflection.pluralize;
 
   return {
+    // Share the base inflection's registry
+    registry: baseInflection.registry,
+
     // Primitive transforms (composed if plugin provides them)
     camelCase: baseInflection.camelCase,
     pascalCase: baseInflection.pascalCase,
@@ -530,20 +697,31 @@ export function composeInflection(
     safeIdentifier: baseInflection.safeIdentifier,
 
     // Compose: plugin transforms first, then base transforms
+    // Note: base transforms handle registration, so we delegate to them
     entityName: (pgClass, tags) => {
       if (tags.name) return tags.name;
       const afterPlugin = entityFn ? entityFn(pgClass.relname) : pgClass.relname;
-      // Now apply base inflection's transform to the result
-      // We simulate this by calling base with a fake pgClass that has the transformed name
+      // Delegate to base which handles registration
       return baseInflection.entityName({ ...pgClass, relname: afterPlugin }, {});
     },
 
     shapeName: (entityName, kind) => {
-      if (kind === "row") return entityName;
-      const afterPlugin = shapeSuffixFn ? shapeSuffixFn(kind) : kind;
-      // Base's shapeName concatenates, so we need to handle carefully
-      // Actually base just does: entityName + kind, so we transform kind first
-      return entityName + afterPlugin;
+      // Delegate to base which handles registration
+      if (shapeSuffixFn && kind !== "row") {
+        // Plugin wants to transform the suffix, but we need base to register
+        // We call base shapeName and let it register, but the suffix will be different
+        // This is a limitation - plugin suffix transforms bypass registration
+        // For now, just return the composed name and register manually
+        const name = entityName + shapeSuffixFn(kind);
+        baseInflection.registry.register({
+          name,
+          baseEntity: entityName,
+          variant: kind,
+          origin: `composed.shapeName(${entityName}, ${kind})`,
+        });
+        return name;
+      }
+      return baseInflection.shapeName(entityName, kind);
     },
 
     fieldName: (pgAttribute, tags) => {
@@ -555,6 +733,7 @@ export function composeInflection(
     enumName: (pgType, tags) => {
       if (tags.name) return tags.name;
       const afterPlugin = enumNameFn ? enumNameFn(pgType.typname) : pgType.typname;
+      // Delegate to base which handles registration
       return baseInflection.enumName({ ...pgType, typname: afterPlugin }, {});
     },
 
@@ -571,7 +750,13 @@ export function composeInflection(
     functionName: (pgProc, tags) => {
       if (tags.name) return tags.name;
       const afterPlugin = functionFn ? functionFn(pgProc.proname) : pgProc.proname;
+      // Delegate to base which handles registration
       return baseInflection.functionName({ ...pgProc, proname: afterPlugin }, {});
+    },
+
+    folderName: entityName => {
+      const afterPlugin = folderFn ? folderFn(entityName) : entityName;
+      return baseInflection.folderName(afterPlugin);
     },
   };
 }

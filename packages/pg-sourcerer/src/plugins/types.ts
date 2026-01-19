@@ -8,15 +8,15 @@
  * Other plugins can consume these types via the SymbolRegistry.
  */
 import { Effect, Array as Arr, pipe } from "effect";
-import recast from "recast";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { isTableEntity, type TableEntity, type Field } from "../ir/semantic-ir.js";
+import { conjure } from "../conjure/index.js";
 import { types } from "../conjure/types.js";
 
-const b = recast.types.builders;
+const b = conjure.b;
 
 // =============================================================================
 // Field to TypeScript Property
@@ -62,7 +62,7 @@ function entityToInterface(entity: TableEntity): n.TSInterfaceDeclaration {
 // =============================================================================
 
 /**
- * The types plugin - generates TypeScript interfaces from database entities.
+ * The types plugin factory - generates TypeScript interfaces from database entities.
  *
  * Capabilities provided:
  * - `type:EntityName` for each table/view entity
@@ -76,44 +76,53 @@ function entityToInterface(entity: TableEntity): n.TSInterfaceDeclaration {
  * }
  * ```
  */
-export const typesPlugin: Plugin = {
-  name: "types",
+export function typesPlugin(): Plugin {
+  return {
+    name: "types",
 
-  // We dynamically declare capabilities based on IR entities
-  // This empty array is filled during declare phase
-  provides: [],
+    // We dynamically declare capabilities based on IR entities
+    // This empty array is filled during declare phase
+    provides: [],
 
-  declare: Effect.gen(function* () {
-    const ir = yield* IR;
+    fileDefaults: [
+      {
+        pattern: "type:",
+        fileNaming: () => "types.ts",
+      },
+    ],
 
-    // entity.name is already inflected by the IR builder
-    return pipe(
-      Array.from(ir.entities.values()),
-      Arr.filter(isTableEntity),
-      Arr.map(
-        (entity): SymbolDeclaration => ({
-          name: entity.name,
-          capability: `type:${entity.name}`,
-        }),
-      ),
-    );
-  }),
+    declare: Effect.gen(function* () {
+      const ir = yield* IR;
 
-  render: Effect.gen(function* () {
-    const ir = yield* IR;
+      // entity.name is already inflected by the IR builder
+      return pipe(
+        Array.from(ir.entities.values()),
+        Arr.filter(isTableEntity),
+        Arr.map(
+          (entity): SymbolDeclaration => ({
+            name: entity.name,
+            capability: `type:${entity.name}`,
+          }),
+        ),
+      );
+    }),
 
-    // entity.name is already inflected by the IR builder
-    return pipe(
-      Array.from(ir.entities.values()),
-      Arr.filter(isTableEntity),
-      Arr.map(
-        (entity): RenderedSymbol => ({
-          name: entity.name,
-          capability: `type:${entity.name}`,
-          node: entityToInterface(entity),
-          exports: "named",
-        }),
-      ),
-    );
-  }),
-};
+    render: Effect.gen(function* () {
+      const ir = yield* IR;
+
+      // entity.name is already inflected by the IR builder
+      return pipe(
+        Array.from(ir.entities.values()),
+        Arr.filter(isTableEntity),
+        Arr.map(
+          (entity): RenderedSymbol => ({
+            name: entity.name,
+            capability: `type:${entity.name}`,
+            node: entityToInterface(entity),
+            exports: "named",
+          }),
+        ),
+      );
+    }),
+  };
+}

@@ -125,12 +125,13 @@ export type QueryMethod = S.Schema.Type<typeof QueryMethod>;
  *
  * This is the shape registered via ctx.symbols.registerEntityMethods().
  * HTTP providers read via ctx.symbols.getEntityMethods(entityName).
+ *
+ * NOTE: No importPath here. HTTP providers use registry.import() to reference
+ * query functions by capability, and emit phase resolves to file paths.
  */
 export const EntityQueriesExtension = S.Struct({
   /** Available query methods for this entity */
   methods: S.Array(QueryMethod),
-  /** Import path for the generated query file (relative to output root) */
-  importPath: S.String,
   /** Primary key type (for routing) */
   pkType: S.optional(S.String),
   /** Whether entity has composite primary key */
@@ -144,6 +145,9 @@ export type EntityQueriesExtension = S.Schema.Type<typeof EntityQueriesExtension
 
 /**
  * A standalone database function (not tied to an entity).
+ *
+ * NOTE: No importPath here. HTTP providers use registry.import() to reference
+ * functions by capability, and emit phase resolves to file paths.
  */
 export const StandaloneFunction = S.Struct({
   /** PostgreSQL function name */
@@ -160,8 +164,6 @@ export const StandaloneFunction = S.Struct({
   returns: QueryMethodReturn,
   /** How to invoke */
   callSignature: S.optional(CallSignature),
-  /** Import path */
-  importPath: S.String,
 });
 export type StandaloneFunction = S.Schema.Type<typeof StandaloneFunction>;
 

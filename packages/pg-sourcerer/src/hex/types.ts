@@ -137,6 +137,143 @@ export interface Expression {
   subquery?: SelectSpec;
 }
 
+// =============================================================================
+// DDL Types - Column Definition
+// =============================================================================
+
+export interface ColumnSpec {
+  name: string;
+  pgType: string;
+  nullable?: boolean;
+  hasDefault?: boolean;
+  defaultValue?: string;
+  isArray?: boolean;
+  isIdentity?: boolean;
+  generationKind?: "always" | "by default";
+}
+
+// =============================================================================
+// DDL Types - Index Definition
+// =============================================================================
+
+export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist";
+
+export interface IndexSpec {
+  name: string;
+  columns: string[];
+  method?: IndexMethod;
+  unique?: boolean;
+  isPrimaryKey?: boolean;
+  where?: string;
+  include?: string[];
+  opclass?: Record<string, string>;
+}
+
+// =============================================================================
+// DDL Types - Constraint Definition
+// =============================================================================
+
+export interface PrimaryKeySpec {
+  columns: string[];
+  name?: string;
+}
+
+export interface UniqueConstraintSpec {
+  columns: string[];
+  name?: string;
+  where?: string;
+}
+
+export interface ExcludeConstraintSpec {
+  columns: { name: string; opclass?: string }[];
+  name?: string;
+  using?: IndexMethod;
+  where?: string;
+}
+
+export type TableConstraintSpec =
+  | { kind: "primaryKey"; columns: string[]; name?: string }
+  | { kind: "unique"; columns: string[]; name?: string; where?: string }
+  | { kind: "exclude"; elements: { column: string; opclass?: string }[]; name?: string };
+
+// =============================================================================
+// DDL Types - Foreign Key Definition
+// =============================================================================
+
+export interface ForeignKeySpec {
+  columns: string[];
+  targetTable: string;
+  targetColumns: string[];
+  onDelete?: "cascade" | "restrict" | "set null" | "set default";
+  onUpdate?: "cascade" | "restrict" | "set null" | "set default";
+  name?: string;
+}
+
+// =============================================================================
+// DDL Types - Create Table Specification
+// =============================================================================
+
+export interface CreateTableSpec {
+  table: string;
+  schema?: string;
+  columns: ColumnSpec[];
+  primaryKey?: PrimaryKeySpec;
+  constraints?: TableConstraintSpec[];
+  indexes?: IndexSpec[];
+  foreignKeys?: ForeignKeySpec[];
+  ifNotExists?: boolean;
+  inherits?: string[];
+  like?: { table: string; including?: string[]; excluding?: string[] };
+}
+
+// =============================================================================
+// DDL Types - Alter Table Specification
+// =============================================================================
+
+export interface AlterTableSpec {
+  table: string;
+  schema?: string;
+  actions: AlterAction[];
+}
+
+export type AlterAction =
+  | { kind: "addColumn"; column: ColumnSpec }
+  | { kind: "dropColumn"; column: string; cascade?: boolean }
+  | { kind: "alterColumnSetDefault"; column: string; setDefault: string | null }
+  | { kind: "alterColumnSetNotNull"; column: string }
+  | { kind: "alterColumnDropNotNull"; column: string }
+  | { kind: "addConstraint"; constraint: TableConstraintSpec }
+  | { kind: "dropConstraint"; name: string; cascade?: boolean }
+  | { kind: "addForeignKey"; foreignKey: ForeignKeySpec }
+  | { kind: "dropForeignKey"; name: string; cascade?: boolean }
+  | { kind: "renameTo"; newName: string }
+  | { kind: "renameColumn"; from: string; to: string };
+
+// =============================================================================
+// DDL Types - Drop Object Specification
+// =============================================================================
+
+export interface DropSpec {
+  kind: "table" | "column" | "constraint" | "index" | "foreignKey" | "schema" | "type" | "function" | "trigger" | "rule";
+  name: string;
+  schema?: string;
+  table?: string;
+  ifExists?: boolean;
+  cascade?: boolean;
+}
+
+// =============================================================================
+// DDL Types - Utility
+// =============================================================================
+
+export interface SchemaInfo {
+  schema: string;
+  tables: string[];
+  enums: string[];
+  types: string[];
+  functions: string[];
+}
+
 export interface BuilderState {
   params: ParamDescriptor[];
   paramCounter: number;
@@ -153,7 +290,9 @@ export function createBuilderState(ir: SemanticIR): BuilderState {
 
   for (const [name, entity] of ir.entities) {
     if (entity.kind === "table" || entity.kind === "view") {
+      // Index by both entity name (User) and pgName (user) for flexible lookup
       tables.set(name, entity);
+      tables.set(entity.pgName, entity);
     } else if (entity.kind === "enum") {
       enums.set(entity.pgName, { name: entity.name, values: entity.values });
     }

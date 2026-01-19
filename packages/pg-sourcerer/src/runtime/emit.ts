@@ -7,6 +7,7 @@
  * 3. Serializes AST to TypeScript code
  * 4. Applies formatting (blank lines before exports, header comments)
  */
+import type { SymbolStatement } from "../conjure/index.js";
 import recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
@@ -14,8 +15,35 @@ import { Array as Arr, pipe } from "effect";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import type { AssignedSymbol } from "./file-assignment.js";
+import { ExportCollisionError } from "../errors.js";
 
 const b = recast.types.builders;
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/**
+ * Check if a node is a SymbolStatement (from conjure exp.* helpers).
+ */
+function isSymbolStatement(node: unknown): node is SymbolStatement {
+  return (
+    typeof node === "object" &&
+    node !== null &&
+    "_tag" in node &&
+    (node as { _tag?: string })._tag === "SymbolStatement"
+  );
+}
+
+/**
+ * Unwrap a SymbolStatement to get the underlying statement, or return as-is.
+ */
+function unwrapNode(node: unknown): unknown {
+  if (isSymbolStatement(node)) {
+    return node.node;
+  }
+  return node;
+}
 
 // =============================================================================
 // Types
@@ -54,6 +82,8 @@ export interface ExternalImport {
 export interface RenderedSymbolWithImports extends RenderedSymbol {
   /** External imports needed by this symbol */
   readonly externalImports?: readonly ExternalImport[];
+  /** Raw code to prepend to the file (e.g., custom imports) */
+  readonly fileHeader?: string;
 }
 
 // =============================================================================
@@ -182,6 +212,15 @@ function computeRelativePath(fromFile: string, toFile: string): string {
 }
 
 /**
+ * Check if a node is already an export declaration.
+ */
+function isExportDeclaration(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false;
+  const type = (node as { type?: string }).type;
+  return type === "ExportNamedDeclaration" || type === "ExportDefaultDeclaration";
+}
+
+/**
  * Build export statement wrapper for a rendered symbol.
  */
 function wrapWithExport(node: unknown, exports: RenderedSymbol["exports"]): StatementKind {
@@ -189,6 +228,11 @@ function wrapWithExport(node: unknown, exports: RenderedSymbol["exports"]): Stat
 
   // Handle no export case
   if (exports === undefined || exports === false) {
+    return stmt;
+  }
+
+  // If node is already an export declaration, return as-is
+  if (isExportDeclaration(node)) {
     return stmt;
   }
 
@@ -223,6 +267,122 @@ function formatCode(code: string): string {
 }
 
 /**
+ * Declaration kind for collision detection.
+ * Different kinds with the same name can coexist (e.g., const User + type User).
+ */
+type DeclKind =
+  | "const"
+  | "let"
+  | "var"
+  | "function"
+  | "class"
+  | "interface"
+  | "type"
+  | "enum"
+  | "module"
+  | "namespace"
+  | "import"
+  | "export"
+  | "other";
+
+/**
+ * Extract the declaration kind from an AST node.
+ * This is used to detect conflicting declarations.
+ *
+ * Important: For export declarations, we look inside at the actual
+ * declaration to determine the kind. This allows `export const X` and
+ * `export type X` to coexist since they're different kinds.
+ */
+function getDeclarationKind(node: unknown): DeclKind {
+  if (!node || typeof node !== "object") return "other";
+
+  const n = node as { type?: string; declaration?: unknown };
+
+  // For export declarations, look inside to get the actual declaration kind
+  if (n.type === "ExportNamedDeclaration" || n.type === "ExportDefaultDeclaration") {
+    if (n.declaration) {
+      return getDeclarationKind(n.declaration);
+    }
+    return "export";
+  }
+
+  // Direct declaration types
+  if (n.type === "VariableDeclaration") {
+    const varNode = node as { kind?: string };
+    if (varNode.kind === "let") return "let";
+    if (varNode.kind === "var") return "var";
+    return "const";
+  }
+  if (n.type === "FunctionDeclaration") return "function";
+  if (n.type === "ClassDeclaration") return "class";
+  if (n.type === "TSInterfaceDeclaration") return "interface";
+  if (n.type === "TSTypeAliasDeclaration") return "type";
+  if (n.type === "TSEnumDeclaration") return "enum";
+  if (n.type === "TSModuleDeclaration") return "module";
+  if (n.type === "TSNamespaceExportDeclaration") return "namespace";
+  if (n.type === "ImportDeclaration") return "import";
+
+  return "other";
+}
+
+/**
+ * Check if two declaration kinds are compatible.
+ * Same kinds with the same name would create invalid code.
+ * Different kinds (e.g., const + type) can coexist.
+ */
+function areKindsCompatible(kind1: DeclKind, kind2: DeclKind): boolean {
+  return kind1 !== kind2;
+}
+
+/**
+ * Track export collisions for a single file.
+ * Returns the collected statements or throws on collision.
+ */
+function collectStatementsWithCollisionDetection(
+  filePath: string,
+  symbols: readonly AssignedSymbol[],
+  capToRendered: Map<Capability, RenderedSymbol>,
+): StatementKind[] {
+  const seenExports = new Map<string, { kind: DeclKind; capability: Capability }>();
+  const bodyStatements: StatementKind[] = [];
+
+  for (const sym of symbols) {
+    const r = capToRendered.get(sym.declaration.capability);
+    if (!r) continue;
+
+    // Skip provider-only symbols (no export, metadata only)
+    // These are just for cross-plugin references and don't need to be emitted
+    if (r.exports === false || r.exports === undefined) {
+      continue;
+    }
+
+    const wrapped = wrapWithExport(r.node, r.exports);
+    const kind = getDeclarationKind(wrapped);
+
+    // Check for collision
+    const existing = seenExports.get(r.name);
+    if (existing) {
+      if (!areKindsCompatible(existing.kind, kind)) {
+        throw new ExportCollisionError({
+          file: filePath,
+          exportName: r.name,
+          exportKind: kind,
+          capability1: existing.capability,
+          capability2: sym.declaration.capability,
+          message: `Export collision in ${filePath}: "${r.name}" is already declared as ${existing.kind}`,
+        });
+      }
+      // Compatible different kinds - allow, continue collecting
+    }
+
+    seenExports.set(r.name, { kind, capability: sym.declaration.capability });
+    bodyStatements.push(wrapped);
+  }
+
+  return bodyStatements;
+}
+
+/**
  * Emit all files from orchestrator result.
  */
 export function emitFiles(
@@ -249,52 +409,97 @@ export function emitFiles(
       declarations,
     );
 
-    // Collect external imports from rendered symbols
-    // (if plugins provide them via externalImports field)
+    // Collect external imports and file headers from rendered symbols
+    // Track value imports and type imports separately
     const externalImportStatements: n.ImportDeclaration[] = [];
-    const seenExternalSources = new Map<string, Set<string>>();
+    const seenValueImports = new Map<string, Set<string>>();
+    const seenTypeImports = new Map<string, Set<string>>();
+    const fileHeaders: string[] = [];
 
     for (const sym of symbols) {
       const r = capToRendered.get(sym.declaration.capability) as
         | RenderedSymbolWithImports
         | undefined;
-      if (!r?.externalImports) continue;
+      if (!r) continue;
+
+      // Collect file headers (deduplicated)
+      if (r.fileHeader && !fileHeaders.includes(r.fileHeader)) {
+        fileHeaders.push(r.fileHeader);
+      }
+
+      if (!r.externalImports) continue;
 
       for (const ext of r.externalImports) {
-        if (!seenExternalSources.has(ext.from)) {
-          seenExternalSources.set(ext.from, new Set());
-        }
-        const names = seenExternalSources.get(ext.from)!;
-
-        // Collect names
+        // Collect value imports
         if (ext.names) {
-          for (const n of ext.names) names.add(n);
+          if (!seenValueImports.has(ext.from)) {
+            seenValueImports.set(ext.from, new Set());
+          }
+          for (const n of ext.names) seenValueImports.get(ext.from)!.add(n);
         }
+        // Collect type imports separately
         if (ext.types) {
-          for (const t of ext.types) names.add(t); // TODO: separate type imports
+          if (!seenTypeImports.has(ext.from)) {
+            seenTypeImports.set(ext.from, new Set());
+          }
+          for (const t of ext.types) seenTypeImports.get(ext.from)!.add(t);
         }
       }
     }
 
-    // Build external import statements
-    for (const [source, names] of seenExternalSources) {
+    /**
+     * Compute import source path, handling internal vs external packages.
+     */
+    const resolveImportSource = (source: string): string => {
+      // Internal paths:
+      // - Start with "./" or ".."
+      // - End in .ts/.js (could be "db.ts" or "foo/bar.ts")
+      // External packages: "elysia", "@effect/schema", "kysely", etc.
+      const isInternalPath =
+        source.startsWith("./") ||
+        source.startsWith("../") ||
+        /\.(ts|js)$/.test(source);
+
+      if (isInternalPath) {
+        // Normalize: strip leading "./" if present, convert .js to .ts for path computation
+        const normalized = source.replace(/^\.\//, "").replace(/\.js$/, ".ts");
+        return computeRelativePath(filePath, normalized);
+      }
+      return source;
+    };
+
+    // Build type-only import statements first
+    for (const [source, types] of seenTypeImports) {
+      if (types.size > 0) {
+        const specifiers = Array.from(types).map(name =>
+          b.importSpecifier(b.identifier(name), b.identifier(name)),
+        );
+        const importDecl = b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source)));
+        importDecl.importKind = "type";
+        externalImportStatements.push(importDecl);
+      }
+    }
+
+    // Build value import statements
+    for (const [source, names] of seenValueImports) {
       if (names.size > 0) {
         const specifiers = Array.from(names).map(name =>
           b.importSpecifier(b.identifier(name), b.identifier(name)),
         );
-        externalImportStatements.push(b.importDeclaration(specifiers, b.stringLiteral(source)));
+        externalImportStatements.push(b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))));
       }
     }
 
     // Collect rendered bodies for symbols in this file
-    const bodyStatements: StatementKind[] = [];
-    for (const sym of symbols) {
-      const r = capToRendered.get(sym.declaration.capability);
-      if (!r) continue;
+    // This also performs collision detection for same-name exports
+    const bodyStatements = collectStatementsWithCollisionDetection(
+      filePath,
+      symbols,
+      capToRendered,
+    );
 
-      const wrapped = wrapWithExport(r.node, r.exports);
-      bodyStatements.push(wrapped);
-    }
+    // Skip files with no body content (provider-only symbols)
+    if (bodyStatements.length === 0) continue;
 
     // Build the program
     const allImports = [...externalImportStatements, ...crossImports];
@@ -306,7 +511,12 @@ export function emitFiles(
     // Format
     code = formatCode(code);
 
-    // Add header
+    // Add file-specific headers from plugins (e.g., custom imports)
+    if (fileHeaders.length > 0) {
+      code = fileHeaders.join("\n") + "\n\n" + code;
+    }
+
+    // Add global header comment
     if (config.headerComment) {
       code = config.headerComment + "\n\n" + code;
     }

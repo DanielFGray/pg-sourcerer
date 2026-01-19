@@ -9,6 +9,7 @@ import { lilconfig } from "lilconfig";
 import { Config, type ConfigInput, type ResolvedConfig } from "../config.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
 
+
 /**
  * Config Loader service interface
  */
@@ -132,6 +133,7 @@ export function createConfigLoader(): ConfigLoader {
           inflection: parseResult.inflection,
           plugins: parseResult.plugins,
           formatter: parseResult.formatter,
+          defaultFile: parseResult.defaultFile,
         };
 
         return resolved;

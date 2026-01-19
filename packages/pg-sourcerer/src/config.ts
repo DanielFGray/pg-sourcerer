@@ -3,6 +3,7 @@
  */
 import { Schema as S } from "effect";
 import type { InflectionConfig } from "./services/inflection.js";
+import type { Plugin } from "./runtime/types.js";
 
 /**
  * Type hint match criteria
@@ -56,6 +57,12 @@ export const Config = S.Struct({
 
   /** Formatter callback to transform generated code before writing (validated as Any, properly typed in ConfigInput) */
   formatter: S.optional(S.String),
+
+  /**
+   * Default file name for symbols that don't match any rule.
+   * Relative to outputDir. Default: "index.ts"
+   */
+  defaultFile: S.optional(S.String),
 });
 
 export type Config = S.Schema.Type<typeof Config>;
@@ -101,7 +108,7 @@ export interface ConfigInput {
   readonly inflection?: InflectionConfig;
 
   /** Plugins to run */
-  readonly plugins: readonly unknown[];
+  readonly plugins: readonly Plugin[];
 
   /**
    * Formatter command to run on generated files after writing.
@@ -116,6 +123,12 @@ export interface ConfigInput {
    * ```
    */
   readonly formatter?: string;
+
+  /**
+   * Default file name for symbols that don't match any rule.
+   * Relative to outputDir. Default: "index.ts"
+   */
+  readonly defaultFile?: string;
 }
 
 /**
@@ -130,4 +143,5 @@ export interface ResolvedConfig {
   readonly inflection?: InflectionConfig;
   readonly plugins: readonly unknown[];
   readonly formatter?: string;
+  readonly defaultFile?: string;
 }

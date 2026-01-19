@@ -1,14 +1,13 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Array } from "effect";
 import type { Plugin, SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
-import { SymbolRegistry, SymbolRegistryImpl, type SymbolCollision } from "./registry.js";
-import { validateAll, type UnsatisfiedCapability, type CircularDependency } from "./validation.js";
+import { SymbolRegistry, SymbolRegistryImpl } from "./registry.js";
+import { validateAll } from "./validation.js";
 import type { FileAssignmentConfig, AssignedSymbol } from "./file-assignment.js";
 import { assignSymbolsToFiles, groupByFile } from "./file-assignment.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { TypeHints, type TypeHintRegistry } from "../services/type-hints.js";
 import type { SemanticIR } from "../ir/semantic-ir.js";
-import type { DeclareError, RenderError } from "./errors.js";
 
 /**
  * Result of running the orchestrator.
@@ -38,6 +37,9 @@ export interface OrchestratorResult {
  * Configuration for the orchestrator.
  */
 export interface OrchestratorConfig {
+  /** Plugins to run (or plugin factories) */
+  readonly plugins: readonly Plugin[];
+
   /** Semantic IR */
   readonly ir: SemanticIR;
 
@@ -47,17 +49,12 @@ export interface OrchestratorConfig {
   /** Type hints registry */
   readonly typeHints: TypeHintRegistry;
 
-  /** File assignment configuration */
-  readonly fileAssignment: FileAssignmentConfig;
-}
+  /** Default file for unmatched symbols */
+  readonly defaultFile?: string;
 
-/** All errors that can occur during plugin execution */
-export type PluginExecutionError =
-  | UnsatisfiedCapability
-  | CircularDependency
-  | SymbolCollision
-  | DeclareError
-  | RenderError;
+  /** Base output directory (plugins' fileDefaults may use this via FileNamingContext) */
+  readonly outputDir: string;
+}
 
 /**
  * Run plugins through two-phase execution.
@@ -67,13 +64,28 @@ export type PluginExecutionError =
  * 2. Validate: Check capability satisfaction and dependency cycles
  * 3. Assign: Assign symbols to output files
  * 4. Render: All plugins render their symbol bodies (with SymbolRegistry service added)
+ *
+ * @param config - Orchestrator configuration
  */
-export function runPlugins(
-  plugins: readonly Plugin[],
-  config: OrchestratorConfig,
-): Effect.Effect<OrchestratorResult, PluginExecutionError> {
-  return Effect.gen(function* () {
+export const runPlugins = (config: OrchestratorConfig) =>
+  Effect.gen(function* () {
     const registry = new SymbolRegistryImpl();
+
+    const plugins = config.plugins;
+
+    // Collect file defaults from all plugins
+    const pluginFileDefaults = Array.flatMap(plugins, p => p.fileDefaults ?? []);
+
+    // Use plugin file defaults directly (no user overrides - plugins handle their own config)
+    const mergedRules = pluginFileDefaults;
+
+    // Build file assignment config
+    const fileAssignment: FileAssignmentConfig = {
+      outputDir: config.outputDir,
+      rules: mergedRules,
+      defaultFile: config.defaultFile ?? "index.ts",
+      inflection: config.inflection,
+    };
 
     // Build service layers
     const irLayer = Layer.succeed(IR, config.ir);
@@ -81,19 +93,35 @@ export function runPlugins(
     const typeHintsLayer = Layer.succeed(TypeHints, config.typeHints);
     const declareLayer = Layer.mergeAll(irLayer, inflectionLayer, typeHintsLayer);
 
+    // Phase 0: Register category providers
+    // Categories are bare strings in `provides` (no colons), e.g., "queries", "schema"
+    // This must happen before declare phase so capability resolution works
+    for (const plugin of plugins) {
+      for (const cap of plugin.provides) {
+        // A category is a bare string without colons
+        if (!cap.includes(":")) {
+          yield* registry.registerCategoryProvider(cap, plugin.name);
+        }
+      }
+    }
+
     // Phase 1: Declare - collect all symbol declarations
+    // Track which plugin declared which capabilities for Phase 4
     const allDeclarations: SymbolDeclaration[] = [];
+    const capabilitiesByPlugin = new Map<Plugin, readonly Capability[]>();
+
     for (const plugin of plugins) {
       const decls = yield* plugin.declare.pipe(Effect.provide(declareLayer));
       yield* registry.registerAll(decls);
       allDeclarations.push(...decls);
+      capabilitiesByPlugin.set(plugin, decls.map(d => d.capability));
     }
 
     // Phase 2: Validate
     yield* validateAll(plugins, registry);
 
     // Phase 3: Assign symbols to files
-    const assigned = assignSymbolsToFiles(allDeclarations, config.fileAssignment);
+    const assigned = assignSymbolsToFiles(allDeclarations, fileAssignment);
     const fileGroups = groupByFile(assigned);
 
     // Phase 4: Render - add SymbolRegistry service
@@ -103,7 +131,15 @@ export function runPlugins(
     const allRendered: RenderedSymbol[] = [];
     for (const plugin of plugins) {
       // Set context so registry knows which capabilities are being rendered
-      registry.setCurrentCapabilities(plugin.provides);
+      // Use the capabilities declared by this plugin in Phase 1
+      const pluginCapabilities = capabilitiesByPlugin.get(plugin) ?? [];
+      registry.setCurrentCapabilities(pluginCapabilities);
+
+      // Set owned declarations so plugins can iterate with registry.own()
+      const pluginDeclarations = allDeclarations.filter(d =>
+        pluginCapabilities.includes(d.capability),
+      );
+      registry.setOwnedDeclarations(pluginDeclarations);
 
       // Handle renderWithImports - record references before render
       // We need to actually call .ref() to trigger reference tracking
@@ -114,6 +150,12 @@ export function runPlugins(
       }
 
       const rendered = yield* plugin.render.pipe(Effect.provide(renderLayer));
+
+      // Store rendered output and metadata for consumers
+      for (const symbol of rendered) {
+        registry.setRendered(symbol.capability, symbol.node, symbol.metadata);
+      }
+
       allRendered.push(...rendered);
 
       registry.clearCurrentCapabilities();
@@ -127,4 +169,3 @@ export function runPlugins(
       references: registry.getAllReferences(),
     };
   });
-}

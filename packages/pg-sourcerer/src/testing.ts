@@ -35,7 +35,6 @@ import { emitFiles, type EmittedFile } from "./runtime/emit.js";
 import type { SemanticIR, Entity } from "./ir/semantic-ir.js";
 import { defaultInflection, type CoreInflection } from "./services/inflection.js";
 import { emptyTypeHintRegistry, type TypeHintRegistry } from "./services/type-hints.js";
-import type { FileAssignmentConfig } from "./runtime/file-assignment.js";
 
 // =============================================================================
 // Test IR Builders
@@ -44,7 +43,7 @@ import type { FileAssignmentConfig } from "./runtime/file-assignment.js";
 /**
  * Create a minimal SemanticIR for testing.
  *
- * Most tests just need an empty or partial IR. For tests that need
+ * Most tests just need an empty or partial IR. For tests that don't need
  * real entity structures, use actual IRBuilder or provide entities directly.
  */
 export function testIR(overrides?: Partial<SemanticIR>): SemanticIR {
@@ -82,28 +81,32 @@ export function testIRWithEntities(
 // =============================================================================
 
 /**
- * Default file assignment rules for testing.
+ * Options for testConfig.
  */
-export const defaultTestFileRules: FileAssignmentConfig = {
-  outputDir: "src/generated",
-  rules: [
-    { pattern: "type:", file: "types.ts" },
-    { pattern: "schema:", file: "schemas.ts" },
-    { pattern: "query:", file: "queries.ts" },
-  ],
-  defaultFile: "index.ts",
-};
+export interface TestConfigOptions {
+  /** IR to use (defaults to empty testIR) */
+  ir?: SemanticIR;
+  /** Inflection config */
+  inflection?: CoreInflection;
+  /** Type hints */
+  typeHints?: TypeHintRegistry;
+  /** Default file for unmatched symbols */
+  defaultFile?: string;
+  /** Output directory */
+  outputDir?: string;
+}
 
 /**
  * Create an OrchestratorConfig for testing.
  */
-export function testConfig(overrides?: Partial<OrchestratorConfig>): OrchestratorConfig {
+export function testConfig(options: TestConfigOptions = {}): OrchestratorConfig {
   return {
-    ir: testIR(),
-    inflection: defaultInflection,
-    typeHints: emptyTypeHintRegistry,
-    fileAssignment: defaultTestFileRules,
-    ...overrides,
+    plugins: [],
+    ir: options.ir ?? testIR(),
+    inflection: options.inflection ?? defaultInflection,
+    typeHints: options.typeHints ?? emptyTypeHintRegistry,
+    defaultFile: options.defaultFile ?? "index.ts",
+    outputDir: options.outputDir ?? "src/generated",
   };
 }
 
@@ -121,8 +124,10 @@ export interface TestPluginOptions {
   inflection?: CoreInflection;
   /** Type hints */
   typeHints?: TypeHintRegistry;
-  /** File assignment rules */
-  fileAssignment?: FileAssignmentConfig;
+  /** Default file for unmatched symbols */
+  defaultFile?: string;
+  /** Output directory */
+  outputDir?: string;
   /** Additional plugins to run before this one (for dependencies) */
   dependencies?: readonly Plugin[];
 }
@@ -152,12 +157,13 @@ export function testPlugin(
     ir: options.ir,
     inflection: options.inflection,
     typeHints: options.typeHints,
-    fileAssignment: options.fileAssignment,
+    defaultFile: options.defaultFile,
+    outputDir: options.outputDir,
   });
 
   const allPlugins = [...(options.dependencies ?? []), plugin];
 
-  return runPlugins(allPlugins, config);
+  return runPlugins({ ...config, plugins: allPlugins });
 }
 
 /**
