@@ -1,5 +1,48 @@
 # Agent Notes for pg-sourcerer
 
+## Workspace Structure
+
+This is a monorepo with two packages:
+
+- **`packages/pg-sourcerer`** - The main library. Introspects PostgreSQL, builds IR, runs plugins, emits code.
+- **`packages/example`** - Demo app that uses pg-sourcerer. Has a Docker PostgreSQL database, migrations, and sample config.
+
+### Common Workflows
+
+**Making changes to pg-sourcerer:**
+```bash
+cd packages/pg-sourcerer
+bun run build          # Compile TypeScript
+bun run test           # Run unit tests
+```
+
+**Testing changes end-to-end:**
+```bash
+cd packages/example
+bun db:ensure          # Start DB if needed (requires Docker)
+bun run generate       # Run code generation with your changes
+```
+
+**Running integration tests** (requires database):
+```bash
+cd packages/example && bun db:ensure
+cd packages/pg-sourcerer && bun run test:integration
+```
+
+### Environment Setup
+
+The example package needs a `.env` file with database credentials. If missing:
+```bash
+cd packages/example && bun run init   # Creates .env, starts DB, runs migrations
+```
+
+Scripts in `packages/example` use `bun --env-file=.env` to load environment variables.
+
+### Build Dependencies
+
+- `ast-types` must match the version used by `recast` (currently `^0.16.1`). Version mismatch causes type incompatibility errors.
+- The `bin/pgsourcerer` wrapper uses Node shebang for portability; dev scripts use Bun.
+
 ## Git Branching Strategy
 
 **Work on `develop`, release to `main`.**
@@ -188,50 +231,24 @@ const ctx = createStubPluginContext(ir, "test-plugin");
 // ctx has all services stubbed for isolation
 ```
 
-## File Organization
+## Code Organization (Conceptual)
 
-```
-packages/pg-sourcerer/src/
-├── index.ts              # Public API exports
-├── cli.ts                # CLI entry point (@effect/cli)
-├── generate.ts           # Main orchestration function
-├── errors.ts             # All TaggedError types
-├── config.ts             # Config schema
-├── testing.ts            # Test utilities
-├── ir/
-│   ├── index.ts          # Re-exports
-│   ├── smart-tags.ts     # SmartTags Effect Schema
-│   └── semantic-ir.ts    # IR types and builder
-├── lib/
-│   ├── conjure.ts        # AST builders for code generation
-│   └── hex.ts            # SQL-specific query builders only
-├── plugins/
-│   ├── arktype.ts        # ArkType schema plugin
-│   ├── effect-model.ts   # Effect Schema plugin
-│   ├── kysely-queries.ts # Kysely query builders plugin
-│   ├── kysely-types.ts   # Kysely-compatible types plugin
-│   ├── sql-queries.ts    # Raw SQL query functions plugin
-│   ├── types.ts          # TypeScript types plugin
-│   └── zod.ts            # Zod schema plugin
-└── services/
-    ├── artifact-store.ts # Plugin artifact storage
-    ├── config-loader.ts  # Config file discovery/loading
-    ├── emissions.ts      # Output buffer for generated files
-    ├── file-builder.ts   # AST file construction helpers
-    ├── file-writer.ts    # Writes emissions to disk
-    ├── imports.ts        # Import statement helpers
-    ├── inflection.ts     # Naming conventions service
-    ├── introspection.ts  # Database introspection
-    ├── ir-builder.ts     # Builds SemanticIR from introspection
-    ├── ir.ts             # IR access service
-    ├── pg-types.ts       # PostgreSQL type mapping
-    ├── plugin-meta.ts    # Plugin metadata helpers
-    ├── plugin-runner.ts  # Plugin orchestration
-    ├── plugin.ts         # Plugin definition helpers
-    ├── smart-tags-parser.ts # Parse @tags from comments
-    ├── symbols.ts        # Symbol registry for imports
-    └── type-hints.ts     # User type overrides
-```
+**`packages/pg-sourcerer/src/`**
+
+- **Public API** (`index.ts`) - Exports for library consumers: `defineConfig`, plugins, types
+- **CLI** (`cli.ts`) - Command-line entry point using `@effect/cli`
+- **IR layer** (`ir/`) - Semantic representation of database schema: entities, shapes, fields, relations
+- **Services** (`services/`) - Effect services for each concern: config loading, introspection, file writing, inflection
+- **Plugins** (`plugins/`) - Code generators: arktype, zod, kysely, trpc, etc. Each declares capabilities and dependencies.
+- **Conjure** (`conjure/`) - AST builder DSL for generating TypeScript/JavaScript code via recast
+- **Runtime** (`runtime/`) - Plugin orchestration, symbol registry, validation, emission
+
+**Key abstractions:**
+- **Entity** - A database table mapped to TypeScript types
+- **Shape** - A variant of an entity (row, insert, update, patch)
+- **Field** - A column with type info and metadata
+- **Capability** - What a plugin provides (e.g., "zod:schema", "kysely:types")
+- **Symbol** - A named export that plugins register and reference
 
 ## ⚠️ Effect Code: Read the Style Guide First
 
@@ -280,6 +297,8 @@ Before committing, verify no submodules are staged:
 ```bash
 git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
 ```
+
+**NEVER use `git stash`** without explicit user permission. Stashes can be compacted/lost, and subsequent agents may not know to pop them - resulting in work on the wrong working tree state. If you need to test baseline behavior, use `git diff` to save changes to a file, or ask the user first.
 
 ## ⚠️ CRITICAL: Decision Making
 

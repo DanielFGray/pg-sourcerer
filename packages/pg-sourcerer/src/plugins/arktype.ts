@@ -15,6 +15,7 @@ import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
+import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
 import {
   isTableEntity,
@@ -187,14 +188,23 @@ const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "time
 const PG_JSON_TYPES = new Set(["json", "jsonb"]);
 
 // =============================================================================
-// Field to ArkType Type String
+// Field to ArkType Type
 // =============================================================================
 
-function fieldToArkTypeString(field: Field, enums: EnumEntity[]): string {
+/**
+ * Result of mapping a field to ArkType.
+ * - `typeString`: ArkType string type (e.g., "string", "number", "string.uuid")
+ * - `enumRef`: Reference to a separately defined enum schema
+ */
+type ArkTypeMapping =
+  | { kind: "string"; typeString: string; enumRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; typeString?: undefined };
+
+function fieldToArkType(field: Field, enums: EnumEntity[]): ArkTypeMapping {
   const pgType = field.pgAttribute.getType();
 
   if (!pgType) {
-    return "unknown";
+    return { kind: "string", typeString: "unknown" };
   }
 
   // For arrays, use element type; for domains, use base type; otherwise use pgType
@@ -214,7 +224,15 @@ function fieldToArkTypeString(field: Field, enums: EnumEntity[]): string {
     typeInfo = pgType;
   }
 
-  let typeStr = baseTypeToArkType(typeName, typeInfo, enums);
+  const baseResult = baseTypeToArkType(typeName, typeInfo, enums);
+
+  // For enum references, we can't easily add modifiers in string form,
+  // so we handle them specially in shapeToArkTypeObject
+  if (baseResult.kind === "enumRef") {
+    return baseResult;
+  }
+
+  let typeStr = baseResult.typeString;
 
   if (field.isArray) {
     typeStr = `${typeStr}[]`;
@@ -228,51 +246,51 @@ function fieldToArkTypeString(field: Field, enums: EnumEntity[]): string {
     typeStr = `${typeStr}?`;
   }
 
-  return typeStr;
+  return { kind: "string", typeString: typeStr };
 }
 
 function baseTypeToArkType(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
   enums: EnumEntity[],
-): string {
+): ArkTypeMapping {
   const normalized = typeName.toLowerCase();
 
   if (PG_STRING_TYPES.has(normalized)) {
     if (normalized === "uuid") {
-      return "string.uuid";
+      return { kind: "string", typeString: "string.uuid" };
     }
-    if (normalized === "citext") {
-      return "string.lowercase";
-    }
-    return "string";
+    // citext is case-insensitive text, but ArkType doesn't have a specific validator
+    // Just treat it as a regular string
+    return { kind: "string", typeString: "string" };
   }
 
   if (PG_NUMBER_TYPES.has(normalized)) {
-    return "number";
+    return { kind: "string", typeString: "number" };
   }
 
   if (PG_BOOLEAN_TYPES.has(normalized)) {
-    return "boolean";
+    return { kind: "string", typeString: "boolean" };
   }
 
   if (PG_DATE_TYPES.has(normalized)) {
-    return "Date";
+    return { kind: "string", typeString: "Date" };
   }
 
   if (PG_JSON_TYPES.has(normalized)) {
-    return "unknown";
+    return { kind: "string", typeString: "unknown" };
   }
 
   if (pgType.typtype === "e" || pgType.typcategory === "E") {
     const enumEntity = enums.find(e => e.pgType.typname === typeName);
     if (enumEntity) {
-      return enumEntity.values.map(v => `'${v}'`).join(" | ");
+      // Return reference to the enum schema instead of inlining
+      return { kind: "enumRef", enumRef: enumEntity.name };
     }
-    return "unknown";
+    return { kind: "string", typeString: "unknown" };
   }
 
-  return "unknown";
+  return { kind: "string", typeString: "unknown" };
 }
 
 // =============================================================================
@@ -282,12 +300,35 @@ function baseTypeToArkType(
 function shapeToArkTypeObject(
   shape: { fields: readonly Field[] },
   enums: EnumEntity[],
+  registry: SymbolRegistryService,
 ): n.Expression {
   let objBuilder = conjure.obj();
+
   for (const field of shape.fields) {
-    const typeStr = fieldToArkTypeString(field, enums);
-    objBuilder = objBuilder.prop(field.name, conjure.str(typeStr));
+    const mapping = fieldToArkType(field, enums);
+
+    if (mapping.kind === "enumRef") {
+      // Get handle and track cross-reference
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      let enumExpr = enumHandle.ref() as n.Expression;
+
+      if (field.isArray) {
+        enumExpr = conjure.chain(enumExpr).method("array").build();
+      }
+      if (field.nullable) {
+        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+      }
+      // Note: ArkType doesn't have a direct .optional() method like Zod
+      // Optional is typically handled at the object level with "key?" syntax
+      // For now, we'll treat optional enum fields the same as required
+      // This is a limitation - may need scope() for full support
+
+      objBuilder = objBuilder.prop(field.name, enumExpr);
+    } else {
+      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString));
+    }
   }
+
   return conjure.id("type").call([objBuilder.build()]).build();
 }
 
@@ -393,6 +434,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const registry = yield* SymbolRegistry;
 
       const enums = [...ir.entities.values()].filter(isEnumEntity);
 
@@ -408,13 +450,18 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
           for (const shape of shapes) {
             const isRow = shape.kind === "row";
-            const schemaNode = shapeToArkTypeObject(shape, enums);
+            const capability = `schema:arktype:${shape.name}`;
+
+            // Scope cross-references to this specific capability
+            const schemaNode = registry.forSymbol(capability, () =>
+              shapeToArkTypeObject(shape, enums, registry),
+            );
 
             const schemaDecl = conjure.export.const(shape.name, schemaNode);
 
             rendered.push({
               name: shape.name,
-              capability: `schema:arktype:${shape.name}`,
+              capability,
               node: schemaDecl,
               exports: "named",
               externalImports: [{ from: "arktype", names: ["type"] }],

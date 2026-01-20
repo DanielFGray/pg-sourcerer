@@ -1329,7 +1329,8 @@ function createSymbolProgram(...statements: (n.Statement | SymbolStatement)[]): 
  *
  * A fluent, immutable API for constructing JavaScript/TypeScript AST nodes.
  */
-export const conjure = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Type inference breaks due to ast-types, explicit any preserves API
+export const conjure: any = {
   // === Chain builders ===
 
   /** Start a chain from an identifier */

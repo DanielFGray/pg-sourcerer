@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * pg-sourcerer CLI
  */

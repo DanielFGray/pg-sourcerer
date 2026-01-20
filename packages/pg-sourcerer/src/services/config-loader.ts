@@ -62,11 +62,14 @@ function createLilconfig() {
 }
 
 /**
- * Format Schema decode errors into readable strings
+ * Format Schema decode errors into readable strings using ArrayFormatter
  */
 function formatSchemaErrors(error: ParseResult.ParseError): readonly string[] {
-  // Use the error message which is already formatted
-  return [error.message];
+  const issues = ParseResult.ArrayFormatter.formatErrorSync(error);
+  return issues.map((issue: ParseResult.ArrayFormatterIssue) => {
+    const path = issue.path.join(".");
+    return path ? `${path}: ${issue.message}` : issue.message;
+  });
 }
 
 /**

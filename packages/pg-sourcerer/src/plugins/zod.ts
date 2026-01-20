@@ -16,6 +16,7 @@ import type { StatementKind } from "ast-types/lib/gen/kinds.js";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
+import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
 import {
   isTableEntity,
@@ -24,7 +25,6 @@ import {
   type Field,
   type EnumEntity,
 } from "../ir/semantic-ir.js";
-import { SymbolRegistry } from "../runtime/registry.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import type {
@@ -193,11 +193,20 @@ const PG_JSON_TYPES = new Set(["json", "jsonb"]);
 // Field to Zod Schema
 // =============================================================================
 
-function fieldToZodSchema(field: Field, enums: EnumEntity[]): n.Expression {
+/**
+ * Result of mapping a field to Zod.
+ * - `schema`: Zod schema expression (e.g., z.string(), z.number())
+ * - `enumRef`: Reference to a separately defined enum schema
+ */
+type ZodMapping =
+  | { kind: "schema"; schema: n.Expression; enumRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; schema?: undefined };
+
+function fieldToZodMapping(field: Field, enums: EnumEntity[]): ZodMapping {
   const pgType = field.pgAttribute.getType();
 
   if (!pgType) {
-    return conjure.id("z").method("unknown").build();
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
   }
 
   // For arrays, use element type; for domains, use base type; otherwise use pgType
@@ -217,7 +226,14 @@ function fieldToZodSchema(field: Field, enums: EnumEntity[]): n.Expression {
     typeInfo = pgType;
   }
 
-  let schema = baseTypeToZod(typeName, typeInfo, enums);
+  const baseResult = baseTypeToZodMapping(typeName, typeInfo, enums);
+
+  // For enum references, return as-is (modifiers applied in shapeToZodObject)
+  if (baseResult.kind === "enumRef") {
+    return baseResult;
+  }
+
+  let schema = baseResult.schema;
 
   if (field.isArray) {
     schema = conjure.chain(schema).method("array").build();
@@ -231,63 +247,85 @@ function fieldToZodSchema(field: Field, enums: EnumEntity[]): n.Expression {
     schema = conjure.chain(schema).method(method).build();
   }
 
-  return schema;
+  return { kind: "schema", schema };
 }
 
-function baseTypeToZod(
+function baseTypeToZodMapping(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
   enums: EnumEntity[],
-): n.Expression {
+): ZodMapping {
   const normalized = typeName.toLowerCase();
 
   if (PG_STRING_TYPES.has(normalized)) {
     if (normalized === "uuid") {
-      return conjure.id("z").method("uuid").build();
+      return { kind: "schema", schema: conjure.id("z").method("uuid").build() };
     }
-    if (normalized === "citext") {
-      return conjure.id("z").method("string").method("toLowerCase").build();
-    }
-    return conjure.id("z").method("string").build();
+    // citext is case-insensitive text - just treat as regular string
+    // (Zod doesn't have a built-in case-insensitive string validator)
+    return { kind: "schema", schema: conjure.id("z").method("string").build() };
   }
 
   if (PG_NUMBER_TYPES.has(normalized)) {
-    return conjure.id("z").method("number").build();
+    return { kind: "schema", schema: conjure.id("z").method("number").build() };
   }
 
   if (PG_BOOLEAN_TYPES.has(normalized)) {
-    return conjure.id("z").method("boolean").build();
+    return { kind: "schema", schema: conjure.id("z").method("boolean").build() };
   }
 
   if (PG_DATE_TYPES.has(normalized)) {
-    return conjure.id("z").method("coerce").method("date").build();
+    return { kind: "schema", schema: conjure.id("z").method("coerce").method("date").build() };
   }
 
   if (PG_JSON_TYPES.has(normalized)) {
-    return conjure.id("z").method("unknown").build();
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
   }
 
   if (pgType.typtype === "e" || pgType.typcategory === "E") {
     const enumEntity = enums.find(e => e.pgType.typname === typeName);
     if (enumEntity) {
-      return conjure
-        .id("z")
-        .method("enum", [conjure.arr(...enumEntity.values.map(v => conjure.str(v))).build()])
-        .build();
+      // Return reference to the enum schema instead of inlining
+      return { kind: "enumRef", enumRef: enumEntity.name };
     }
-    return conjure.id("z").method("unknown").build();
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
   }
 
-  return conjure.id("z").method("unknown").build();
+  return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
 }
 
 // =============================================================================
 // Shape to Zod Object
 // =============================================================================
 
-function shapeToZodObject(shape: { fields: readonly Field[] }, enums: EnumEntity[]): n.Expression {
+function shapeToZodObject(
+  shape: { fields: readonly Field[] },
+  enums: EnumEntity[],
+  registry: SymbolRegistryService,
+): n.Expression {
   const properties = shape.fields.map(field => {
-    const value = fieldToZodSchema(field, enums);
+    const mapping = fieldToZodMapping(field, enums);
+
+    let value: n.Expression;
+    if (mapping.kind === "enumRef") {
+      // Get handle and track cross-reference
+      const enumHandle = registry.import(`schema:zod:${mapping.enumRef}`);
+      value = enumHandle.ref() as n.Expression;
+
+      // Apply modifiers for enum references
+      if (field.isArray) {
+        value = conjure.chain(value).method("array").build();
+      }
+      if (field.nullable) {
+        value = conjure.chain(value).method("nullable").build();
+      }
+      if (field.optional) {
+        value = conjure.chain(value).method("optional").build();
+      }
+    } else {
+      value = mapping.schema;
+    }
+
     return b.objectProperty(b.identifier(field.name), toExpr(value));
   });
 
@@ -404,6 +442,7 @@ export function zod(config?: ZodConfig): Plugin {
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const registry = yield* SymbolRegistry;
 
       const enums = [...ir.entities.values()].filter(isEnumEntity);
 
@@ -419,13 +458,18 @@ export function zod(config?: ZodConfig): Plugin {
 
           for (const shape of shapes) {
             const isRow = shape.kind === "row";
-            const schemaNode = shapeToZodObject(shape, enums);
+            const capability = `schema:zod:${shape.name}`;
+
+            // Scope cross-references to this specific capability
+            const schemaNode = registry.forSymbol(capability, () =>
+              shapeToZodObject(shape, enums, registry),
+            );
 
             const schemaDecl = conjure.export.const(shape.name, schemaNode);
 
             rendered.push({
               name: shape.name,
-              capability: `schema:zod:${shape.name}`,
+              capability,
               node: schemaDecl,
               exports: "named",
               externalImports: [{ from: "zod", names: ["z"] }],

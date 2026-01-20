@@ -35,7 +35,13 @@ export type TypeHint = S.Schema.Type<typeof TypeHint>;
  */
 export const Config = S.Struct({
   /** Database connection string */
-  connectionString: S.String,
+  connectionString: S.propertySignature(
+    S.String.annotations({
+      message: () => "must be a string - set DATABASE_URL env var or add connectionString to config",
+    }),
+  ).annotations({
+    missingMessage: () => "is required - set DATABASE_URL env var or add connectionString to config",
+  }),
 
   /** PostgreSQL role to assume during introspection (for RLS-aware generation) */
   role: S.optional(S.String),
@@ -53,7 +59,9 @@ export const Config = S.Struct({
   inflection: S.optional(S.Any),
 
   /** Plugins to run */
-  plugins: S.Array(S.Any),
+  plugins: S.propertySignature(S.Array(S.Any)).annotations({
+    missingMessage: () => "is required - add at least one plugin to your config",
+  }),
 
   /** Formatter callback to transform generated code before writing (validated as Any, properly typed in ConfigInput) */
   formatter: S.optional(S.String),
