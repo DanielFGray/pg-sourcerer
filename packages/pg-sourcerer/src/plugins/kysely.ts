@@ -16,6 +16,7 @@ import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
 import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.js";
 import { normalizeFileNaming, type FileNamingContext, type FileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
+import { Inflection, type CoreInflection } from "../services/inflection.js";
 import {
   isTableEntity,
   getTableEntities,
@@ -563,27 +564,16 @@ function buildColumnArray(fields: readonly Field[]): n.ArrayExpression {
   return conjure.arr(...fields.map(f => str(f.columnName))).build();
 }
 
-function buildQueryName(entityName: string, operation: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  return `${lowerEntity}${operation.charAt(0).toUpperCase() + operation.slice(1)}`;
+function buildQueryName(inflection: CoreInflection, entityName: string, operation: string): string {
+  return inflection.variableName(entityName, operation);
 }
 
-function buildFindByQueryName(entityName: string, columnName: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  const pascalColumn = columnName
-    .split("_")
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("");
-  return `${lowerEntity}FindBy${pascalColumn}`;
+function buildFindByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+  return inflection.variableName(entityName, `FindBy${inflection.pascalCase(columnName)}`);
 }
 
-function buildCursorQueryName(entityName: string, columnName: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  const pascalColumn = columnName
-    .split("_")
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("");
-  return `${lowerEntity}ListBy${pascalColumn}`;
+function buildListByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+  return inflection.variableName(entityName, `ListBy${inflection.pascalCase(columnName)}`);
 }
 
 function getPgType(field: Field): string {
@@ -750,6 +740,7 @@ export function kysely(config?: KyselyConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
+      const inflection = yield* Inflection;
       const declarations: SymbolDeclaration[] = [];
 
       const enumEntities = getEnumEntities(ir);
@@ -793,7 +784,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           if (entity.permissions.canSelect && entity.primaryKey && entity.primaryKey.columns.length > 0) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "findById"),
+              name: buildQueryName(inflection, entityName, "FindById"),
               capability: `queries:kysely:${entityName}:findById`,
               dependsOn: [`types:kysely:${entityName}`],
             });
@@ -802,13 +793,11 @@ export function kysely(config?: KyselyConfig): Plugin {
           // listByCursor for indexed timestamptz columns
           const cursorCandidates = getCursorPaginationCandidates(entity);
           for (const candidate of cursorCandidates) {
-            const pascalColumn = candidate.cursorColumnName
-              .split("_")
-              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-              .join("");
+            const listByName = buildListByName(inflection, entityName, candidate.cursorColumnName);
+            const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
             hasAnyMethods = true;
             declarations.push({
-              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
+              name: listByName,
               capability: `queries:kysely:${entityName}:listBy${pascalColumn}`,
               dependsOn: [`types:kysely:${entityName}`],
             });
@@ -817,7 +806,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           if (entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "create"),
+              name: buildQueryName(inflection, entityName, "Create"),
               capability: `queries:kysely:${entityName}:create`,
               dependsOn: [`types:kysely:${entityName}`],
             });
@@ -832,7 +821,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           ) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "update"),
+              name: buildQueryName(inflection, entityName, "Update"),
               capability: `queries:kysely:${entityName}:update`,
               dependsOn: [`types:kysely:${entityName}`],
             });
@@ -846,7 +835,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           ) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "delete"),
+              name: buildQueryName(inflection, entityName, "Delete"),
               capability: `queries:kysely:${entityName}:delete`,
               dependsOn: [`types:kysely:${entityName}`],
             });
@@ -865,13 +854,11 @@ export function kysely(config?: KyselyConfig): Plugin {
               if (processedColumns.has(columnName)) continue;
               processedColumns.add(columnName);
 
-              const pascalColumn = columnName
-                .split("_")
-                .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-                .join("");
+              const findByName = buildFindByName(inflection, entityName, columnName);
+              const pascalColumn = inflection.pascalCase(columnName);
               hasAnyMethods = true;
               declarations.push({
-                name: buildFindByQueryName(entityName, columnName),
+                name: findByName,
                 capability: `queries:kysely:${entityName}:findBy${pascalColumn}`,
                 dependsOn: [`types:kysely:${entityName}`],
               });
@@ -892,6 +879,7 @@ export function kysely(config?: KyselyConfig): Plugin {
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const inflection = yield* Inflection;
       const symbols: RenderedSymbolWithImports[] = [];
 
       const enumEntities = getEnumEntities(ir);
@@ -987,7 +975,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const pkParam = buildPkParam(pkField);
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "findById"),
+              name: buildQueryName(inflection, entityName, "FindById"),
               kind: "read",
               params: [pkParam],
               returns: buildReturnType(entityName, false, true),
@@ -1025,10 +1013,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           // listByCursor for indexed timestamptz columns
           const cursorCandidates = getCursorPaginationCandidates(entity);
           for (const candidate of cursorCandidates) {
-            const pascalColumn = candidate.cursorColumnName
-              .split("_")
-              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-              .join("");
+            const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
             const pkField = entity.shapes.row.fields.find(f => f.name === candidate.pkColumn);
             if (!pkField) continue;
 
@@ -1038,7 +1023,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             ]);
 
             const method: QueryMethod = {
-              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
+              name: buildListByName(inflection, entityName, candidate.cursorColumnName),
               kind: "list",
               params: [],
               returns: buildReturnType(entityName, true, false),
@@ -1123,7 +1108,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           if (entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert) {
             const bodyParam = buildBodyParam(entityName, "insert");
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "create"),
+              name: buildQueryName(inflection, entityName, "Create"),
               kind: "create",
               params: [bodyParam],
               returns: buildReturnType(entityName, false, false),
@@ -1182,7 +1167,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const bodyParam = buildBodyParam(entityName, "update");
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "update"),
+              name: buildQueryName(inflection, entityName, "Update"),
               kind: "update",
               params: [pkParam, bodyParam],
               returns: buildReturnType(entityName, false, true),
@@ -1249,7 +1234,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const pkParam = buildPkParam(pkField);
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "delete"),
+              name: buildQueryName(inflection, entityName, "Delete"),
               kind: "delete",
               params: [pkParam],
               returns: buildReturnType(entityName, false, false),
@@ -1299,15 +1284,12 @@ export function kysely(config?: KyselyConfig): Plugin {
               const field = entity.shapes.row.fields.find(f => f.columnName === columnName);
               if (!field) continue;
 
-              const pascalColumn = columnName
-                .split("_")
-                .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-                .join("");
+              const pascalColumn = inflection.pascalCase(columnName);
               const isUnique = index.isUnique;
               const lookupParam = buildLookupParam(field);
 
               const method: QueryMethod = {
-                name: buildFindByQueryName(entityName, columnName),
+                name: buildFindByName(inflection, entityName, columnName),
                 kind: "lookup",
                 params: [lookupParam],
                 returns: buildReturnType(entityName, !isUnique, isUnique),

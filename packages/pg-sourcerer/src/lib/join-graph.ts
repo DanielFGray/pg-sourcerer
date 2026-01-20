@@ -13,6 +13,7 @@ import type {
   IndexDef,
 } from "../ir/semantic-ir.js";
 import { isTableEntity, getAllRelations, getReverseRelations } from "../ir/semantic-ir.js";
+import { inflect } from "../services/inflection.js";
 
 // =============================================================================
 // Types
@@ -192,8 +193,8 @@ function analyzeColumnForFk(
 
     if (!isLikelyFkColumn) continue;
 
-    const singularTarget = singularize(targetLower);
-    const pluralTarget = pluralize(targetLower);
+    const singularTarget = inflect.singularize(targetLower);
+    const pluralTarget = inflect.pluralize(targetLower);
     const possibleTargets = [targetLower, singularTarget, pluralTarget, targetName];
 
     const matchingTarget = possibleTargets.find(t => {
@@ -231,18 +232,7 @@ function analyzeColumnForFk(
   return null;
 }
 
-function singularize(word: string): string {
-  if (word.endsWith("ies")) return word.slice(0, -3) + "y";
-  if (word.endsWith("ses")) return word.slice(0, -2);
-  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
-  return word;
-}
-
-function pluralize(word: string): string {
-  if (word.endsWith("y")) return word.slice(0, -1) + "ies";
-  if (word.endsWith("s")) return word + "es";
-  return word + "s";
-}
+// Manual singularize/pluralize removed - now using inflect helpers from inflection service
 
 function typesMatch(colType: string, targetType: string): boolean {
   if (colType === targetType) return true;
@@ -267,7 +257,7 @@ function determineConfidence(
 ): "high" | "medium" | "low" {
   const colLower = columnName.toLowerCase();
   const targetLower = targetName.toLowerCase();
-  const singularTarget = singularize(targetLower);
+  const singularTarget = inflect.singularize(targetLower);
 
   const exactMatch = colLower === `${targetLower}_id` || colLower === `${singularTarget}_id`;
   const typeMatch = columnType && targetType && typesMatch(columnType, targetType);

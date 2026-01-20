@@ -196,6 +196,7 @@ export { typesPlugin } from "./plugins/types.js";
 export { zod, type ZodConfig } from "./plugins/zod.js";
 export { arktype, type ArkTypeConfig } from "./plugins/arktype.js";
 export { elysia, type HttpElysiaConfig } from "./plugins/http-elysia.js";
+export { hono, type HttpHonoConfig } from "./plugins/http-hono.js";
 export { kysely, type KyselyConfig } from "./plugins/kysely.js";
 export { sqlQueries, type SqlQueriesConfig } from "./plugins/sql-queries.js";
 export { trpc, type HttpTrpcConfig } from "./plugins/http-trpc.js";

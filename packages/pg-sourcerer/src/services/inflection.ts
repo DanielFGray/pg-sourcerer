@@ -224,6 +224,16 @@ const RESERVED_WORDS = new Set([
  * }
  * ```
  */
+/**
+ * Convert PascalCase or camelCase to kebab-case.
+ * UserProfile → user-profile, createdAt → created-at
+ */
+const toKebabCase = (str: string): string =>
+  str
+    .replace(/([a-z])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-")
+    .toLowerCase();
+
 export const inflect = {
   /** Convert snake_case to camelCase */
   camelCase: Str.snakeToCamel,
@@ -231,6 +241,8 @@ export const inflect = {
   pascalCase: Str.snakeToPascal,
   /** Convert camelCase to snake_case */
   snakeCase: Str.camelToSnake,
+  /** Convert PascalCase/camelCase to kebab-case */
+  kebabCase: toKebabCase,
   /** Singularize a word (users → user) */
   singularize: pluralize.singular,
   /** Pluralize a word (user → users) */
@@ -255,13 +267,39 @@ export const inflect = {
  * Includes a registry that tracks the provenance of inflected names,
  * allowing file assignment to correctly group derived names (like UserInsert)
  * with their base entity (User).
+ *
+ * ## Semantic vs Mechanical Methods
+ *
+ * Plugins should use SEMANTIC methods that express intent:
+ * - entityRoutePath(entity) → "/users"
+ *
+ * NOT mechanical methods that assume casing:
+ * - toCamelCase(entityName) + "Create" ❌
+ *
+ * This allows users to customize naming conventions without plugins
+ * having to understand the transformations.
  */
 export interface CoreInflection {
+  // ---------------------------------------------------------------------------
+  // Primitive transforms (for advanced use cases only)
+  // ---------------------------------------------------------------------------
   readonly camelCase: (text: string) => string;
   readonly pascalCase: (text: string) => string;
+  readonly kebabCase: (text: string) => string;
   readonly pluralize: (text: string) => string;
   readonly singularize: (text: string) => string;
   readonly safeIdentifier: (text: string) => string;
+
+  /**
+   * Build a variable name from entity and suffix.
+   * @example variableName("User", "Router") → "userRouter"
+   * @example variableName("User", "ElysiaRoutes") → "userElysiaRoutes"
+   */
+  readonly variableName: (entityName: string, suffix: string) => string;
+
+  // ---------------------------------------------------------------------------
+  // IR Building (used during introspection)
+  // ---------------------------------------------------------------------------
   readonly entityName: (pgClass: PgClass, tags: SmartTags) => string;
   readonly shapeName: (entityName: string, kind: ShapeKind) => string;
   readonly fieldName: (pgAttribute: PgAttribute, tags: SmartTags) => string;
@@ -270,6 +308,41 @@ export interface CoreInflection {
   readonly relationName: (name: string) => string;
   readonly functionName: (pgProc: PgProc, tags: SmartTags) => string;
   readonly folderName: (entityName: string) => string;
+
+  // ---------------------------------------------------------------------------
+  // Route Paths (for HTTP plugins)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Base route path for an entity (plural, kebab-case).
+   * @example entityRoutePath("User") → "/users"
+   * @example entityRoutePath("BlogPost") → "/blog-posts"
+   */
+  readonly entityRoutePath: (entityName: string) => string;
+
+  /**
+   * Route path segment for cursor pagination.
+   * @example cursorRoutePath("created_at") → "/by-created-at"
+   * @example cursorRoutePath("updatedAt") → "/by-updated-at"
+   */
+  readonly cursorRoutePath: (columnName: string) => string;
+
+  /**
+   * Route path for indexed column lookup (with param).
+   * @example lookupRoutePath("email", "email") → "/by-email/:email"
+   * @example lookupRoutePath("user_id", "userId") → "/by-user-id/:userId"
+   */
+  readonly lookupRoutePath: (columnName: string, paramName: string) => string;
+
+  /**
+   * Route path for a custom function.
+   * @example functionRoutePath("calculateTotal") → "/calculate-total"
+   */
+  readonly functionRoutePath: (fnName: string) => string;
+
+  // ---------------------------------------------------------------------------
+  // Registry
+  // ---------------------------------------------------------------------------
 
   /**
    * Registry tracking the provenance of inflected names.
@@ -527,6 +600,35 @@ export function createInflection(config?: InflectionConfig): CoreInflection {
     },
 
     folderName: entityName => folderFn(entityName),
+
+    // -------------------------------------------------------------------------
+    // Semantic methods for plugins
+    // -------------------------------------------------------------------------
+
+    kebabCase: inflect.kebabCase,
+    variableName: (entityName, suffix) => inflect.uncapitalize(entityName) + suffix,
+
+    // Route paths
+    entityRoutePath: entityName => {
+      const kebab = inflect.kebabCase(entityName);
+      const plural = pluralizeFn(kebab);
+      return `/${plural}`;
+    },
+
+    cursorRoutePath: columnName => {
+      const kebab = inflect.kebabCase(inflect.pascalCase(columnName));
+      return `/by-${kebab}`;
+    },
+
+    lookupRoutePath: (columnName, paramName) => {
+      const kebab = inflect.kebabCase(inflect.pascalCase(columnName));
+      return `/by-${kebab}/:${paramName}`;
+    },
+
+    functionRoutePath: fnName => {
+      const kebab = inflect.kebabCase(fnName);
+      return `/${kebab}`;
+    },
   };
 }
 
@@ -758,5 +860,16 @@ export function composeInflection(
       const afterPlugin = folderFn ? folderFn(entityName) : entityName;
       return baseInflection.folderName(afterPlugin);
     },
+
+    // -------------------------------------------------------------------------
+    // Semantic methods - delegate to base (these use the composed primitives)
+    // -------------------------------------------------------------------------
+
+    kebabCase: baseInflection.kebabCase,
+    variableName: baseInflection.variableName,
+    entityRoutePath: baseInflection.entityRoutePath,
+    cursorRoutePath: baseInflection.cursorRoutePath,
+    lookupRoutePath: baseInflection.lookupRoutePath,
+    functionRoutePath: baseInflection.functionRoutePath,
   };
 }

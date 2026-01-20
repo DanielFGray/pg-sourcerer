@@ -1,5 +1,5 @@
 /**
- * HTTP tRPC Plugin - Generates tRPC routers from query symbols
+ * HTTP oRPC Plugin - Generates oRPC routers from query symbols
  *
  * Consumes "queries" and "schema" capabilities (provider-agnostic).
  * Works with any queries provider (kysely, drizzle, effect-sql, etc.)
@@ -15,7 +15,8 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { RenderedSymbolWithImports } from "../runtime/emit.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
@@ -23,30 +24,28 @@ import { isTableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
-import type { ExternalImport, RenderedSymbolWithImports } from "../runtime/emit.js";
+import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
 
 const b = conjure.b;
 const stmt = conjure.stmt;
 
-const PLUGIN_NAME = "trpc-http";
+const PLUGIN_NAME = "orpc-http";
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 const DEFAULT_OUTPUT_DIR = "";
-const DEFAULT_ROUTES_FILE = "trpc.ts";
-const DEFAULT_APP_FILE = "trpc.ts";
+const DEFAULT_ROUTES_FILE = "orpc.ts";
+const DEFAULT_APP_FILE = "orpc.ts";
 
 /**
  * Schema-validated portion of the config (simple types only).
  */
-const HttpTrpcConfigSchema = S.Struct({
+const HttpOrpcConfigSchema = S.Struct({
   outputDir: S.optionalWith(S.String, { default: () => DEFAULT_OUTPUT_DIR }),
-  /** Name of the base procedure to use. Default: "publicProcedure" */
-  baseProcedure: S.optionalWith(S.String, { default: () => "publicProcedure" }),
   /** Name of the aggregated router export. Default: "appRouter" */
   aggregatorName: S.optionalWith(S.String, { default: () => "appRouter" }),
 });
@@ -54,29 +53,28 @@ const HttpTrpcConfigSchema = S.Struct({
 /**
  * Config type for user input.
  */
-export interface HttpTrpcConfig {
+export interface HttpOrpcConfig {
   outputDir?: string;
-  baseProcedure?: string;
   aggregatorName?: string;
   /**
-   * Import for tRPC router and procedure.
+   * Import for oRPC builder (`os`).
    * Use userModule() helper to specify the path relative to your config file.
    *
    * @example
    * ```typescript
    * import { userModule } from "pg-sourcerer";
    *
-   * trpc({
-   *   trpcImport: userModule("./trpc.ts", { named: ["router", "publicProcedure"] }),
+   * orpc({
+   *   orpcImport: userModule("./orpc.ts", { named: ["os"] }),
    * })
    * ```
    */
-  trpcImport?: UserModuleRef;
+  orpcImport?: UserModuleRef;
   /**
-   * Output file for router handlers.
+   * Output file for router procedures.
    * Can be a static string or a function receiving FileNamingContext.
-   * @example "trpc.ts" - all routers in one file
-   * @example ({ entityName }) => `${entityName}/router.ts` - per-entity files
+   * @example "orpc.ts" - all routers in one file
+   * @example ({ entityName }) => `${entityName}/orpc.ts` - per-entity files
    */
   routesFile?: string | FileNaming;
   /**
@@ -87,58 +85,72 @@ export interface HttpTrpcConfig {
 }
 
 /** Resolved config type with normalized FileNaming functions */
-interface ResolvedHttpTrpcConfig {
+interface ResolvedHttpOrpcConfig {
   outputDir: string;
-  baseProcedure: string;
   aggregatorName: string;
   routesFile: FileNaming;
   appFile: FileNaming;
-  trpcImport?: UserModuleRef;
+  orpcImport?: UserModuleRef;
 }
-
-// ============================================================================
-// String Helpers - removed, now using inflection service:
-// - inflection.variableName(entity, "Router") for router variable names
-// - inflection.camelCase(entity) for merged router keys
-// - inflection.pascalCase(field) for lookup field suffix
-// ============================================================================
 
 // ============================================================================
 // Procedure Builders
 // ============================================================================
 
 /**
- * Map query method kind to tRPC procedure type.
+ * Build Zod type expression for a param.
  */
-const kindToProcedureType = (kind: QueryMethodKind): "query" | "mutation" => {
-  switch (kind) {
-    case "read":
-    case "list":
-    case "lookup":
-      return "query";
-    case "create":
-    case "update":
-    case "delete":
-    case "function":
-      return "mutation";
-  }
-};
+function buildZodParamType(param: QueryMethodParam): n.Expression {
+  const baseType = param.type.toLowerCase();
 
-/**
- * Check if a param needs coercion (comes from URL string).
- */
-function needsCoercion(param: QueryMethodParam): boolean {
-  return (
-    param.source === "pk" ||
-    param.source === "fk" ||
-    param.source === "lookup" ||
-    param.source === "pagination"
-  );
+  let zodCall: n.Expression;
+  switch (baseType) {
+    case "number":
+      zodCall = b.callExpression(
+        b.memberExpression(
+          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
+          b.identifier("number"),
+        ),
+        [],
+      );
+      break;
+    case "boolean":
+      zodCall = b.callExpression(
+        b.memberExpression(b.identifier("z"), b.identifier("boolean")),
+        [],
+      );
+      break;
+    case "date":
+      zodCall = b.callExpression(
+        b.memberExpression(
+          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
+          b.identifier("date"),
+        ),
+        [],
+      );
+      break;
+    case "string":
+    default:
+      zodCall = b.callExpression(
+        b.memberExpression(b.identifier("z"), b.identifier("string")),
+        [],
+      );
+      break;
+  }
+
+  if (!param.required) {
+    zodCall = b.callExpression(
+      b.memberExpression(cast.toExpr(zodCall), b.identifier("optional")),
+      [],
+    );
+  }
+
+  return zodCall;
 }
 
 /**
- * Build the handler function body for a tRPC procedure.
- * tRPC handlers receive { input } and return data directly.
+ * Build the handler function body for an oRPC procedure.
+ * oRPC handlers receive { input } and return data directly.
  */
 function buildProcedureBody(method: QueryMethod): n.Statement[] {
   const callSig = method.callSignature ?? { style: "named" as const };
@@ -215,57 +227,6 @@ function buildProcedureBody(method: QueryMethod): n.Statement[] {
 }
 
 /**
- * Build Zod type expression for a param.
- */
-function buildZodParamType(param: QueryMethodParam): n.Expression {
-  const baseType = param.type.toLowerCase();
-
-  let zodCall: n.Expression;
-  switch (baseType) {
-    case "number":
-      zodCall = b.callExpression(
-        b.memberExpression(
-          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
-          b.identifier("number"),
-        ),
-        [],
-      );
-      break;
-    case "boolean":
-      zodCall = b.callExpression(
-        b.memberExpression(b.identifier("z"), b.identifier("boolean")),
-        [],
-      );
-      break;
-    case "date":
-      zodCall = b.callExpression(
-        b.memberExpression(
-          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
-          b.identifier("date"),
-        ),
-        [],
-      );
-      break;
-    case "string":
-    default:
-      zodCall = b.callExpression(
-        b.memberExpression(b.identifier("z"), b.identifier("string")),
-        [],
-      );
-      break;
-  }
-
-  if (!param.required) {
-    zodCall = b.callExpression(
-      b.memberExpression(cast.toExpr(zodCall), b.identifier("optional")),
-      [],
-    );
-  }
-
-  return zodCall;
-}
-
-/**
  * Get the body schema name for a method if it needs validation.
  */
 function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
@@ -273,8 +234,7 @@ function getBodySchemaName(method: QueryMethod, entityName: string): string | nu
     return `${entityName}Insert`;
   }
   if (method.kind === "update") {
-    // Use UpdateInput schema: required PK + optional non-PK fields
-    return `${entityName}UpdateInput`;
+    return `${entityName}Update`;
   }
   return null;
 }
@@ -290,6 +250,7 @@ function buildInputSchema(
   inputExpr: n.Expression | null;
   bodySchemaName: string | null;
   needsZodImport: boolean;
+  needsTypeImport: boolean;
 } {
   const bodySchemaName = getBodySchemaName(method, entityName);
   const nonBodyParams = method.params.filter((p) => p.source !== "body");
@@ -313,6 +274,7 @@ function buildInputSchema(
       inputExpr: mergedSchema,
       bodySchemaName,
       needsZodImport: true,
+      needsTypeImport: false,
     };
   }
 
@@ -322,12 +284,13 @@ function buildInputSchema(
       inputExpr: b.identifier(bodySchemaName),
       bodySchemaName,
       needsZodImport: false,
+      needsTypeImport: false,
     };
   }
 
   // Non-body params: build inline z.object
   if (nonBodyParams.length === 0) {
-    return { inputExpr: null, bodySchemaName: null, needsZodImport: false };
+    return { inputExpr: null, bodySchemaName: null, needsZodImport: false, needsTypeImport: false };
   }
 
   let objBuilder = conjure.obj();
@@ -343,28 +306,27 @@ function buildInputSchema(
     ),
     bodySchemaName: null,
     needsZodImport: true,
+    needsTypeImport: false,
   };
 }
 
 /**
- * Build a single tRPC procedure expression.
+ * Build a single oRPC procedure expression.
  */
 function buildProcedure(
   method: QueryMethod,
   entityName: string,
-  baseProcedure: string,
 ): {
   procedureExpr: n.Expression;
   bodySchemaName: string | null;
   needsZodImport: boolean;
+  needsTypeImport: boolean;
 } {
-  const procedureType = kindToProcedureType(method.kind);
-
-  // Start with base procedure
-  let chainExpr: n.Expression = b.identifier(baseProcedure);
+  // Start with os
+  let chainExpr: n.Expression = b.identifier("os");
 
   // Build input schema
-  const { inputExpr, bodySchemaName, needsZodImport } = buildInputSchema(method, entityName);
+  const { inputExpr, bodySchemaName, needsZodImport, needsTypeImport } = buildInputSchema(method, entityName);
 
   // Add .input(schema) if there are params
   if (inputExpr) {
@@ -389,13 +351,13 @@ function buildProcedure(
   );
   handler.async = true;
 
-  // Add .query() or .mutation()
+  // Add .handler()
   chainExpr = b.callExpression(
-    b.memberExpression(cast.toExpr(chainExpr), b.identifier(procedureType)),
+    b.memberExpression(cast.toExpr(chainExpr), b.identifier("handler")),
     [handler],
   );
 
-  return { procedureExpr: chainExpr, bodySchemaName, needsZodImport };
+  return { procedureExpr: chainExpr, bodySchemaName, needsZodImport, needsTypeImport };
 }
 
 /**
@@ -425,12 +387,12 @@ function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflecti
 }
 
 /**
- * Generate tRPC router for an entity.
+ * Generate oRPC router for an entity.
  */
-function generateTrpcRouter(
+function generateOrpcRouter(
   entityName: string,
   queries: EntityQueriesExtension,
-  config: ResolvedHttpTrpcConfig,
+  config: ResolvedHttpOrpcConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
@@ -439,6 +401,7 @@ function generateTrpcRouter(
 } {
   const routerName = inflection.variableName(entityName, "Router");
   let needsZodImport = false;
+  let needsTypeImport = false;
   const bodySchemaNames: string[] = [];
 
   // Build router object
@@ -451,10 +414,9 @@ function generateTrpcRouter(
       registry.import(methodCapability).ref();
     }
 
-    const { procedureExpr, bodySchemaName, needsZodImport: methodNeedsZod } = buildProcedure(
+    const { procedureExpr, bodySchemaName, needsZodImport: methodNeedsZod, needsTypeImport: methodNeedsType } = buildProcedure(
       method,
       entityName,
-      config.baseProcedure,
     );
 
     if (bodySchemaName && !bodySchemaNames.includes(bodySchemaName)) {
@@ -467,19 +429,26 @@ function generateTrpcRouter(
     }
 
     if (methodNeedsZod) needsZodImport = true;
+    if (methodNeedsType) needsTypeImport = true;
 
     routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
   }
 
-  // Build: export const userRouter = router({ ... })
-  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
-  const variableDeclarator = b.variableDeclarator(b.identifier(routerName), cast.toExpr(routerCall));
+  // Build: export const userRouter = { ... }
+  const variableDeclarator = b.variableDeclarator(
+    b.identifier(routerName),
+    cast.toExpr(routerObjBuilder.build()),
+  );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   const externalImports: ExternalImport[] = [];
 
   if (needsZodImport) {
     externalImports.push({ from: "zod", names: ["z"] });
+  }
+
+  if (needsTypeImport) {
+    externalImports.push({ from: "@orpc/server", names: ["type"] });
   }
 
   return {
@@ -493,7 +462,7 @@ function generateTrpcRouter(
  */
 function generateAggregator(
   entities: Map<string, EntityQueriesExtension>,
-  config: ResolvedHttpTrpcConfig,
+  config: ResolvedHttpOrpcConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
@@ -506,26 +475,25 @@ function generateAggregator(
     return { statements: [], externalImports: [] };
   }
 
-  // Build: router({ user: userRouter, post: postRouter, ... })
+  // Build: { user: userRouter, post: postRouter, ... }
   let routerObjBuilder = conjure.obj();
 
   for (const [entityName] of entityEntries) {
-  const routerName = inflection.variableName(entityName, "Router");
-    const key = inflection.camelCase(entityName);
+    const routerName = inflection.variableName(entityName, "Router");
+    const key = inflection.variableName(entityName, "");
 
     routerObjBuilder = routerObjBuilder.prop(key, b.identifier(routerName));
 
     // Record cross-reference to the entity's router capability
-    const routeCapability = `http-routes:trpc:${entityName}`;
+    const routeCapability = `http-routes:orpc:${entityName}`;
     if (registry.has(routeCapability)) {
       registry.import(routeCapability).ref();
     }
   }
 
-  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
   const variableDeclarator = b.variableDeclarator(
     b.identifier(config.aggregatorName),
-    cast.toExpr(routerCall),
+    cast.toExpr(routerObjBuilder.build()),
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
@@ -548,33 +516,32 @@ function generateAggregator(
 // ============================================================================
 
 /**
- * Create an http-trpc plugin that generates tRPC routers.
+ * Create an http-orpc plugin that generates oRPC routers.
  *
  * @example
  * ```typescript
- * import { trpc } from "pg-sourcerer"
+ * import { orpc } from "pg-sourcerer"
  *
  * export default defineConfig({
  *   plugins: [
  *     zod(),
  *     kyselyQueries(),
- *     trpc({
- *       baseProcedure: "publicProcedure",
+ *     orpc({
+ *       aggregatorName: "appRouter",
  *     }),
  *   ],
  * })
  * ```
  */
-export function trpc(config?: HttpTrpcConfig): Plugin {
-  const schemaConfig = S.decodeSync(HttpTrpcConfigSchema)(config ?? {});
+export function orpc(config?: HttpOrpcConfig): Plugin {
+  const schemaConfig = S.decodeSync(HttpOrpcConfigSchema)(config ?? {});
 
-  const resolvedConfig: ResolvedHttpTrpcConfig = {
+  const resolvedConfig: ResolvedHttpOrpcConfig = {
     outputDir: schemaConfig.outputDir,
-    baseProcedure: schemaConfig.baseProcedure,
     aggregatorName: schemaConfig.aggregatorName,
     routesFile: normalizeFileNaming(config?.routesFile, DEFAULT_ROUTES_FILE),
     appFile: normalizeFileNaming(config?.appFile, DEFAULT_APP_FILE),
-    trpcImport: config?.trpcImport,
+    orpcImport: config?.orpcImport,
   };
 
   return {
@@ -585,13 +552,13 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
     fileDefaults: [
       // Entity routers use routesFile config
       {
-        pattern: "http-routes:trpc:",
+        pattern: "http-routes:orpc:",
         outputDir: resolvedConfig.outputDir,
         fileNaming: resolvedConfig.routesFile,
       },
       // App aggregator uses appFile config (more specific pattern wins)
       {
-        pattern: "http-routes:trpc:app",
+        pattern: "http-routes:orpc:app",
         outputDir: resolvedConfig.outputDir,
         fileNaming: resolvedConfig.appFile,
       },
@@ -617,7 +584,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         if (hasAnyPermissions) {
           declarations.push({
             name: inflection.variableName(entity.name, "Router"),
-            capability: `http-routes:trpc:${entity.name}`,
+            capability: `http-routes:orpc:${entity.name}`,
             baseEntityName: entity.name,
           });
         }
@@ -626,7 +593,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       // Also declare the aggregator
       declarations.push({
         name: resolvedConfig.aggregatorName,
-        capability: "http-routes:trpc:app",
+        capability: "http-routes:orpc:app",
       });
 
       return declarations;
@@ -655,20 +622,20 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         }
       }
 
-      // User module imports for router and procedure (if configured)
-      const trpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.trpcImport
-        ? [resolvedConfig.trpcImport]
+      // User module imports for oRPC builder (if configured)
+      const orpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.orpcImport
+        ? [resolvedConfig.orpcImport]
         : undefined;
 
       for (const [entityName, queries] of entityQueries) {
         const entity = ir.entities.get(entityName);
         if (!entity || !isTableEntity(entity)) continue;
 
-        const capability = `http-routes:trpc:${entityName}`;
+        const capability = `http-routes:orpc:${entityName}`;
 
         // Scope cross-references to this specific capability
         const { statements, externalImports } = registry.forSymbol(capability, () =>
-          generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
+          generateOrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
@@ -677,12 +644,12 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
           node: statements[0],
           exports: "named",
           externalImports,
-          userImports: trpcUserImports,
+          userImports: orpcUserImports,
         });
       }
 
       if (entityQueries.size > 0) {
-        const appCapability = "http-routes:trpc:app";
+        const appCapability = "http-routes:orpc:app";
 
         // Scope cross-references to the app capability
         const { statements, externalImports } = registry.forSymbol(appCapability, () =>
@@ -690,21 +657,20 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         );
 
         // The aggregator has multiple statements (const + type export)
-        // We need to handle this differently - wrap in a program or return multiple
         rendered.push({
           name: resolvedConfig.aggregatorName,
           capability: appCapability,
           node: statements[0], // The const declaration
           exports: "named",
           externalImports,
-          userImports: trpcUserImports,
+          userImports: orpcUserImports,
         });
 
         // Add the type export as a separate rendered symbol
         if (statements[1]) {
           rendered.push({
             name: "AppRouter",
-            capability: "http-routes:trpc:app:type",
+            capability: "http-routes:orpc:app:type",
             node: statements[1],
             exports: false, // Already has export in the node
             // No userImports needed for type export

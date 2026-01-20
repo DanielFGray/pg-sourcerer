@@ -12,6 +12,7 @@ import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.
 import type { FileNaming } from "../runtime/file-assignment.js";
 import { normalizeFileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
+import { CoreInflection, Inflection } from "../services/inflection.js";
 import {
   isTableEntity,
   getTableEntities,
@@ -26,6 +27,22 @@ import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queri
 import { type UserModuleRef } from "../user-module.js";
 
 const { fn, ts, param, str, b, exp } = conjure;
+
+// ============================================================================
+// Name Building Helpers
+// ============================================================================
+
+function buildQueryName(inflection: CoreInflection, entityName: string, operation: string): string {
+  return inflection.variableName(entityName, operation);
+}
+
+function buildFindByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+  return inflection.variableName(entityName, `FindBy${inflection.pascalCase(columnName)}`);
+}
+
+function buildListByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+  return inflection.variableName(entityName, `ListBy${inflection.pascalCase(columnName)}`);
+}
 
 // ============================================================================
 // Configuration
@@ -195,28 +212,10 @@ function buildReturnType(entityName: string, isArray: boolean, nullable: boolean
   };
 }
 
-function buildQueryName(entityName: string, operation: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  return `${lowerEntity}${operation.charAt(0).toUpperCase() + operation.slice(1)}`;
-}
-
-function buildFindByQueryName(entityName: string, columnName: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  const pascalColumn = columnName
-    .split("_")
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("");
-  return `${lowerEntity}FindBy${pascalColumn}`;
-}
-
-function buildCursorQueryName(entityName: string, columnName: string): string {
-  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
-  const pascalColumn = columnName
-    .split("_")
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("");
-  return `${lowerEntity}ListBy${pascalColumn}`;
-}
+// Query name helpers removed - now using inflection service:
+// - inflection.queryFunctionName(entity, operation)
+// - inflection.queryFindByName(entity, column)
+// - inflection.queryListByName(entity, column)
 
 interface SimpleParam {
   name: string;
@@ -288,6 +287,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
+      const inflection = yield* Inflection;
       const declarations: SymbolDeclaration[] = [];
 
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
@@ -300,7 +300,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           if (entity.permissions.canSelect && entity.primaryKey && entity.primaryKey.columns.length > 0) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "findById"),
+              name: buildQueryName(inflection, entityName, "FindById"),
               capability: `queries:sql:${entityName}:findById`,
             });
           }
@@ -310,7 +310,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           if (entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "create"),
+              name: buildQueryName(inflection, entityName, "Create"),
               capability: `queries:sql:${entityName}:create`,
             });
           }
@@ -324,7 +324,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           ) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "update"),
+              name: buildQueryName(inflection, entityName, "Update"),
               capability: `queries:sql:${entityName}:update`,
             });
           }
@@ -337,7 +337,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           ) {
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "delete"),
+              name: buildQueryName(inflection, entityName, "Delete"),
               capability: `queries:sql:${entityName}:delete`,
             });
           }
@@ -354,13 +354,10 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               if (processedColumns.has(columnName)) continue;
               processedColumns.add(columnName);
 
-              const pascalColumn = columnName
-                .split("_")
-                .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-                .join("");
+              const pascalColumn = inflection.pascalCase(columnName);
               hasAnyMethods = true;
               declarations.push({
-                name: buildFindByQueryName(entityName, columnName),
+                name: buildFindByName(inflection, entityName, columnName),
                 capability: `queries:sql:${entityName}:findBy${pascalColumn}`,
               });
             }
@@ -368,13 +365,10 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
           const cursorCandidates = getCursorPaginationCandidates(entity);
           for (const candidate of cursorCandidates) {
-            const pascalColumn = candidate.cursorColumnName
-              .split("_")
-              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-              .join("");
+            const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
             hasAnyMethods = true;
             declarations.push({
-              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
+              name: buildListByName(inflection, entityName, candidate.cursorColumnName),
               capability: `queries:sql:${entityName}:listBy${pascalColumn}`,
             });
           }
@@ -393,6 +387,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const inflection = yield* Inflection;
       const symbols: RenderedSymbolWithImports[] = [];
 
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
@@ -432,7 +427,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const pkParam = buildPkParam(pkField);
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "findById"),
+              name: buildQueryName(inflection, entityName, "FindById"),
               kind: "read",
               params: [pkParam],
               returns: buildReturnType(entityName, false, true),
@@ -462,7 +457,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           if (entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert) {
             const bodyParam = buildBodyParam(entityName, "insert");
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "create"),
+              name: buildQueryName(inflection, entityName, "Create"),
               kind: "create",
               params: [bodyParam],
               returns: buildReturnType(entityName, false, false),
@@ -522,7 +517,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const bodyParam = buildBodyParam(entityName, "update");
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "update"),
+              name: buildQueryName(inflection, entityName, "Update"),
               kind: "update",
               params: [pkParam, bodyParam],
               returns: buildReturnType(entityName, false, true),
@@ -580,7 +575,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const pkParam = buildPkParam(pkField);
 
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "delete"),
+              name: buildQueryName(inflection, entityName, "Delete"),
               kind: "delete",
               params: [pkParam],
               returns: buildReturnType(entityName, false, false),
@@ -622,15 +617,12 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               const field = entity.shapes.row.fields.find(f => f.columnName === columnName);
               if (!field) continue;
 
-              const pascalColumn = columnName
-                .split("_")
-                .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-                .join("");
+              const pascalColumn = inflection.pascalCase(columnName);
               const isUnique = index.isUnique;
               const lookupParam = buildLookupParam(field);
 
               const method: QueryMethod = {
-                name: buildFindByQueryName(entityName, columnName),
+                name: buildFindByName(inflection, entityName, columnName),
                 kind: "lookup",
                 params: [lookupParam],
                 returns: buildReturnType(entityName, !isUnique, isUnique),
@@ -662,10 +654,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
           const cursorCandidates = getCursorPaginationCandidates(entity);
           for (const candidate of cursorCandidates) {
-            const pascalColumn = candidate.cursorColumnName
-              .split("_")
-              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
-              .join("");
+            const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
             const pkField = entity.shapes.row.fields.find(f => f.name === candidate.pkColumn);
             if (!pkField) continue;
 
@@ -693,7 +682,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const orderDirection = candidate.desc ? "DESC" : "ASC";
 
             const method: QueryMethod = {
-              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
+              name: buildListByName(inflection, entityName, candidate.cursorColumnName),
               kind: "list",
               params: [cursorParam, limitParam],
               returns: buildReturnType(entityName, true, false),

@@ -27,6 +27,7 @@ const identityInflection: CoreInflection = {
   registry: createInflectionRegistry(),
   camelCase: inflect.camelCase,
   pascalCase: inflect.pascalCase,
+  kebabCase: inflect.kebabCase,
   pluralize: inflect.pluralize,
   singularize: inflect.singularize,
   safeIdentifier: text => text,
@@ -38,6 +39,12 @@ const identityInflection: CoreInflection = {
   relationName: name => name,
   functionName: (pgProc, tags) => tags.name ?? `${pgProc.proname}_${pgProc.pronargs}`,
   folderName: entityName => entityName.toLowerCase(),
+  // Semantic methods - use defaults from defaultInflection
+  variableName: (entity, suffix) => `${inflect.uncapitalize(entity)}${suffix}`,
+  entityRoutePath: entity => `/${inflect.pluralize(inflect.kebabCase(entity))}`,
+  cursorRoutePath: col => `/by-${inflect.kebabCase(inflect.pascalCase(col))}`,
+  lookupRoutePath: (col, param) => `/by-${inflect.kebabCase(inflect.pascalCase(col))}/:${param}`,
+  functionRoutePath: fn => `/${inflect.kebabCase(fn)}`,
 };
 
 describe("Inflection Service", () => {
@@ -824,5 +831,123 @@ describe("CoreInflection registry integration", () => {
     // Registration via composed should appear in base's registry
     composed.shapeName("User", "insert");
     expect(base.registry.lookup("UserInsert")).toBeDefined();
+  });
+});
+
+// =============================================================================
+// Semantic Naming Methods
+// =============================================================================
+
+describe("Semantic Naming Methods", () => {
+  describe("kebabCase", () => {
+    it("converts PascalCase to kebab-case", () => {
+      expect(defaultInflection.kebabCase("UserProfile")).toBe("user-profile");
+      expect(defaultInflection.kebabCase("BlogPost")).toBe("blog-post");
+    });
+
+    it("converts camelCase to kebab-case", () => {
+      expect(defaultInflection.kebabCase("createdAt")).toBe("created-at");
+      expect(defaultInflection.kebabCase("userId")).toBe("user-id");
+    });
+
+    it("converts snake_case to kebab-case", () => {
+      expect(defaultInflection.kebabCase("created_at")).toBe("created-at");
+      expect(defaultInflection.kebabCase("user_id")).toBe("user-id");
+    });
+  });
+
+  describe("variableName", () => {
+    it("builds variable names from entity and suffix", () => {
+      expect(defaultInflection.variableName("User", "Router")).toBe("userRouter");
+      expect(defaultInflection.variableName("User", "ElysiaRoutes")).toBe("userElysiaRoutes");
+      expect(defaultInflection.variableName("User", "HonoRoutes")).toBe("userHonoRoutes");
+    });
+
+    it("handles multi-word entity names", () => {
+      expect(defaultInflection.variableName("BlogPost", "Router")).toBe("blogPostRouter");
+      expect(defaultInflection.variableName("UserProfile", "Create")).toBe("userProfileCreate");
+    });
+
+    it("handles empty suffix", () => {
+      expect(defaultInflection.variableName("User", "")).toBe("user");
+      expect(defaultInflection.variableName("BlogPost", "")).toBe("blogPost");
+    });
+  });
+
+  describe("entityRoutePath", () => {
+    it("generates plural kebab-case route paths", () => {
+      expect(defaultInflection.entityRoutePath("User")).toBe("/users");
+      expect(defaultInflection.entityRoutePath("BlogPost")).toBe("/blog-posts");
+    });
+
+    it("handles already plural names", () => {
+      // pluralize library handles this
+      expect(defaultInflection.entityRoutePath("Person")).toBe("/people");
+    });
+  });
+
+  describe("cursorRoutePath", () => {
+    it("generates cursor pagination route paths", () => {
+      expect(defaultInflection.cursorRoutePath("created_at")).toBe("/by-created-at");
+      expect(defaultInflection.cursorRoutePath("updatedAt")).toBe("/by-updated-at");
+    });
+  });
+
+  describe("lookupRoutePath", () => {
+    it("generates lookup route paths with param", () => {
+      expect(defaultInflection.lookupRoutePath("email", "email")).toBe("/by-email/:email");
+      expect(defaultInflection.lookupRoutePath("user_id", "userId")).toBe("/by-user-id/:userId");
+    });
+  });
+
+  describe("functionRoutePath", () => {
+    it("generates function route paths", () => {
+      expect(defaultInflection.functionRoutePath("calculateTotal")).toBe("/calculate-total");
+      expect(defaultInflection.functionRoutePath("getActiveUsers")).toBe("/get-active-users");
+    });
+  });
+});
+
+// =============================================================================
+// Lint: No Manual Casing Helpers in Plugins
+// =============================================================================
+
+describe("Lint: No manual casing helpers in plugins", () => {
+  it("plugins should not define manual casing helper functions", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    
+    // Find all plugin files
+    const pluginsDir = path.resolve(__dirname, "../plugins");
+    const pluginFiles = fs.readdirSync(pluginsDir).filter(f => f.endsWith(".ts"));
+    
+    // Pattern to detect manual casing function definitions
+    const forbiddenPatterns = [
+      /function\s+toCamelCase\s*\(/,
+      /function\s+toKebabCase\s*\(/,
+      /function\s+toPascalCase\s*\(/,
+      /function\s+toSnakeCase\s*\(/,
+      /function\s+singularize\s*\(/,
+      /function\s+pluralize\s*\(/,
+      /function\s+toPluralKebabCase\s*\(/,
+      /const\s+toCamelCase\s*=/,
+      /const\s+toKebabCase\s*=/,
+      /const\s+toPascalCase\s*=/,
+      /const\s+toSnakeCase\s*=/,
+    ];
+
+    const violations: string[] = [];
+
+    for (const file of pluginFiles) {
+      const content = fs.readFileSync(path.join(pluginsDir, file), "utf-8");
+      
+      for (const pattern of forbiddenPatterns) {
+        if (pattern.test(content)) {
+          violations.push(`${file}: contains manual casing helper matching ${pattern}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
   });
 });

@@ -20,10 +20,6 @@ import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, SemanticIR } from "../ir/semantic-ir.js";
 import type { EntityQueriesExtension, QueryMethod } from "../ir/extensions/queries.js";
 
-function toPascalCase(str: string): string {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
 // =============================================================================
 // Test Helpers
 // =============================================================================
