@@ -157,6 +157,20 @@ const getRoutePath = (method: QueryMethod, entityName: string): string => {
       return `/:${paramName}`;
     }
     case "list":
+      // Check if this is a cursor pagination method (listBy{Column})
+      // These methods have names like: "postListByCreatedAt" -> should be "/by-created-at"
+      // Regular list methods (if any existed) would be just: "postList" -> "/"
+      if (/ListBy/i.test(method.name) || /listBy/i.test(method.name)) {
+        // Extract column name after the list pattern
+        // Handles both "postListByCreatedAt" and "postlistByCreatedAt"
+        const match = method.name.match(/(?:ListBy|listBy)(.+)/i);
+        if (match && match[1]) {
+          const columnKebab = toKebabCase(match[1]);
+          return `/by-${columnKebab}`;
+        }
+      }
+      // Standard list route
+      return "/";
     case "create":
       return "/";
     case "lookup": {

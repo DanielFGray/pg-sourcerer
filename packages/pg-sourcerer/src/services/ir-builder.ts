@@ -28,6 +28,7 @@ import type {
   EntityPermissions,
   FieldPermissions,
   IndexDef,
+  IndexSortOption,
   PrimaryKey,
   Relation,
   SemanticIR,
@@ -663,6 +664,13 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
       // Determine if this is a primary key index (via constraint)
       const isPrimary = index.indisprimary === true;
 
+      // Parse indoption for sort direction per column
+      // Bit 0x01 = descending, Bit 0x02 = nulls first
+      const sortOptions: IndexSortOption[] = (index.indoption ?? []).map(opt => ({
+        desc: (opt & 1) === 1,
+        nullsFirst: (opt & 2) === 2,
+      }));
+
       // Build the base index definition
       const indexDef: IndexDef = {
         name: indexClass?.relname ?? "unknown",
@@ -674,6 +682,7 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
         method: indexClass ? getIndexMethod(indexClass) : "btree",
         hasExpressions,
         opclassNames: index.indclassnames ?? [],
+        sortOptions,
       };
 
       // Add predicate only for partial indexes (exactOptionalPropertyTypes)

@@ -7,6 +7,7 @@
  * 3. Serializes AST to TypeScript code
  * 4. Applies formatting (blank lines before exports, header comments)
  */
+import path from "node:path";
 import type { SymbolStatement } from "../conjure/index.js";
 import recast from "recast";
 import type { namedTypes as n } from "ast-types";
@@ -16,6 +17,7 @@ import type { OrchestratorResult } from "./orchestrator.js";
 import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import type { AssignedSymbol } from "./file-assignment.js";
 import { ExportCollisionError } from "../errors.js";
+import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
 
 const b = recast.types.builders;
 
@@ -82,7 +84,15 @@ export interface ExternalImport {
 export interface RenderedSymbolWithImports extends RenderedSymbol {
   /** External imports needed by this symbol */
   readonly externalImports?: readonly ExternalImport[];
-  /** Raw code to prepend to the file (e.g., custom imports) */
+  /**
+   * User module imports for this symbol.
+   * These are resolved relative to the config file and converted to
+   * correct relative paths for each output file at emit time.
+   */
+  readonly userImports?: readonly UserModuleRef[];
+  /**
+   * @deprecated Use `userImports` instead. Raw code to prepend to the file.
+   */
   readonly fileHeader?: string;
 }
 
@@ -93,6 +103,16 @@ export interface RenderedSymbolWithImports extends RenderedSymbol {
 export interface EmitConfig {
   /** Header comment to prepend to all files */
   readonly headerComment?: string;
+  /**
+   * Directory containing the config file.
+   * Required for resolving userModule() paths.
+   */
+  readonly configDir?: string;
+  /**
+   * Output directory for generated files.
+   * Required for computing relative paths from output files to user modules.
+   */
+  readonly outputDir?: string;
 }
 
 // =============================================================================
@@ -209,6 +229,88 @@ function computeRelativePath(fromFile: string, toFile: string): string {
   }
 
   return parts.join("/");
+}
+
+/**
+ * Compute relative import path from an output file to a user module.
+ *
+ * @param outputFilePath - Path of the output file relative to outputDir (e.g., "User/queries.ts")
+ * @param userModulePath - Path of the user module relative to configDir (e.g., "./db.ts")
+ * @param configDir - Absolute path to the directory containing the config file
+ * @param outputDir - Output directory path (relative to configDir or absolute)
+ * @returns Relative import path with .js extension (e.g., "../../db.js")
+ */
+function computeUserModuleImportPath(
+  outputFilePath: string,
+  userModulePath: string,
+  configDir: string,
+  outputDir: string,
+): string {
+  // Resolve the absolute path of the user module
+  const userModuleAbsolute = path.resolve(configDir, userModulePath);
+
+  // Resolve the absolute path of the output file
+  const outputDirAbsolute = path.isAbsolute(outputDir)
+    ? outputDir
+    : path.resolve(configDir, outputDir);
+  const outputFileAbsolute = path.resolve(outputDirAbsolute, outputFilePath);
+
+  // Get the directory containing the output file
+  const outputFileDir = path.dirname(outputFileAbsolute);
+
+  // Compute relative path from output file directory to user module
+  let relativePath = path.relative(outputFileDir, userModuleAbsolute);
+
+  // Normalize to forward slashes (for Windows compatibility)
+  relativePath = relativePath.split(path.sep).join("/");
+
+  // Ensure .js extension for imports
+  relativePath = relativePath.replace(/\.ts$/, ".js");
+
+  // Ensure it starts with ./ or ../
+  if (!relativePath.startsWith(".")) {
+    relativePath = "./" + relativePath;
+  }
+
+  return relativePath;
+}
+
+/**
+ * Generate import declaration AST for a UserModuleRef.
+ */
+function generateUserModuleImport(
+  ref: UserModuleRef,
+  outputFilePath: string,
+  configDir: string,
+  outputDir: string,
+): n.ImportDeclaration {
+  const importPath = computeUserModuleImportPath(
+    outputFilePath,
+    ref.path,
+    configDir,
+    outputDir,
+  );
+
+  const specifiers: (n.ImportSpecifier | n.ImportDefaultSpecifier | n.ImportNamespaceSpecifier)[] = [];
+
+  // Default import: import db from "..."
+  if (ref.default) {
+    specifiers.push(b.importDefaultSpecifier(b.identifier(ref.default)));
+  }
+
+  // Namespace import: import * as Db from "..."
+  if (ref.namespace) {
+    specifiers.push(b.importNamespaceSpecifier(b.identifier(ref.namespace)));
+  }
+
+  // Named imports: import { foo, bar } from "..."
+  if (ref.named) {
+    for (const name of ref.named) {
+      specifiers.push(b.importSpecifier(b.identifier(name), b.identifier(name)));
+    }
+  }
+
+  return b.importDeclaration(specifiers, b.stringLiteral(importPath));
 }
 
 /**
@@ -415,6 +517,9 @@ export function emitFiles(
     const seenValueImports = new Map<string, Set<string>>();
     const seenTypeImports = new Map<string, Set<string>>();
     const fileHeaders: string[] = [];
+    const userModuleImports: n.ImportDeclaration[] = [];
+    // Track user module refs by their resolved path to dedupe
+    const seenUserModulePaths = new Set<string>();
 
     for (const sym of symbols) {
       const r = capToRendered.get(sym.declaration.capability) as
@@ -422,9 +527,28 @@ export function emitFiles(
         | undefined;
       if (!r) continue;
 
-      // Collect file headers (deduplicated)
+      // Collect file headers (deduplicated) - deprecated, but still supported
       if (r.fileHeader && !fileHeaders.includes(r.fileHeader)) {
         fileHeaders.push(r.fileHeader);
+      }
+
+      // Collect user module imports (new system)
+      if (r.userImports && config.configDir && config.outputDir) {
+        for (const ref of r.userImports) {
+          // Create a unique key for deduplication
+          const key = JSON.stringify({
+            path: ref.path,
+            named: ref.named,
+            default: ref.default,
+            namespace: ref.namespace,
+          });
+          if (!seenUserModulePaths.has(key)) {
+            seenUserModulePaths.add(key);
+            userModuleImports.push(
+              generateUserModuleImport(ref, filePath, config.configDir, config.outputDir)
+            );
+          }
+        }
       }
 
       if (!r.externalImports) continue;
@@ -502,7 +626,8 @@ export function emitFiles(
     if (bodyStatements.length === 0) continue;
 
     // Build the program
-    const allImports = [...externalImportStatements, ...crossImports];
+    // Order: user module imports, external imports, cross-file imports
+    const allImports = [...userModuleImports, ...externalImportStatements, ...crossImports];
     const program = b.program([...allImports, ...bodyStatements]);
 
     // Serialize to code

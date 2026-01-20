@@ -15,15 +15,16 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
-import type { ExternalImport } from "../runtime/emit.js";
+import type { ExternalImport, RenderedSymbolWithImports } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
+import { type UserModuleRef } from "../user-module.js";
 
 const b = conjure.b;
 const stmt = conjure.stmt;
@@ -57,6 +58,20 @@ export interface HttpTrpcConfig {
   baseProcedure?: string;
   aggregatorName?: string;
   /**
+   * Import for tRPC router and procedure.
+   * Use userModule() helper to specify the path relative to your config file.
+   *
+   * @example
+   * ```typescript
+   * import { userModule } from "pg-sourcerer";
+   *
+   * trpc({
+   *   trpcImport: userModule("./trpc.ts", { named: ["router", "publicProcedure"] }),
+   * })
+   * ```
+   */
+  trpcImport?: UserModuleRef;
+  /**
    * Output file for router handlers.
    * Can be a static string or a function receiving FileNamingContext.
    * @example "trpc.ts" - all routers in one file
@@ -77,6 +92,7 @@ interface ResolvedHttpTrpcConfig {
   aggregatorName: string;
   routesFile: FileNaming;
   appFile: FileNaming;
+  trpcImport?: UserModuleRef;
 }
 
 // ============================================================================
@@ -85,6 +101,13 @@ interface ResolvedHttpTrpcConfig {
 
 function toCamelCase(str: string): string {
   return str.charAt(0).toLowerCase() + str.slice(1);
+}
+
+function toKebabCase(str: string): string {
+  return str
+    .replace(/([a-z])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-")
+    .toLowerCase();
 }
 
 // ============================================================================
@@ -257,7 +280,8 @@ function getBodySchemaName(method: QueryMethod, entityName: string): string | nu
     return `${entityName}Insert`;
   }
   if (method.kind === "update") {
-    return `${entityName}Update`;
+    // Use UpdateInput schema: required PK + optional non-PK fields
+    return `${entityName}UpdateInput`;
   }
   return null;
 }
@@ -558,6 +582,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
     aggregatorName: schemaConfig.aggregatorName,
     routesFile: normalizeFileNaming(config?.routesFile, DEFAULT_ROUTES_FILE),
     appFile: normalizeFileNaming(config?.appFile, DEFAULT_APP_FILE),
+    trpcImport: config?.trpcImport,
   };
 
   return {
@@ -618,7 +643,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
 
-      const rendered: RenderedSymbol[] = [];
+      const rendered: RenderedSymbolWithImports[] = [];
 
       // Query the registry for all entity query capabilities
       const entityQueries = new Map<string, EntityQueriesExtension>();
@@ -635,6 +660,11 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
           entityQueries.set(entityName, metadata as EntityQueriesExtension);
         }
       }
+
+      // User module imports for router and procedure (if configured)
+      const trpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.trpcImport
+        ? [resolvedConfig.trpcImport]
+        : undefined;
 
       for (const [entityName, queries] of entityQueries) {
         const entity = ir.entities.get(entityName);
@@ -653,6 +683,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
           node: statements[0],
           exports: "named",
           externalImports,
+          userImports: trpcUserImports,
         });
       }
 
@@ -672,6 +703,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
           node: statements[0], // The const declaration
           exports: "named",
           externalImports,
+          userImports: trpcUserImports,
         });
 
         // Add the type export as a separate rendered symbol
@@ -681,6 +713,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
             capability: "http-routes:trpc:app:type",
             node: statements[1],
             exports: false, // Already has export in the node
+            // No userImports needed for type export
           });
         }
       }

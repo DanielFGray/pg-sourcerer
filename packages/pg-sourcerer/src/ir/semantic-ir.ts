@@ -121,6 +121,16 @@ export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist";
 export type Volatility = "immutable" | "stable" | "volatile";
 
 /**
+ * Per-column sort options for an index
+ */
+export interface IndexSortOption {
+  /** True if this column is sorted descending */
+  readonly desc: boolean;
+  /** True if nulls sort first */
+  readonly nullsFirst: boolean;
+}
+
+/**
  * Information about a database index
  */
 export interface IndexDef {
@@ -144,6 +154,8 @@ export interface IndexDef {
   readonly hasExpressions: boolean;
   /** Operator class names for each indexed column (e.g., "gin_trgm_ops", "tsvector_ops") */
   readonly opclassNames: readonly string[];
+  /** Per-column sort options (parallel to columns array) */
+  readonly sortOptions: readonly IndexSortOption[];
 }
 
 /**
@@ -623,4 +635,68 @@ export function getAllRelations(ir: SemanticIR, entityName: string): AllRelation
     belongsTo: entity.relations.filter(r => r.kind === "belongsTo"),
     hasMany: getReverseRelations(ir, entityName),
   };
+}
+
+/**
+ * A cursor pagination candidate - an index suitable for cursor-based pagination
+ */
+export interface CursorPaginationCandidate {
+  /** The timestamptz column to paginate by (inflected name) */
+  readonly cursorColumn: string;
+  /** Original timestamptz column name (snake_case) */
+  readonly cursorColumnName: string;
+  /** Sort direction from the index (true = DESC) */
+  readonly desc: boolean;
+  /** Primary key column for tiebreaker (inflected name) */
+  readonly pkColumn: string;
+  /** Original PK column name */
+  readonly pkColumnName: string;
+}
+
+/**
+ * Get cursor pagination candidates for a table entity.
+ *
+ * Returns indexes that are suitable for cursor-based pagination:
+ * - btree method
+ * - NOT partial (no WHERE clause)
+ * - NOT expression-based (only real columns)
+ * - First column is timestamptz type
+ * - Entity has canSelect permission
+ * - Entity has a single-column primary key (for tiebreaker)
+ */
+export function getCursorPaginationCandidates(entity: TableEntity): readonly CursorPaginationCandidate[] {
+  const candidates: CursorPaginationCandidate[] = [];
+
+  if (!entity.permissions.canSelect) return candidates;
+
+  const pk = entity.primaryKey;
+  if (!pk || pk.columns.length !== 1) return candidates;
+
+  const pkColumnName = pk.columns[0];
+  const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumnName);
+  if (!pkField) return candidates;
+
+  for (const index of entity.indexes) {
+    if (index.method !== "btree") continue;
+    if (index.isPartial) continue;
+    if (index.hasExpressions) continue;
+    if (index.columns.length === 0) continue;
+
+    const firstColumnName = index.columnNames[0];
+    const firstField = entity.shapes.row.fields.find(f => f.columnName === firstColumnName);
+    if (!firstField) continue;
+
+    const pgType = firstField.pgAttribute.getType();
+    if (!pgType || pgType.typname !== "timestamptz") continue;
+
+    candidates.push({
+      cursorColumn: firstField.name,
+      cursorColumnName: firstField.columnName,
+      desc: index.sortOptions[0]?.desc ?? false,
+      pkColumn: pkField.name,
+      pkColumnName: pkField.columnName,
+    });
+  }
+
+  return candidates;
 }

@@ -1068,6 +1068,47 @@ const param = {
      pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
      return pattern;
    },
+
+  /**
+   * Create a destructured parameter with a rest element and intersection type.
+   * Useful for functions like: `({ id, ...data }: { id: string } & Updateable<Comment>)`
+   *
+   * @example
+   * param.withRest(
+   *   [{ name: "id", type: ts.string() }],
+   *   "data",
+   *   ts.ref("Updateable", [ts.ref("Comment")])
+   * )
+   * // { id, ...data }: { id: string } & Updateable<Comment>
+   */
+  withRest: (
+    fields: readonly DestructuredField[],
+    restName: string,
+    restType: n.TSType,
+  ): n.ObjectPattern => {
+    const properties: (n.ObjectProperty | n.RestElement)[] = fields.map(f => {
+      const id = b.identifier(f.name);
+      const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
+      const prop = b.objectProperty(b.identifier(f.name), value);
+      prop.shorthand = true;
+      return prop;
+    });
+
+    // Add rest element: ...data
+    const restId = b.identifier(restName);
+    properties.push(b.restElement(restId));
+
+    const pattern = b.objectPattern(properties);
+
+    // Build intersection type: { id: string } & RestType
+    const objType = ts.objectType(
+      fields.map(f => ({ name: f.name, type: toTSType(f.type), optional: f.optional })),
+    );
+    const intersectionType = b.tsIntersectionType([toTSType(objType), toTSType(restType)]);
+    pattern.typeAnnotation = b.tsTypeAnnotation(intersectionType);
+
+    return pattern;
+  },
 } as const;
 
 // =============================================================================

@@ -13,6 +13,7 @@ import {
   // valibot,
   // typesPlugin,
   // effect,
+  userModule,
 } from "@danielfgray/pg-sourcerer";
 export default defineConfig({
   connectionString: process.env.DATABASE_URL!,
@@ -25,13 +26,12 @@ export default defineConfig({
       schemasFile: ({ baseEntityName }: FileNamingContext) => `${baseEntityName}/schemas.ts`,
     }),
     kysely({
-      generateQueries: true,
-      dbAsParameter: false,
-      header: `import { db } from "../../db.js";`,
-      typesFile: "db.ts",
+      dbImport: userModule("./db.ts", { named: ["db"] }),
+      typesFile: "DB.ts",
       queriesFile: ({ entityName }: FileNamingContext) => `${entityName}/queries.ts`,
     }),
     trpc({
+      trpcImport: userModule("./trpc.ts", { named: ["router", "publicProcedure"] }),
       routesFile: ({ entityName }: FileNamingContext) => `${entityName}/router.ts`,
     }),
   ],

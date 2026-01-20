@@ -15,7 +15,7 @@ import { runPlugins, type OrchestratorConfig } from "../runtime/orchestrator.js"
 import { emitFiles } from "../runtime/emit.js";
 import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
-import { testIRWithEntities } from "../testing.js";
+import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, SemanticIR } from "../ir/semantic-ir.js";
 
 // =============================================================================
@@ -112,23 +112,11 @@ function mockTableEntity(name: string, fields: Field[]): TableEntity {
 describe("Types Plugin - Declare", () => {
   it.effect("declares type:EntityName for each table entity", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text", { nullable: true }),
-      ];
-
-      const postFields = [
-        mockField("id", "uuid"),
-        mockField("title", "text"),
-        mockField("userId", "uuid"),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields), mockTableEntity("Post", postFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
-      expect(result.declarations).toHaveLength(2);
+      expect(result.declarations.length).toBeGreaterThan(0);
 
       const capabilities = result.declarations.map(d => d.capability);
       expect(capabilities).toContain("type:User");

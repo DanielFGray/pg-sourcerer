@@ -152,4 +152,9 @@ export interface ResolvedConfig {
   readonly plugins: readonly unknown[];
   readonly formatter?: string;
   readonly defaultFile?: string;
+  /**
+   * Directory containing the config file.
+   * Used to resolve relative paths in userModule() references.
+   */
+  readonly configDir?: string;
 }

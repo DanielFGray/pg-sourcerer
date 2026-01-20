@@ -53,6 +53,7 @@
   "license": "MIT",
   "author": "Daniel Gray",
   "dependencies": {
+    "@babel/parser": "^7.28.6",
     "@danielfgray/pg-introspection": "workspace:*",
     "@effect/cli": "catalog:",
     "@effect/platform": "catalog:",

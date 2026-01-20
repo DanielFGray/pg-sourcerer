@@ -332,9 +332,88 @@ function shapeToArkTypeObject(
   return conjure.id("type").call([objBuilder.build()]).build();
 }
 
+/**
+ * Build an UpdateInput schema: PK fields required, non-PK update fields optional.
+ * This is used for update operations where we need to identify the row (PK) and
+ * specify which fields to change (non-PK).
+ */
+function buildUpdateInputSchema(
+  entity: TableEntity,
+  enums: EnumEntity[],
+  registry: SymbolRegistryService,
+): n.Expression | null {
+  const updateShape = entity.shapes.update;
+  const primaryKey = entity.primaryKey;
+
+  if (!updateShape || !primaryKey) {
+    return null;
+  }
+
+  const pkColumnSet = new Set(primaryKey.columns);
+  let objBuilder = conjure.obj();
+
+  // First, add PK fields as REQUIRED (from row shape to get correct types)
+  for (const pkColName of primaryKey.columns) {
+    // Find the field in the row shape (PK fields always exist in row)
+    const pkField = entity.shapes.row.fields.find(f => f.name === pkColName);
+    if (!pkField) continue;
+
+    // Get the base type without optional/nullable modifiers for PK
+    const mapping = fieldToArkType(
+      { ...pkField, optional: false, nullable: false },
+      enums,
+    );
+
+    if (mapping.kind === "enumRef") {
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      objBuilder = objBuilder.prop(pkField.name, enumHandle.ref() as n.Expression);
+    } else {
+      objBuilder = objBuilder.prop(pkField.name, conjure.str(mapping.typeString));
+    }
+  }
+
+  // Then add non-PK fields from update shape as OPTIONAL
+  for (const field of updateShape.fields) {
+    if (pkColumnSet.has(field.name)) {
+      continue; // Skip PK fields, already added above
+    }
+
+    // Force optional for non-PK fields (partial updates)
+    const mapping = fieldToArkType({ ...field, optional: true }, enums);
+
+    if (mapping.kind === "enumRef") {
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      let enumExpr = enumHandle.ref() as n.Expression;
+
+      if (field.isArray) {
+        enumExpr = conjure.chain(enumExpr).method("array").build();
+      }
+      if (field.nullable) {
+        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+      }
+      // For optional enum fields, we need to use .optional() method
+      enumExpr = conjure.chain(enumExpr).method("optional").build();
+
+      objBuilder = objBuilder.prop(field.name, enumExpr);
+    } else {
+      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString));
+    }
+  }
+
+  return conjure.id("type").call([objBuilder.build()]).build();
+}
+
 // =============================================================================
 // ArkType Plugin Definition
 // =============================================================================
+
+/**
+ * Get the UpdateInput schema name for an entity.
+ * Convention: EntityNameUpdateInput (e.g., CommentUpdateInput)
+ */
+function getUpdateInputName(entity: TableEntity): string {
+  return `${entity.name}UpdateInput`;
+}
 
 function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
   const declarations: SymbolDeclaration[] = [];
@@ -376,6 +455,24 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
       dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
+
+    // UpdateInput schema: required PK + optional non-PK fields
+    // Only declare if entity has both update shape AND primary key
+    if (entity.primaryKey) {
+      const updateInputName = getUpdateInputName(entity);
+      declarations.push({
+        name: updateInputName,
+        capability: `schema:arktype:${updateInputName}`,
+        dependsOn: [`type:${entity.name}`],
+        baseEntityName,
+      });
+      declarations.push({
+        name: updateInputName,
+        capability: `schema:arktype:${updateInputName}:type`,
+        dependsOn: [`type:${entity.name}`],
+        baseEntityName,
+      });
+    }
   }
 
   return declarations;
@@ -481,6 +578,44 @@ export function arktype(config?: ArkTypeConfig): Plugin {
                 exports: "named",
                 externalImports: [{ from: "arktype", names: ["type"] }],
               });
+            }
+          }
+
+          // Render UpdateInput schema if entity has update shape AND primary key
+          if (entity.shapes.update && entity.primaryKey) {
+            const updateInputName = getUpdateInputName(entity);
+            const capability = `schema:arktype:${updateInputName}`;
+
+            const schemaNode = registry.forSymbol(capability, () =>
+              buildUpdateInputSchema(entity, enums, registry),
+            );
+
+            if (schemaNode) {
+              const schemaDecl = conjure.export.const(updateInputName, schemaNode);
+
+              rendered.push({
+                name: updateInputName,
+                capability,
+                node: schemaDecl,
+                exports: "named",
+                externalImports: [{ from: "arktype", names: ["type"] }],
+                metadata: {
+                  consume: createArkTypeConsumeCallback(updateInputName),
+                },
+              });
+
+              if (resolvedConfig.exportTypes) {
+                const inferType = conjure.ts.typeof(`${updateInputName}.infer`);
+                const typeDecl = conjure.export.type(updateInputName, inferType);
+
+                rendered.push({
+                  name: updateInputName,
+                  capability: `schema:arktype:${updateInputName}:type`,
+                  node: typeDecl,
+                  exports: "named",
+                  externalImports: [{ from: "arktype", names: ["type"] }],
+                });
+              }
             }
           }
         } else if (isEnumEntity(entity)) {

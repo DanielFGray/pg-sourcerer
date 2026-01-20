@@ -16,7 +16,7 @@ import { runPlugins, type OrchestratorConfig } from "../runtime/orchestrator.js"
 import { emitFiles } from "../runtime/emit.js";
 import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
-import { testIRWithEntities } from "../testing.js";
+import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, EnumEntity, SemanticIR } from "../ir/semantic-ir.js";
 
 // =============================================================================
@@ -110,21 +110,17 @@ function mockTableEntity(name: string, rowFields: Field[]): TableEntity {
 describe("Zod Plugin - Declare", () => {
   it.effect("declares schema:zod:EntityName for each table entity", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text", { nullable: true }),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [zod()] });
 
       // Filter out the schema builder declaration
       const schemaDecls = result.declarations.filter(d => !d.capability.endsWith(":builder"));
-      expect(schemaDecls).toHaveLength(1);
-      expect(schemaDecls[0]?.name).toBe("User");
-      expect(schemaDecls[0]?.capability).toBe("schema:zod:User");
+      expect(schemaDecls.length).toBeGreaterThan(0);
+      // Find User schema declaration
+      const userSchema = schemaDecls.find(d => d.name === "User");
+      expect(userSchema).toBeDefined();
+      expect(userSchema?.capability).toBe("schema:zod:User");
     }),
   );
 

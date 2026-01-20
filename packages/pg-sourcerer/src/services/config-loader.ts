@@ -6,6 +6,7 @@
  */
 import { Context, Effect, Layer, Schema as S, ParseResult, pipe } from "effect";
 import { lilconfig } from "lilconfig";
+import path from "node:path";
 import { Config, type ConfigInput, type ResolvedConfig } from "../config.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
 
@@ -111,6 +112,7 @@ export function createConfigLoader(): ConfigLoader {
         }
 
         const filepath = result.filepath;
+        const configDir = path.dirname(filepath);
 
         // Validate with Effect Schema
         const parseResult = yield* pipe(
@@ -137,6 +139,7 @@ export function createConfigLoader(): ConfigLoader {
           plugins: parseResult.plugins,
           formatter: parseResult.formatter,
           defaultFile: parseResult.defaultFile,
+          configDir,
         };
 
         return resolved;

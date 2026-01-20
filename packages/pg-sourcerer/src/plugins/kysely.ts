@@ -21,6 +21,7 @@ import {
   getTableEntities,
   getEnumEntities,
   getCompositeEntities,
+  getCursorPaginationCandidates,
   type TableEntity,
   type EnumEntity,
   type CompositeEntity,
@@ -28,6 +29,7 @@ import {
 } from "../ir/semantic-ir.js";
 import { conjure } from "../conjure/index.js";
 import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
+import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
 
 const { fn, stmt, ts, param, str, exp, b, chain } = conjure;
 
@@ -38,9 +40,7 @@ const { fn, stmt, ts, param, str, exp, b, chain } = conjure;
 const KyselyConfigSchema = S.Struct({
   /** Generate query functions (default: true) */
   generateQueries: S.optionalWith(S.Boolean, { default: () => true }),
-  /** Header to prepend to generated files (use for db import) */
-  header: S.optionalWith(S.String, { default: () => "" }),
-  /** If true, db is passed as first parameter; if false, imported via header */
+  /** If true, db is passed as first parameter; if false, imported via dbImport */
   dbAsParameter: S.optionalWith(S.Boolean, { default: () => false }),
   /** Default limit for list queries (default: 50) */
   defaultLimit: S.optionalWith(S.Number, { default: () => 50 }),
@@ -62,13 +62,31 @@ type SchemaConfig = S.Schema.Type<typeof KyselyConfigSchema>;
  *   typesFile: "db/types.ts",
  *   queriesFile: ({ entityName }) => `${entityName.toLowerCase()}/queries.ts`,
  * })
+ *
+ * @example
+ * // With database import (recommended)
+ * kysely({
+ *   dbImport: userModule("./db.ts", { named: ["db"] }),
+ * })
  */
 export interface KyselyConfig {
   /** Generate query functions (default: true) */
   generateQueries?: boolean;
-  /** Header to prepend to generated files (use for db import) */
-  header?: string;
-  /** If true, db is passed as first parameter; if false, imported via header */
+  /**
+   * Import for the database instance.
+   * Use userModule() helper to specify the path relative to your config file.
+   *
+   * @example
+   * ```typescript
+   * import { userModule } from "pg-sourcerer";
+   *
+   * kysely({
+   *   dbImport: userModule("./db.ts", { named: ["db"] }),
+   * })
+   * ```
+   */
+  dbImport?: UserModuleRef;
+  /** If true, db is passed as first parameter; if false, imported via dbImport */
   dbAsParameter?: boolean;
   /** Default limit for list queries (default: 50) */
   defaultLimit?: number;
@@ -90,6 +108,7 @@ export interface KyselyConfig {
 interface ResolvedKyselyConfig extends SchemaConfig {
   typesFile: string;
   queriesFile: FileNaming;
+  dbImport?: UserModuleRef;
 }
 
 // ============================================================================
@@ -558,6 +577,15 @@ function buildFindByQueryName(entityName: string, columnName: string): string {
   return `${lowerEntity}FindBy${pascalColumn}`;
 }
 
+function buildCursorQueryName(entityName: string, columnName: string): string {
+  const lowerEntity = entityName.charAt(0).toLowerCase() + entityName.slice(1);
+  const pascalColumn = columnName
+    .split("_")
+    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+  return `${lowerEntity}ListBy${pascalColumn}`;
+}
+
 function getPgType(field: Field): string {
   const pgType = field.pgAttribute.getType();
   return pgType?.typname ?? "unknown";
@@ -700,6 +728,7 @@ export function kysely(config?: KyselyConfig): Plugin {
     ...schemaConfig,
     typesFile: config?.typesFile ?? "db.ts",
     queriesFile: normalizeFileNaming(config?.queriesFile, "queries.ts"),
+    dbImport: config?.dbImport,
   };
 
   return {
@@ -770,11 +799,17 @@ export function kysely(config?: KyselyConfig): Plugin {
             });
           }
 
-          if (entity.permissions.canSelect) {
+          // listByCursor for indexed timestamptz columns
+          const cursorCandidates = getCursorPaginationCandidates(entity);
+          for (const candidate of cursorCandidates) {
+            const pascalColumn = candidate.cursorColumnName
+              .split("_")
+              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+              .join("");
             hasAnyMethods = true;
             declarations.push({
-              name: buildQueryName(entityName, "list"),
-              capability: `queries:kysely:${entityName}:list`,
+              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
+              capability: `queries:kysely:${entityName}:listBy${pascalColumn}`,
               dependsOn: [`types:kysely:${entityName}`],
             });
           }
@@ -931,8 +966,11 @@ export function kysely(config?: KyselyConfig): Plugin {
 
       // Generate queries if enabled
       if (resolvedConfig.generateQueries) {
-        const queryHeader =
-          !resolvedConfig.dbAsParameter && resolvedConfig.header ? resolvedConfig.header : undefined;
+        // User module imports for db instance (only if not using dbAsParameter)
+        const queryUserImports: readonly UserModuleRef[] | undefined =
+          !resolvedConfig.dbAsParameter && resolvedConfig.dbImport
+            ? [resolvedConfig.dbImport]
+            : undefined;
 
         for (const entity of tableEntities) {
           const entityName = entity.name;
@@ -980,43 +1018,104 @@ export function kysely(config?: KyselyConfig): Plugin {
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
-              fileHeader: queryHeader,
+              userImports: queryUserImports,
             });
           }
 
-          // list
-          if (entity.permissions.canSelect) {
-            const paginationParams = buildPaginationParams(resolvedConfig.defaultLimit);
+          // listByCursor for indexed timestamptz columns
+          const cursorCandidates = getCursorPaginationCandidates(entity);
+          for (const candidate of cursorCandidates) {
+            const pascalColumn = candidate.cursorColumnName
+              .split("_")
+              .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+              .join("");
+            const pkField = entity.shapes.row.fields.find(f => f.name === candidate.pkColumn);
+            if (!pkField) continue;
+
+            const cursorType = ts.objectType([
+              { name: candidate.cursorColumn, type: ts.ref("Date") },
+              { name: candidate.pkColumn, type: ts.ref(pgTypeToTsType(getPgType(pkField))) },
+            ]);
+
             const method: QueryMethod = {
-              name: buildQueryName(entityName, "list"),
+              name: buildCursorQueryName(entityName, candidate.cursorColumnName),
               kind: "list",
-              params: paginationParams as unknown as QueryMethod["params"],
+              params: [],
               returns: buildReturnType(entityName, true, false),
               callSignature: { style: "named" },
             };
             entityMethods.push(method);
 
+            const cursorParam = param.destructured([
+              { name: "cursor", type: ts.union(cursorType, ts.undefined()), optional: true },
+              { name: "limit", type: ts.number(), optional: true, defaultValue: conjure.num(resolvedConfig.defaultLimit) },
+            ]);
+
+            const cursorComparisonOp = candidate.desc ? "<" : ">";
+            const orderDirection = candidate.desc ? "desc" : "asc";
+
+            const whereClause = b.callExpression(
+              b.memberExpression(b.identifier("eb"), b.identifier("or")),
+              [
+                b.arrayExpression([
+                  b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
+                    str(candidate.cursorColumnName),
+                    str(cursorComparisonOp),
+                    b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+                  ]),
+                  b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("and")), [
+                    b.arrayExpression([
+                      b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
+                        str(candidate.cursorColumnName),
+                        str("="),
+                        b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+                      ]),
+                      b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
+                        str(candidate.pkColumnName),
+                        str(cursorComparisonOp),
+                        b.memberExpression(b.identifier("cursor"), b.identifier(candidate.pkColumn)),
+                      ]),
+                    ]),
+                  ]),
+                ]),
+              ] as n.Expression[],
+            );
+
             const queryExpr = chain(b.identifier("db") as n.Expression)
               .method("selectFrom", [str(tableName) as n.Expression])
               .method("select", [buildColumnArray(entity.shapes.row.fields)])
-              .method("limit", [b.identifier("limit") as n.Expression])
-              .method("offset", [b.identifier("offset") as n.Expression])
+              .method("$if", [
+                b.binaryExpression("!==", b.identifier("cursor"), b.identifier("undefined")),
+                fn()
+                  .param("qb")
+                  .arrow()
+                  .body(
+                    stmt.return(
+                      chain(b.identifier("qb") as n.Expression)
+                        .method("where", [whereClause as n.Expression])
+                        .build(),
+                    ),
+                  )
+                  .build(),
+              ] as n.Expression[])
+              .method("orderBy", [str(candidate.cursorColumnName), str(orderDirection)])
+              .method("orderBy", [str(candidate.pkColumnName), str(orderDirection)])
+              .method("limit", [b.identifier("limit")])
               .build();
 
-            const destructuredParam = buildDestructuredParam(paginationParams);
             let fnBuilder = fn();
             if (resolvedConfig.dbAsParameter) {
               fnBuilder = fnBuilder.param("db", ts.ref("Kysely"));
             }
-            const fnExpr = fnBuilder.rawParam(destructuredParam).arrow().body(stmt.return(queryExpr)).build();
+            const fnExpr = fnBuilder.rawParam(cursorParam).arrow().body(stmt.return(queryExpr)).build();
 
             symbols.push({
               name: method.name,
-              capability: `queries:kysely:${entityName}:list`,
+              capability: `queries:kysely:${entityName}:listBy${pascalColumn}`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
-              fileHeader: queryHeader,
+              userImports: queryUserImports,
             });
           }
 
@@ -1028,7 +1127,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               kind: "create",
               params: [bodyParam],
               returns: buildReturnType(entityName, false, false),
-              callSignature: { style: "named", bodyStyle: "property" },
+              callSignature: { style: "named", bodyStyle: "spread" },
             };
             entityMethods.push(method);
 
@@ -1038,12 +1137,16 @@ export function kysely(config?: KyselyConfig): Plugin {
               .method("returningAll", [])
               .build();
 
-            const destructuredParam = buildDestructuredParam([bodyParam]);
+            // Simple typed parameter: (data: Insertable<Entity>)
             let fnBuilder = fn();
             if (resolvedConfig.dbAsParameter) {
               fnBuilder = fnBuilder.param("db", ts.ref("Kysely"));
             }
-            const fnExpr = fnBuilder.rawParam(destructuredParam).arrow().body(stmt.return(queryExpr)).build();
+            const fnExpr = fnBuilder
+              .param("data", ts.ref("Insertable", [ts.ref(entityName)]))
+              .arrow()
+              .body(stmt.return(queryExpr))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -1061,7 +1164,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                   types: [entityName],
                 },
               ],
-              fileHeader: queryHeader,
+              userImports: queryUserImports,
             });
           }
 
@@ -1083,7 +1186,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               kind: "update",
               params: [pkParam, bodyParam],
               returns: buildReturnType(entityName, false, true),
-              callSignature: { style: "named", bodyStyle: "property" },
+              callSignature: { style: "named", bodyStyle: "spread" },
             };
             entityMethods.push(method);
 
@@ -1098,7 +1201,16 @@ export function kysely(config?: KyselyConfig): Plugin {
               .method("returningAll", [])
               .build();
 
-            const destructuredParam = buildDestructuredParam([pkParam, bodyParam]);
+            // Use param.withRest for flat destructuring: ({ id, ...data }: { id: string } & Omit<Updateable<Entity>, 'id'>)
+            // Using Omit ensures `data` doesn't include the PK field
+            const destructuredParam = param.withRest(
+              [{ name: pkField.name, type: ts.ref(pkParam.type) }],
+              "data",
+              ts.ref("Omit", [
+                ts.ref("Updateable", [ts.ref(entityName)]),
+                ts.literal(pkField.name),
+              ]),
+            );
             let fnBuilder = fn();
             if (resolvedConfig.dbAsParameter) {
               fnBuilder = fnBuilder.param("db", ts.ref("Kysely"));
@@ -1121,7 +1233,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                   types: [entityName],
                 },
               ],
-              fileHeader: queryHeader,
+              userImports: queryUserImports,
             });
           }
 
@@ -1167,7 +1279,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
-              fileHeader: queryHeader,
+              userImports: queryUserImports,
             });
           }
 
@@ -1228,7 +1340,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
                 exports: "named",
                 externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
-                fileHeader: queryHeader,
+                userImports: queryUserImports,
               });
             }
           }

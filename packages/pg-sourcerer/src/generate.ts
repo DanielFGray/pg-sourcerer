@@ -6,8 +6,9 @@
  * 2. Introspect database
  * 3. Build IR
  * 4. Run plugins
- * 5. Emit files
- * 6. Write files
+ * 5. Validate user module imports
+ * 6. Emit files
+ * 7. Write files
  *
  * Logging:
  * - Effect.log (INFO) - Progress messages shown by default
@@ -15,12 +16,14 @@
  *
  * Configure via Logger.withMinimumLogLevel at the call site.
  */
-import { Effect, Layer, Schema } from "effect";
-import { Command } from "@effect/platform";
+import path from "node:path";
+import { Effect, Layer, Schema, pipe, Array as Arr } from "effect";
+import { Command, FileSystem } from "@effect/platform";
+import { NodeFileSystem } from "@effect/platform-node";
 import type { ResolvedConfig } from "./config.js";
-import type { Plugin } from "./runtime/types.js";
+import type { Plugin, RenderedSymbol } from "./runtime/types.js";
 import { runPlugins, type OrchestratorResult } from "./runtime/orchestrator.js";
-import { emitFiles, type EmittedFile } from "./runtime/emit.js";
+import { emitFiles, type EmittedFile, type RenderedSymbolWithImports } from "./runtime/emit.js";
 import { ConfigService } from "./services/config.js";
 import {
   DatabaseIntrospectionService,
@@ -37,6 +40,8 @@ import {
   getCompositeEntities,
   type SemanticIR,
 } from "./ir/semantic-ir.js";
+import { type UserModuleRef } from "./user-module.js";
+import { createUserModuleParser } from "./services/user-module-parser.js";
 
 /**
  * Options for the generate function
@@ -107,6 +112,51 @@ const runFormatter = (command: string, outputDir: string) => {
     ),
   );
 };
+
+/**
+ * Collect all unique UserModuleRefs from rendered symbols.
+ */
+function collectUserModuleRefs(rendered: readonly RenderedSymbol[]): readonly UserModuleRef[] {
+  const seen = new Set<string>();
+  const refs: UserModuleRef[] = [];
+
+  for (const symbol of rendered) {
+    const withImports = symbol as RenderedSymbolWithImports;
+    if (!withImports.userImports) continue;
+
+    for (const ref of withImports.userImports) {
+      // Only validate refs that have validate: true (default)
+      if (ref.validate === false) continue;
+
+      // Dedupe by path (we only need to validate each file once)
+      if (!seen.has(ref.path)) {
+        seen.add(ref.path);
+        refs.push(ref);
+      }
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * Validate all user module imports.
+ * Resolves paths relative to configDir and checks that exports exist.
+ */
+const validateUserModules = (
+  refs: readonly UserModuleRef[],
+  configDir: string,
+) =>
+  Effect.gen(function* () {
+    if (refs.length === 0) return;
+
+    const parser = createUserModuleParser();
+
+    for (const ref of refs) {
+      const absolutePath = path.resolve(configDir, ref.path);
+      yield* parser.validateImports(absolutePath, ref);
+    }
+  });
 
 /**
  * The main generate pipeline.
@@ -189,7 +239,21 @@ export const generate = (options: GenerateOptions = {}) =>
       outputDir: config.outputDir,
     });
 
-    const emittedFiles = emitFiles(pluginResult);
+    // Validate user module imports before emitting
+    if (config.configDir) {
+      const userModuleRefs = collectUserModuleRefs(pluginResult.rendered);
+      if (userModuleRefs.length > 0) {
+        yield* Effect.logDebug(`Validating ${userModuleRefs.length} user module import(s)...`);
+        yield* validateUserModules(userModuleRefs, config.configDir).pipe(
+          Effect.provide(NodeFileSystem.layer)
+        );
+      }
+    }
+
+    const emittedFiles = emitFiles(pluginResult, {
+      configDir: config.configDir,
+      outputDir: options.outputDir ?? config.outputDir,
+    });
     yield* Effect.log(`Generated ${emittedFiles.length} files`);
 
     const outputDir = options.outputDir ?? config.outputDir;

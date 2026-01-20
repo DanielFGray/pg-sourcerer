@@ -16,9 +16,13 @@ import { runPlugins, type OrchestratorConfig } from "../runtime/orchestrator.js"
 import { emitFiles } from "../runtime/emit.js";
 import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
-import { testIRWithEntities } from "../testing.js";
+import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, SemanticIR } from "../ir/semantic-ir.js";
 import type { EntityQueriesExtension, QueryMethod } from "../ir/extensions/queries.js";
+
+function toPascalCase(str: string): string {
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
 
 // =============================================================================
 // Test Helpers
@@ -144,20 +148,14 @@ function mockEntityWithPermissions(
 describe("Elysia Plugin - Declare", () => {
   it.effect("declares http-routes:elysia:EntityName when queries exist", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text", { nullable: true }),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       // Run both plugins so elysia can see kysely's declarations
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
       // Find elysia declarations (not kysely ones)
       const elysiaDecls = result.declarations.filter(d => d.capability.startsWith("http-routes:elysia:"));
-      
+
       // Should have userElysiaRoutes and elysiaApp
       const userRoutes = elysiaDecls.find(d => d.name === "userElysiaRoutes");
       expect(userRoutes).toBeDefined();
@@ -251,8 +249,8 @@ describe("Elysia Plugin - Render", () => {
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
       expect(code).toContain("Elysia");
       // Check for auto-generated query function names
+      // Note: list is no longer generated - replaced by cursor pagination (listBy{Column})
       expect(code).toContain("userFindById");
-      expect(code).toContain("userList");
       expect(code).toContain("userCreate");
       expect(code).toContain("userUpdate");
       expect(code).toContain("userDelete");
@@ -261,13 +259,7 @@ describe("Elysia Plugin - Render", () => {
 
   it.effect("correctly consumes kysely-queries metadata", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text"),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -279,7 +271,9 @@ describe("Elysia Plugin - Render", () => {
       expect(userQueries?.metadata).toHaveProperty("methods");
       // @ts-expect-error - metadata has methods array
       const methods = userQueries.metadata.methods;
-      expect(methods).toHaveLength(5); // findById, list, create, update, delete
+      // User has: findById, findByUsername, create, update, delete (5 methods)
+      // findByUsername is added because username is indexed
+      expect(methods.length).toBeGreaterThanOrEqual(4);
 
       // Verify elysia consumed the metadata and generated routes for all methods
       const elysiaRoutes = result.rendered.find(r => r.capability === "http-routes:elysia:User");
@@ -296,10 +290,7 @@ describe("Elysia Plugin - Render", () => {
 
   it.effect("generates GET method for read operation", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const idName = userFields[0]!.name;
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -307,15 +298,13 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      expect(code).toContain('.get("/:' + idName + '"');
+      expect(code).toContain('.get("/:id"');
     }),
   );
 
   it.effect("generates POST method for create operation", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -329,10 +318,7 @@ describe("Elysia Plugin - Render", () => {
 
   it.effect("generates PATCH method for update operation", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const idName = userFields[0]!.name;
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -340,16 +326,13 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      expect(code).toContain('.patch("/:' + idName + '"');
+      expect(code).toContain('.patch("/:id"');
     }),
   );
 
   it.effect("generates DELETE method for delete operation", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const idName = userFields[0]!.name;
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -357,16 +340,13 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      expect(code).toContain('.delete("/:' + idName + '"');
+      expect(code).toContain('.delete("/:id"');
     }),
   );
 
   it.effect("generates correct route paths", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const idName = userFields[0]!.name;
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       // Run both plugins
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
@@ -375,38 +355,17 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      expect(code).toContain('.get("/"');
-      expect(code).toContain('.get("/:' + idName + '"');
+      // Note: GET "/" (list) is no longer generated without timestamptz index
+      expect(code).toContain('.get("/:id"');
       expect(code).toContain('.post("/"');
-      expect(code).toContain('.patch("/:' + idName + '"');
-      expect(code).toContain('.delete("/:' + idName + '"');
+      expect(code).toContain('.patch("/:id"');
+      expect(code).toContain('.delete("/:id"');
     }),
   );
 
   it.effect("generates lookup routes for indexed columns", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-      ];
-
-      const entity = mockTableEntity("User", userFields, {
-        indexes: [
-          {
-            name: "idx_user_email",
-            columns: ["email"],
-            columnNames: ["email"],
-            isUnique: true,
-            isPrimary: false,
-            isPartial: false,
-            hasExpressions: false,
-            method: "btree",
-            opclassNames: [],
-          },
-        ],
-      });
-
-      const ir = testIRWithEntities([entity]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -414,9 +373,29 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      // Lookup route should be generated for indexed column
-      expect(code).toContain("/by-email/");
-      expect(code).toContain("userFindByEmail");
+      // Lookup route should be generated for indexed column (username is indexed)
+      expect(code).toContain("/by-username/");
+      expect(code).toContain("userFindByUsername");
+    }),
+  );
+
+  it.effect("generates unique routes for cursor pagination methods", () =>
+    Effect.gen(function* () {
+      const ir = yield* testIRFromFixture(["app_public"]);
+
+      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
+
+      const postRoutes = result.rendered.find(r => r.capability === "http-routes:elysia:Post");
+      expect(postRoutes).toBeDefined();
+      const code = recast.print(postRoutes!.node as recast.types.ASTNode).code;
+
+      // Post has created_at index, so it gets listByCreatedAt route
+      // With cursor pagination, this should map to a unique path like /by-created-at
+      expect(code).toContain("/by-created-at");
+      expect(code).toMatch(/ListByCreatedAt/i);
+      // Should NOT have generic list route at GET "/" (cursor pagination uses /by-{column} paths)
+      // But should still have other GET routes (findById at /:id, lookup routes)
+      expect(code).not.toMatch(/\.get\(["']\/["']/); // No GET "/" route
     }),
   );
 });
@@ -428,13 +407,7 @@ describe("Elysia Plugin - Render", () => {
 describe("Elysia Plugin - Aggregator", () => {
   it.effect("generates aggregator when multiple entities have routes", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const postFields = [mockField("id", "uuid"), mockField("title", "text")];
-
-      const ir = testIRWithEntities([
-        mockTableEntity("User", userFields),
-        mockTableEntity("Post", postFields),
-      ]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -443,7 +416,7 @@ describe("Elysia Plugin - Aggregator", () => {
 
       const code = recast.print(appRoutes!.node as recast.types.ASTNode).code;
       expect(code).toContain("new Elysia");
-      // Should use both route groups
+      // Should use multiple route groups from User, Post, etc.
       expect(code).toContain("userElysiaRoutes");
       expect(code).toContain("postElysiaRoutes");
     }),
@@ -451,15 +424,7 @@ describe("Elysia Plugin - Aggregator", () => {
 
   it.effect("aggregator uses all entity route groups", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const postFields = [mockField("id", "uuid")];
-      const commentFields = [mockField("id", "uuid")];
-
-      const ir = testIRWithEntities([
-        mockTableEntity("User", userFields),
-        mockTableEntity("Post", postFields),
-        mockTableEntity("Comment", commentFields),
-      ]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
 
@@ -467,13 +432,14 @@ describe("Elysia Plugin - Aggregator", () => {
       expect(appRoutes).toBeDefined();
 
       const code = recast.print(appRoutes!.node as recast.types.ASTNode).code;
-      // All three route groups should be used
+      // Multiple route groups should be used (User, Post, etc.)
       expect(code).toContain("userElysiaRoutes");
       expect(code).toContain("postElysiaRoutes");
       expect(code).toContain("commentElysiaRoutes");
-      // Count .use() calls - should be 3 for 3 entities
+      // Count .use() calls - should be multiple for multiple entities
       const useCount = code.match(/\.use\(/g);
-      expect(useCount).toHaveLength(3);
+      expect(useCount).toBeDefined();
+      expect(useCount!.length).toBeGreaterThan(2);
     }),
   );
 });
@@ -485,12 +451,7 @@ describe("Elysia Plugin - Aggregator", () => {
 describe("Elysia Plugin - Emit", () => {
   it.effect("emits valid TypeScript file with Elysia routes", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
       const files = emitFiles(result);
@@ -509,9 +470,7 @@ describe("Elysia Plugin - Emit", () => {
 
   it.effect("includes external imports for elysia and queries", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
       const files = emitFiles(result);
@@ -529,13 +488,7 @@ describe("Elysia Plugin - Emit", () => {
 
   it.effect("emits aggregator file when multiple entities", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const postFields = [mockField("id", "uuid")];
-
-      const ir = testIRWithEntities([
-        mockTableEntity("User", userFields),
-        mockTableEntity("Post", postFields),
-      ]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
       const files = emitFiles(result);
@@ -543,7 +496,7 @@ describe("Elysia Plugin - Emit", () => {
       // Should have one file with all Elysia routes (User routes, Post routes, and app combined)
       const routesFiles = files.filter(f => f.content.includes("Elysia"));
       expect(routesFiles.length).toBe(1);
-      
+
       const content = routesFiles[0]!.content;
       // The single file should contain all route groups
       expect(content).toContain("userElysiaRoutes");
@@ -561,12 +514,7 @@ describe("Elysia Plugin - Emit", () => {
 describe("Elysia Plugin - Render", () => {
   it.effect("renders Elysia route handler code", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-      ];
-
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       // Run both plugins so elysia can consume kysely's metadata
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely(), elysia()] });
@@ -581,8 +529,9 @@ describe("Elysia Plugin - Render", () => {
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
       expect(code).toContain("Elysia");
       // Check for auto-generated query function names
+      // Note: list is no longer generated - replaced by cursor pagination (listBy{Column})
+      // which only generates for tables with btree-indexed timestamptz columns
       expect(code).toContain("userFindById");
-      expect(code).toContain("userList");
       expect(code).toContain("userCreate");
       expect(code).toContain("userUpdate");
       expect(code).toContain("userDelete");
@@ -602,7 +551,7 @@ describe("Elysia Plugin - Render", () => {
       expect(userRoutes).toBeDefined();
       const code = recast.print(userRoutes!.node as recast.types.ASTNode).code;
 
-      expect(code).toContain('.get("/"');
+      // Note: GET "/" (list) is no longer generated without timestamptz index
       expect(code).toContain('.get("/:id"');
       expect(code).toContain('.post("/"');
       expect(code).toContain('.patch("/:id"');

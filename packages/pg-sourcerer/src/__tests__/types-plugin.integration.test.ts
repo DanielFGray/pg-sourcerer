@@ -49,7 +49,7 @@ function testConfig(): Omit<OrchestratorConfig, "plugins"> {
 
 describe("Types Plugin Integration", () => {
   it("declares type capabilities for all table entities", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin] }));
+    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
 
     // Get expected entities from IR
     const tableEntities = Array.from(ir.entities.values()).filter(isTableEntity);
@@ -66,7 +66,7 @@ describe("Types Plugin Integration", () => {
   });
 
   it("generates valid interfaces for User entity", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin] }));
+    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
 
     const userRendered = result.rendered.find(r => r.name === "User");
     expect(userRendered).toBeDefined();
@@ -87,11 +87,11 @@ describe("Types Plugin Integration", () => {
   });
 
   it("renders all table entities to the types file", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin] }));
+    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
 
     const files = emitFiles(result);
     expect(files.length).toBe(1);
-    expect(files[0]?.path).toBe("src/generated/types.ts");
+    expect(files[0]?.path).toBe("types.ts");
 
     const content = files[0]!.content;
     const tableEntities = Array.from(ir.entities.values()).filter(isTableEntity);
@@ -103,7 +103,7 @@ describe("Types Plugin Integration", () => {
   });
 
   it("handles nullable fields correctly", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin] }));
+    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
 
     const files = emitFiles(result);
     const content = files[0]!.content;
@@ -124,7 +124,7 @@ describe("Types Plugin Integration", () => {
   });
 
   it("emits TypeScript that could type-check (well-formed AST)", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin] }));
+    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
     const files = emitFiles(result);
     const content = files[0]!.content;
 

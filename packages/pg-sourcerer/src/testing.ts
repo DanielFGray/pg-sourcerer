@@ -35,6 +35,8 @@ import { emitFiles, type EmittedFile } from "./runtime/emit.js";
 import type { SemanticIR, Entity } from "./ir/semantic-ir.js";
 import { defaultInflection, type CoreInflection } from "./services/inflection.js";
 import { emptyTypeHintRegistry, type TypeHintRegistry } from "./services/type-hints.js";
+import { createIRBuilderService } from "./services/ir-builder.js";
+import { InflectionLive } from "./services/inflection.js";
 
 // =============================================================================
 // Test IR Builders
@@ -74,6 +76,34 @@ export function testIRWithEntities(
 ): SemanticIR {
   const entityMap = Array.isArray(entities) ? new Map(entities.map(e => [e.name, e])) : entities;
   return testIR({ entities: entityMap as Map<string, Entity> });
+}
+
+/**
+ * Load introspection fixture and build IR from it.
+ *
+ * Returns an Effect that loads the pre-captured introspection data
+ * and builds IR using the real IR builder service.
+ *
+ * @example
+ * ```typescript
+ * it.effect("uses fixture data", () =>
+ *   Effect.gen(function* () {
+ *     const ir = yield* testIRFromFixture(["app_public"]);
+ *     const userEntity = ir.entities.get("User");
+ *     expect(userEntity).toBeDefined();
+ *   })
+ * )
+ * ```
+ */
+export function testIRFromFixture(schemas: readonly string[] = ["app_public"]): Effect.Effect<SemanticIR, unknown> {
+  const builder = createIRBuilderService();
+  return Effect.gen(function* () {
+    const { loadIntrospectionFixture } = yield* Effect.promise(() =>
+      import("./__tests__/fixtures/index.js").then(m => ({ loadIntrospectionFixture: m.loadIntrospectionFixture })),
+    );
+    const introspection = loadIntrospectionFixture();
+    return yield* builder.build(introspection, { schemas });
+  }).pipe(Effect.provide(InflectionLive));
 }
 
 // =============================================================================

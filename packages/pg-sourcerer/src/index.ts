@@ -43,6 +43,18 @@ export {
 // Errors
 export * from "./errors.js";
 
+// User Module References
+export { userModule, isUserModuleRef, type UserModuleRef, type UserModuleOptions } from "./user-module.js";
+
+// User Module Parser Service
+export {
+  type UserModuleParser,
+  type UserModuleExports,
+  UserModuleParserService,
+  UserModuleParserLive,
+  createUserModuleParser,
+} from "./services/user-module-parser.js";
+
 // IR
 export {
   type SemanticIR,
@@ -195,6 +207,7 @@ export { trpc, type HttpTrpcConfig } from "./plugins/http-trpc.js";
 export {
   testIR,
   testIRWithEntities,
+  testIRFromFixture,
   testConfig,
   testPlugin,
   testPluginEmit,

@@ -14,7 +14,7 @@ import { kysely } from "../plugins/kysely.js";
 import { runPlugins, type OrchestratorConfig } from "../runtime/orchestrator.js";
 import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
-import { testIRWithEntities } from "../testing.js";
+import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, SemanticIR, IndexDef } from "../ir/semantic-ir.js";
 
 function testConfig(ir: SemanticIR): Omit<OrchestratorConfig, "plugins"> {
@@ -107,18 +107,14 @@ function mockTableEntity(name: string, fields: Field[], opts?: {
 describe("Kysely Queries Plugin - Declaration", () => {
   it.effect("declares CRUD query capabilities for table entities with PK", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text", { nullable: true }),
-      ];
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       const capabilities = result.declarations.map(d => d.capability);
       expect(capabilities).toContain("queries:kysely:User:findById");
-      expect(capabilities).toContain("queries:kysely:User:list");
+      // Note: list is no longer generated - replaced by cursor pagination (listBy{Column})
+      // which only generates for tables with btree-indexed timestamptz columns
       expect(capabilities).toContain("queries:kysely:User:create");
       expect(capabilities).toContain("queries:kysely:User:update");
       expect(capabilities).toContain("queries:kysely:User:delete");
@@ -127,33 +123,39 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
   it.effect("does not declare query capabilities for omitted entities", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const ir = testIRWithEntities([mockTableEntity("User", userFields, { tags: { omit: true } })]);
+      const baseIR = yield* testIRFromFixture(["app_public"]);
+      const user = baseIR.entities.get("User");
+      if (user && user.kind === "table") {
+        const modifiedUser = { ...user, tags: { omit: true } };
+        const ir = { ...baseIR, entities: new Map([["User", modifiedUser]]) };
 
-      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
+        const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
-      // Omitted entities don't get query capabilities, but DB interface is still declared
-      expect(queryCapabilities).toHaveLength(0);
-      // DB interface is always declared (even if empty)
-      expect(result.declarations.some(d => d.capability === "types:kysely:DB")).toBe(true);
+        const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
+        // Omitted entities don't get query capabilities, but DB interface is still declared
+        expect(queryCapabilities).toHaveLength(0);
+        // DB interface is always declared (even if empty)
+        expect(result.declarations.some(d => d.capability === "types:kysely:DB")).toBe(true);
+      }
     }),
   );
 
   it.effect("skips query capabilities when all permissions are denied", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const ir = testIRWithEntities([mockTableEntity("User", userFields, {
-        permissions: { canSelect: false, canInsert: false, canUpdate: false, canDelete: false },
-      })]);
+      const baseIR = yield* testIRFromFixture(["app_public"]);
+      const user = baseIR.entities.get("User");
+      if (user && user.kind === "table") {
+        const modifiedUser = { ...user, permissions: { canSelect: false, canInsert: false, canUpdate: false, canDelete: false } };
+        const ir = { ...baseIR, entities: new Map([["User", modifiedUser]]) };
 
-      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
+        const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
-      // No query capabilities when permissions deny all operations
-      expect(queryCapabilities).toHaveLength(0);
-      // Type is still declared (for the table interface)
-      expect(result.declarations.some(d => d.capability === "types:kysely:User")).toBe(true);
+        const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
+        // No query capabilities when permissions deny all operations
+        expect(queryCapabilities).toHaveLength(0);
+        // Type is still declared (for the table interface)
+        expect(result.declarations.some(d => d.capability === "types:kysely:User")).toBe(true);
+      }
     }),
   );
 
@@ -170,42 +172,79 @@ describe("Kysely Queries Plugin - Declaration", () => {
       expect(capabilities).not.toContain("queries:kysely:User:findById");
       expect(capabilities).not.toContain("queries:kysely:User:update");
       expect(capabilities).not.toContain("queries:kysely:User:delete");
-      expect(capabilities).toContain("queries:kysely:User:list");
+      // Note: list is no longer generated - replaced by cursor pagination
       expect(capabilities).toContain("queries:kysely:User:create");
     }),
   );
 
-  it.effect("generates findBy queries for indexed columns", () =>
+  it.effect("generates listBy cursor pagination for indexed timestamptz columns", () =>
+    Effect.gen(function* () {
+      const ir = yield* testIRFromFixture(["app_public"]);
+
+      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
+
+      const capabilities = result.declarations.map(d => d.capability);
+      // Users has indexed username column
+      expect(capabilities).toContain("queries:kysely:User:findByUsername");
+    }),
+  );
+
+  it.effect("generates listBy cursor pagination for indexed timestamptz columns", () =>
+    Effect.gen(function* () {
+      const ir = yield* testIRFromFixture(["app_public"]);
+
+      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
+
+      const capabilities = result.declarations.map(d => d.capability);
+      // Post table has created_at index (timestamptz)
+      expect(capabilities).toContain("queries:kysely:Post:listByCreatedAt");
+    }),
+  );
+
+  it.effect("does not generate listBy for non-timestamptz indexed columns", () =>
+    Effect.gen(function* () {
+      const ir = yield* testIRFromFixture(["app_public"]);
+
+      const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
+
+      const capabilities = result.declarations.map(d => d.capability);
+      // findByUsername is generated (for lookup), but not listByUsername (not timestamptz)
+      expect(capabilities).toContain("queries:kysely:User:findByUsername");
+      expect(capabilities).not.toContain("queries:kysely:User:listByUsername");
+    }),
+  );
+
+  it.effect("does not generate listBy for partial indexes", () =>
     Effect.gen(function* () {
       const userFields = [
         mockField("id", "uuid"),
-        mockField("email", "text"),
+        mockField("createdAt", "timestamptz"),
       ];
       const ir = testIRWithEntities([mockTableEntity("User", userFields, {
         indexes: [{ 
-          name: "idx_user_email", 
-          columns: ["email"], 
-          columnNames: ["email"],
-          isUnique: true, 
+          name: "idx_user_created_at_partial", 
+          columns: ["createdAt"], 
+          columnNames: ["created_at"],
+          isUnique: false, 
           isPrimary: false,
-          isPartial: false, 
+          isPartial: true, // Partial index - should be skipped
           hasExpressions: false, 
           method: "btree",
           opclassNames: [],
+          sortOptions: [{ desc: true, nullsFirst: false }],
         }],
       })]);
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       const capabilities = result.declarations.map(d => d.capability);
-      expect(capabilities).toContain("queries:kysely:User:findByEmail");
+      expect(capabilities).not.toContain("queries:kysely:User:listByCreatedAt");
     }),
   );
 
   it.effect("declares symbols with dependsOn for type references", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid"), mockField("email", "text")];
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       const findByIdDecl = result.declarations.find(d => d.capability === "queries:kysely:User:findById");
@@ -217,15 +256,14 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
   it.effect("capability pattern is queries:kysely:EntityName:operation", () =>
     Effect.gen(function* () {
-      const userFields = [mockField("id", "uuid")];
-      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+      const ir = yield* testIRFromFixture(["app_public"]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       const capabilities = result.declarations.map(d => d.capability);
-      
+
       // Verify pattern
       expect(capabilities).toContain("queries:kysely:User:findById");
-      expect(capabilities).toContain("queries:kysely:User:list");
+      // Note: list is no longer generated - replaced by cursor pagination (listBy{Column})
       expect(capabilities).toContain("queries:kysely:User:create");
       expect(capabilities).toContain("queries:kysely:User:update");
       expect(capabilities).toContain("queries:kysely:User:delete");
@@ -250,15 +288,7 @@ describe("Kysely Queries Plugin - Architecture", () => {
 
   it.effect("each query has unique capability identifier", () =>
     Effect.gen(function* () {
-      const userFields = [
-        mockField("id", "uuid"),
-        mockField("email", "text"),
-        mockField("name", "text"),
-      ];
-      const ir = testIRWithEntities([
-        mockTableEntity("User", userFields),
-        mockTableEntity("Post", userFields),
-      ]);
+      const ir = yield* testIRFromFixture(["app_public"]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       // All capabilities should be unique

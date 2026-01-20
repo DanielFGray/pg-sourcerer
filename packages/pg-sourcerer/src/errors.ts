@@ -70,3 +70,50 @@ export class ExportCollisionError extends Schema.TaggedError<ExportCollisionErro
     message: Schema.String,
   }
 ) {}
+
+// =============================================================================
+// User Module Errors
+// =============================================================================
+
+/**
+ * Error when parsing a user module file fails.
+ */
+export class UserModuleParseError extends Schema.TaggedError<UserModuleParseError>()(
+  "UserModuleParseError",
+  {
+    message: Schema.String,
+    /** Absolute path to the file that failed to parse */
+    path: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
+  }
+) {}
+
+/**
+ * Error when a requested export is not found in a user module.
+ */
+export class ExportNotFoundError extends Schema.TaggedError<ExportNotFoundError>()(
+  "ExportNotFoundError",
+  {
+    message: Schema.String,
+    /** Absolute path to the module */
+    modulePath: Schema.String,
+    /** The export name that was not found */
+    exportName: Schema.String,
+    /** Available exports in the module */
+    availableExports: Schema.Array(Schema.String),
+  }
+) {}
+
+/**
+ * Error when a user module file is not found.
+ */
+export class UserModuleNotFoundError extends Schema.TaggedError<UserModuleNotFoundError>()(
+  "UserModuleNotFoundError",
+  {
+    message: Schema.String,
+    /** Path as specified in config (relative to config file) */
+    configPath: Schema.String,
+    /** Resolved absolute path that was checked */
+    resolvedPath: Schema.String,
+  }
+) {}
