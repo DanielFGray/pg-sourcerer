@@ -430,13 +430,11 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
     declarations.push({
       name: insertName,
       capability: `schema:arktype:${insertName}`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
     declarations.push({
       name: insertName,
       capability: `schema:arktype:${insertName}:type`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
   }
@@ -446,13 +444,11 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
     declarations.push({
       name: updateName,
       capability: `schema:arktype:${updateName}`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
     declarations.push({
       name: updateName,
       capability: `schema:arktype:${updateName}:type`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
 
@@ -463,13 +459,11 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
       declarations.push({
         name: updateInputName,
         capability: `schema:arktype:${updateInputName}`,
-        dependsOn: [`type:${entity.name}`],
         baseEntityName,
       });
       declarations.push({
         name: updateInputName,
         capability: `schema:arktype:${updateInputName}:type`,
-        dependsOn: [`type:${entity.name}`],
         baseEntityName,
       });
     }

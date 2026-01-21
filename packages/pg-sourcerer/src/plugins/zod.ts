@@ -356,13 +356,11 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
     declarations.push({
       name: insertName,
       capability: `schema:zod:${insertName}`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
     declarations.push({
       name: insertName,
       capability: `schema:zod:${insertName}:type`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
   }
@@ -372,13 +370,11 @@ function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
     declarations.push({
       name: updateName,
       capability: `schema:zod:${updateName}`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
     declarations.push({
       name: updateName,
       capability: `schema:zod:${updateName}:type`,
-      dependsOn: [`type:${entity.name}`],
       baseEntityName,
     });
   }
