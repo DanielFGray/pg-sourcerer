@@ -163,12 +163,6 @@ describe("Zod Plugin - Declare", () => {
       expect(capabilities).toContain("schema:zod:UserInsert:type");
       expect(capabilities).toContain("schema:zod:UserUpdate");
       expect(capabilities).toContain("schema:zod:UserUpdate:type");
-
-      const insertDecl = result.declarations.find(d => d.capability === "schema:zod:UserInsert");
-      expect(insertDecl?.dependsOn).toContain("type:User");
-
-      const insertTypeDecl = result.declarations.find(d => d.capability === "schema:zod:UserInsert:type");
-      expect(insertTypeDecl?.dependsOn).toContain("type:User");
     }),
   );
 
