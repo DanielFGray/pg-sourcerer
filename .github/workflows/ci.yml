@@ -50,7 +50,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      release_created: ${{ steps.release.outputs['pg-sourcerer--release_created'] }}
+      tag_name: ${{ steps.release.outputs['pg-sourcerer--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -63,7 +65,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
