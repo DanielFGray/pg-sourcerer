@@ -58,11 +58,12 @@ const runGenerateCommand = (args: GenerateArgs) => {
     Effect.provide(configLayer),
     Effect.tap(logSuccess),
     Effect.catchTags({
+      ConfigNotFound: () =>
+        Console.log("No config file found. Running init...").pipe(
+          Effect.zipRight(runInit),
+          Effect.tap(() => Console.log("\nRun 'pgsourcerer' again to generate code.")),
+        ),
       ConfigInvalid: error =>
-        // Effect.sync(() => {
-        //   console.error(`\n✗ Config Error: ${error.message}`);
-        //   for (const e of error.errors) console.error(`  - ${e}`);
-        // }),
         Effect.forEach(error.errors, e => Console.error(`  - ${e}`)),
     }),
   );
