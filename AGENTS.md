@@ -49,23 +49,46 @@ Scripts in `packages/example` use `bun --env-file=.env` to load environment vari
 
 - Main worktree stays on `develop` branch for day-to-day work
 - CI runs tests on PRs and main pushes
-- CI publishes to npm on every main push (version must be bumped first)
+- CI publishes to npm on every main push via release-please
 
 ### Releasing to main
 
+This project uses **release-please** to automate releases. The workflow:
+
+1. Merge develop into main with version bump
+2. Push to main
+3. Release-please CI creates a release and publishes to npm
+
 ```bash
-# 1. Bump version in packages/pg-sourcerer
-cd packages/pg-sourcerer && npm version patch  # or minor/major
+# 1. Ensure develop is up to date
+git checkout develop && git pull
 
-# 2. Commit and push to develop
-git add -A && git commit -m "chore: bump version" && git push
+# 2. Bump version in BOTH files (they must stay in sync!)
+cd packages/pg-sourcerer
+# Edit package.json version manually (npm version doesn't work with workspace:*)
+# Then update .release-please-manifest.json to match
 
-# 3. Merge to main
+# 3. Commit and push to develop
+git add -A && git commit -m "chore: bump version to X.Y.Z" && git push
+
+# 4. Merge to main and push
 git checkout main
-git merge develop -m "Release $(npm pkg get version -w packages/pg-sourcerer | tr -d '\"')"
-git push
+git pull origin main
+git merge develop -m "Release vX.Y.Z - <brief description>"
+git push origin main
+
+# 5. Switch back to develop
 git checkout develop
 ```
+
+**IMPORTANT: release-please manifest sync**
+
+Release-please tracks versions in `.release-please-manifest.json`, NOT `package.json`.
+If these get out of sync, release-please will suggest wrong versions.
+
+Always update BOTH files when bumping versions:
+- `packages/pg-sourcerer/package.json` - the actual package version
+- `.release-please-manifest.json` - release-please's version tracker
 
 ### Syncing main→develop
 
