@@ -1,24 +1,75 @@
 /**
  * Config Service
  *
- * Provides loaded configuration via Effect DI.
+ * Effect-based configuration with multiple providers.
  *
- * This is the service that effects depend on to get config.
- * The config-loader.ts provides the loading logic, while this
- * module provides the service tag and layer constructors.
+ * ## Provider Pattern
  *
- * Layers available:
+ * ConfigProvider is how config gets loaded - file, in-memory, wizard.
+ * Each provider returns Effect<ResolvedConfig, ConfigError>.
+ *
+ * Providers can be chained with withFallback:
+ *   withFallback(FileProvider(), () => WizardProvider())
+ *
+ * ## Layer Constructors
+ *
  * - ConfigFromFile: Load from file, fail if not found
- * - ConfigWithInit: Load from file, or run interactive init (for CLI)
- * - ConfigTest: Provide config directly for testing
+ * - ConfigFromMemory: Use provided config directly (testing)
+ * - ConfigWithFallback: Load from file, fallback to another provider
  */
 
-import { Console, Context, Effect, Layer } from "effect";
-import { FileSystem, Terminal } from "@effect/platform";
-import type { PlatformError } from "@effect/platform/Error";
+import { Context, Effect, Layer } from "effect";
 import type { ResolvedConfig } from "../config.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
 import { createConfigLoader, CONFIG_FILE_NAMES } from "./config-loader.js";
+
+// ============================================================================
+// Config Provider Interface
+// ============================================================================
+
+/**
+ * A ConfigProvider knows how to produce a ResolvedConfig.
+ * Different providers: file, wizard, in-memory, env vars.
+ */
+export interface ConfigProvider {
+  readonly load: Effect.Effect<ResolvedConfig, ConfigNotFound | ConfigInvalid>;
+}
+
+// ============================================================================
+// Config Providers
+// ============================================================================
+
+/**
+ * File-based config provider using lilconfig.
+ */
+export const FileConfigProvider = (opts?: {
+  readonly configPath?: string;
+  readonly searchFrom?: string;
+}): ConfigProvider => ({
+  load: Effect.gen(function* () {
+    const loader = createConfigLoader();
+    return yield* loader.load(opts);
+  }),
+});
+
+/**
+ * In-memory config provider - returns the provided config directly.
+ * Useful for testing or programmatic usage.
+ */
+export const InMemoryConfigProvider = (config: ResolvedConfig): ConfigProvider => ({
+  load: Effect.succeed(config),
+});
+
+/**
+ * Create a provider that tries primary first, falls back to secondary.
+ * ConfigNotFound from primary triggers fallback; ConfigInvalid propagates.
+ */
+export const withFallback = (
+  primary: ConfigProvider,
+  fallback: () => ConfigProvider,
+): ConfigProvider => ({
+  load: primary.load.pipe(Effect.catchTag("ConfigNotFound", () => fallback().load)),
+});
 
 // ============================================================================
 // Service Definition
@@ -28,10 +79,7 @@ import { createConfigLoader, CONFIG_FILE_NAMES } from "./config-loader.js";
  * Service that provides the loaded configuration.
  * The service value IS the ResolvedConfig directly.
  */
-export class ConfigService extends Context.Tag("ConfigService")<
-  ConfigService,
-  ResolvedConfig
->() {}
+export class ConfigService extends Context.Tag("ConfigService")<ConfigService, ResolvedConfig>() {}
 
 // ============================================================================
 // Layer Constructors
@@ -41,63 +89,43 @@ export class ConfigService extends Context.Tag("ConfigService")<
  * Load config from file. Fails with ConfigNotFound if not found.
  */
 export const ConfigFromFile = (opts?: {
-  configPath?: string;
-  searchFrom?: string;
+  readonly configPath?: string;
+  readonly searchFrom?: string;
 }): Layer.Layer<ConfigService, ConfigNotFound | ConfigInvalid> =>
-  Layer.effect(
-    ConfigService,
-    Effect.gen(function* () {
-      const loader = createConfigLoader();
-      return yield* loader.load(opts);
-    }),
-  );
+  Layer.effect(ConfigService, FileConfigProvider(opts).load);
 
 /**
- * Load config from file, or run interactive init if not found.
- * This is the layer to use for CLI commands.
- *
- * Flow:
- * 1. Try to load config from file
- * 2. If ConfigNotFound, print message and run init prompts
- * 3. After init writes config, load it
- * 4. Return the loaded config
+ * Provide config directly (for testing or programmatic use).
  */
-export const ConfigWithInit = (opts?: {
-  configPath?: string;
-  searchFrom?: string;
-}): Layer.Layer<
-  ConfigService,
-  ConfigInvalid | Error | Terminal.QuitException | PlatformError,
-  Terminal.Terminal | FileSystem.FileSystem
-> =>
-  Layer.effect(
-    ConfigService,
-    Effect.gen(function* () {
-      const loader = createConfigLoader();
-
-      return yield* loader.load(opts).pipe(
-        Effect.catchTag("ConfigNotFound", (error: ConfigNotFound) =>
-          Effect.gen(function* () {
-            yield* Console.error(`\n✗ No config file found`);
-            yield* Console.error(`  Searched: ${error.searchPaths.join(", ")}`);
-
-            // Dynamic import to avoid circular dependency with init.ts
-            const initModule = yield* Effect.promise(() => import("../init.js"));
-            const result = yield* initModule.runInit;
-
-            // Load the newly created config
-            return yield* loader.load({ configPath: result.configPath });
-          }),
-        ),
-      );
-    }),
-  );
-
-/**
- * Provide config directly for testing.
- */
-export const ConfigTest = (config: ResolvedConfig): Layer.Layer<ConfigService> =>
+export const ConfigFromMemory = (config: ResolvedConfig): Layer.Layer<ConfigService> =>
   Layer.succeed(ConfigService, config);
+
+/**
+ * Alias for ConfigFromMemory - clearer name for test contexts.
+ */
+export const ConfigTest = ConfigFromMemory;
+
+/**
+ * Load config with fallback provider chain.
+ *
+ * @example
+ * ```typescript
+ * // Try file first, fall back to wizard if not found
+ * ConfigWithFallback(
+ *   FileConfigProvider(),
+ *   () => WizardConfigProvider()
+ * )
+ * ```
+ */
+export const ConfigWithFallback = (
+  primary: ConfigProvider,
+  fallback: () => ConfigProvider,
+): Layer.Layer<ConfigService, ConfigNotFound | ConfigInvalid> =>
+  Layer.effect(ConfigService, withFallback(primary, fallback).load);
+
+// ============================================================================
+// Utility
+// ============================================================================
 
 /**
  * Get the default search paths for config files.

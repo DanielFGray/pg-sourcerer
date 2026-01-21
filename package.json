@@ -3,14 +3,17 @@
   "private": true,
   "scripts": {
     "prestart": "cd packages/pg-sourcerer && bun run build",
+    "db:ensure": " cd packages/example && bun run db:ensure",
     "start": "cd packages/example && bun start",
     "generate": " cd packages/example && bun run generate",
     "test": " cd packages/pg-sourcerer && bun run test",
+    "predev": "bun run db:ensure",
     "dev": "mprocs 'bun run build:watch' 'bun run generate'",
     "build": "cd packages/pg-sourcerer && bun run build",
     "build:watch": "cd packages/pg-sourcerer && bun run build:watch",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "typecheck": "bun --workspaces run typecheck"
   },
   "workspaces": {
     "packages": [
@@ -37,11 +40,5 @@
     "eslint": "^9.39.2",
     "mprocs": "^0.8.2",
     "typescript-eslint": "^8.52.0"
-  },
-  "dependencies": {
-    "@effect/sql": "^0.49.0",
-    "arktype": "^2.1.29",
-    "effect": "^3.19.14",
-    "zod": "^4.3.5"
   }
 }

@@ -22,17 +22,9 @@ import type {
 } from "./introspection.js";
 export { makeIntrospectionQuery } from "./introspection.js";
 import type { AclObject } from "./acl.js";
-import {
-  aclContainsRole,
-  entityPermissions,
-  expandRoles,
-  resolvePermissions,
-} from "./acl.js";
+import { aclContainsRole, entityPermissions, expandRoles, resolvePermissions } from "./acl.js";
 import { augmentIntrospection } from "./augmentIntrospection.js";
-import type {
-  PgSmartTagsAndDescription,
-  PgSmartTagsDict,
-} from "./smartComments.js";
+import type { PgSmartTagsAndDescription, PgSmartTagsDict } from "./smartComments.js";
 
 export { default as reservedWords } from "./reservedWords.js";
 export { parseSmartComment } from "./smartComments.js";
@@ -60,13 +52,7 @@ export {
   PgType,
 };
 
-export {
-  aclContainsRole,
-  AclObject,
-  entityPermissions,
-  expandRoles,
-  resolvePermissions,
-};
+export { aclContainsRole, AclObject, entityPermissions, expandRoles, resolvePermissions };
 
 export function parseIntrospectionResults(
   introspectionResults: string,
@@ -81,9 +67,7 @@ declare module "./introspection.js" {
   interface Introspection {
     getCurrentUser(): PgRoles | undefined;
 
-    getNamespace(
-      by: { id: string } | { name: string },
-    ): PgNamespace | undefined;
+    getNamespace(by: { id: string } | { name: string }): PgNamespace | undefined;
     getClass(by: { id: string }): PgClass | undefined;
     getConstraint(by: { id: string }): PgConstraint | undefined;
     getProc(by: { id: string }): PgProc | undefined;
@@ -131,9 +115,7 @@ declare module "./introspection.js" {
     getOfType(): PgType | undefined;
     getOwner(): PgRoles | undefined;
     getAttributes(): PgAttribute[];
-    getAttribute(
-      by: { number: number } | { name: string },
-    ): PgAttribute | undefined;
+    getAttribute(by: { number: number } | { name: string }): PgAttribute | undefined;
     getConstraints(): PgConstraint[];
     getForeignConstraints(): PgConstraint[];
     getIndexes(): PgIndex[];

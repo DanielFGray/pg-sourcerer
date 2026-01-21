@@ -1,11 +1,11 @@
 /**
  * Semantic IR - Intermediate Representation of database schema
- * 
+ *
  * This is the core data structure that plugins consume.
  * It represents semantic intent, not code.
  */
-import type { PgAttribute, PgClass, PgType, PgProc } from "@danielfgray/pg-introspection"
-import type { SmartTags, ShapeKind } from "./smart-tags.js"
+import type { PgAttribute, PgClass, PgType, PgProc } from "@danielfgray/pg-introspection";
+import type { SmartTags, ShapeKind } from "./smart-tags.js";
 
 /**
  * Information about a domain type's underlying base type.
@@ -13,13 +13,13 @@ import type { SmartTags, ShapeKind } from "./smart-tags.js"
  */
 export interface DomainBaseTypeInfo {
   /** Base type name (e.g., "citext" for a domain over citext) */
-  readonly typeName: string
+  readonly typeName: string;
   /** Base type OID (for OID-based type mapping) */
-  readonly typeOid: number
+  readonly typeOid: number;
   /** Base type namespace OID (for extension lookup) */
-  readonly namespaceOid: string
+  readonly namespaceOid: string;
   /** Base type category (e.g., 'S' for string) */
-  readonly category: string
+  readonly category: string;
 }
 
 /**
@@ -27,42 +27,42 @@ export interface DomainBaseTypeInfo {
  */
 export interface Field {
   /** Inflected field name (camelCase) */
-  readonly name: string
+  readonly name: string;
   /** Original PostgreSQL column name */
-  readonly columnName: string
+  readonly columnName: string;
   /** Raw attribute from pg-introspection */
-  readonly pgAttribute: PgAttribute
+  readonly pgAttribute: PgAttribute;
 
   // Semantic properties (derived from pgAttribute for convenience)
   /** Can be NULL at runtime */
-  readonly nullable: boolean
+  readonly nullable: boolean;
   /** Optional in this shape (e.g., has default for insert) */
-  readonly optional: boolean
+  readonly optional: boolean;
   /** Has DEFAULT or is GENERATED */
-  readonly hasDefault: boolean
+  readonly hasDefault: boolean;
   /** GENERATED ALWAYS column */
-  readonly isGenerated: boolean
+  readonly isGenerated: boolean;
   /** IDENTITY column */
-  readonly isIdentity: boolean
+  readonly isIdentity: boolean;
 
   // Array handling
   /** PostgreSQL array type */
-  readonly isArray: boolean
+  readonly isArray: boolean;
   /** For arrays, the element type name */
-  readonly elementTypeName?: string
+  readonly elementTypeName?: string;
 
   // Domain type handling
   /** If the column type is a domain, info about the underlying base type */
-  readonly domainBaseType?: DomainBaseTypeInfo
+  readonly domainBaseType?: DomainBaseTypeInfo;
 
   /** Smart tags from comment */
-  readonly tags: SmartTags
+  readonly tags: SmartTags;
 
   /** Plugin-attached data (extensible, keyed by plugin name) */
-  readonly extensions: ReadonlyMap<string, unknown>
+  readonly extensions: ReadonlyMap<string, unknown>;
 
   /** Permissions for the connected role */
-  readonly permissions: FieldPermissions
+  readonly permissions: FieldPermissions;
 }
 
 /**
@@ -71,11 +71,11 @@ export interface Field {
  */
 export interface Shape {
   /** e.g., "UserRow", "UserInsert" */
-  readonly name: string
+  readonly name: string;
   /** The kind of shape */
-  readonly kind: ShapeKind
+  readonly kind: ShapeKind;
   /** Fields in this shape */
-  readonly fields: readonly Field[]
+  readonly fields: readonly Field[];
 }
 
 /**
@@ -84,20 +84,20 @@ export interface Shape {
  */
 export interface Relation {
   /** Relationship kind */
-  readonly kind: "hasMany" | "hasOne" | "belongsTo"
+  readonly kind: "hasMany" | "hasOne" | "belongsTo";
   /** Target entity name (not table name) */
-  readonly targetEntity: string
+  readonly targetEntity: string;
   /** Original FK constraint name */
-  readonly constraintName: string
+  readonly constraintName: string;
 
   /** Column mappings (supports composite FKs) */
   readonly columns: readonly {
-    readonly local: string
-    readonly foreign: string
-  }[]
+    readonly local: string;
+    readonly foreign: string;
+  }[];
 
   /** Smart tags from constraint comment */
-  readonly tags: SmartTags
+  readonly tags: SmartTags;
 }
 
 /**
@@ -105,45 +105,57 @@ export interface Relation {
  */
 export interface PrimaryKey {
   /** Column names in the primary key */
-  readonly columns: readonly string[]
+  readonly columns: readonly string[];
   /** True if from @primaryKey tag, false if real PK constraint */
-  readonly isVirtual: boolean
+  readonly isVirtual: boolean;
 }
 
 /**
  * Index method types
  */
-export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist"
+export type IndexMethod = "btree" | "gin" | "gist" | "hash" | "brin" | "spgist";
 
 /**
  * Function volatility classification - affects query optimization and caching
  */
-export type Volatility = "immutable" | "stable" | "volatile"
+export type Volatility = "immutable" | "stable" | "volatile";
+
+/**
+ * Per-column sort options for an index
+ */
+export interface IndexSortOption {
+  /** True if this column is sorted descending */
+  readonly desc: boolean;
+  /** True if nulls sort first */
+  readonly nullsFirst: boolean;
+}
 
 /**
  * Information about a database index
  */
 export interface IndexDef {
   /** PostgreSQL index name */
-  readonly name: string
+  readonly name: string;
   /** Inflected column names (camelCase) */
-  readonly columns: readonly string[]
+  readonly columns: readonly string[];
   /** Original PostgreSQL column names */
-  readonly columnNames: readonly string[]
+  readonly columnNames: readonly string[];
   /** True if this is a unique index */
-  readonly isUnique: boolean
+  readonly isUnique: boolean;
   /** True if this is a primary key index */
-  readonly isPrimary: boolean
+  readonly isPrimary: boolean;
   /** True if this is a partial index (has WHERE clause) */
-  readonly isPartial: boolean
+  readonly isPartial: boolean;
   /** WHERE clause for partial indexes (raw SQL) */
-  readonly predicate?: string
+  readonly predicate?: string;
   /** Index method (btree, gin, gist, hash, brin, spgist) */
-  readonly method: IndexMethod
+  readonly method: IndexMethod;
   /** True if any "column" is actually an expression (not a real column) */
-  readonly hasExpressions: boolean
+  readonly hasExpressions: boolean;
   /** Operator class names for each indexed column (e.g., "gin_trgm_ops", "tsvector_ops") */
-  readonly opclassNames: readonly string[]
+  readonly opclassNames: readonly string[];
+  /** Per-column sort options (parallel to columns array) */
+  readonly sortOptions: readonly IndexSortOption[];
 }
 
 /**
@@ -151,11 +163,11 @@ export interface IndexDef {
  */
 export interface FieldPermissions {
   /** Column can be selected */
-  readonly canSelect: boolean
+  readonly canSelect: boolean;
   /** Column can be used in INSERT */
-  readonly canInsert: boolean
+  readonly canInsert: boolean;
   /** Column can be used in UPDATE */
-  readonly canUpdate: boolean
+  readonly canUpdate: boolean;
 }
 
 /**
@@ -163,13 +175,13 @@ export interface FieldPermissions {
  */
 export interface EntityPermissions {
   /** Table can be selected from */
-  readonly canSelect: boolean
+  readonly canSelect: boolean;
   /** Rows can be inserted */
-  readonly canInsert: boolean
+  readonly canInsert: boolean;
   /** Rows can be updated */
-  readonly canUpdate: boolean
+  readonly canUpdate: boolean;
   /** Rows can be deleted */
-  readonly canDelete: boolean
+  readonly canDelete: boolean;
 }
 
 // ============================================================================
@@ -179,7 +191,7 @@ export interface EntityPermissions {
 /**
  * All possible entity kinds
  */
-export type EntityKind = "table" | "view" | "enum" | "domain" | "composite" | "function"
+export type EntityKind = "table" | "view" | "enum" | "domain" | "composite" | "function";
 
 // ============================================================================
 // Entity Base (shared fields)
@@ -190,13 +202,13 @@ export type EntityKind = "table" | "view" | "enum" | "domain" | "composite" | "f
  */
 interface EntityBase {
   /** Inflected entity name (PascalCase) */
-  readonly name: string
+  readonly name: string;
   /** Original PostgreSQL object name (table, view, or type name) */
-  readonly pgName: string
+  readonly pgName: string;
   /** PostgreSQL schema name */
-  readonly schemaName: string
+  readonly schemaName: string;
   /** Smart tags from comment */
-  readonly tags: SmartTags
+  readonly tags: SmartTags;
 }
 
 // ============================================================================
@@ -208,31 +220,31 @@ interface EntityBase {
  */
 export interface TableEntity extends EntityBase {
   /** Entity kind discriminator */
-  readonly kind: "table" | "view"
+  readonly kind: "table" | "view";
   /** Raw class from pg-introspection */
-  readonly pgClass: PgClass
+  readonly pgClass: PgClass;
 
   /** Primary key (may be undefined for views without @primaryKey) */
-  readonly primaryKey?: PrimaryKey
+  readonly primaryKey?: PrimaryKey;
 
   /** Indexes on this entity */
-  readonly indexes: readonly IndexDef[]
+  readonly indexes: readonly IndexDef[];
 
   /** Shapes for this entity */
   readonly shapes: {
     /** Base shape (row) - always present */
-    readonly row: Shape
+    readonly row: Shape;
     /** Insert shape - only if different from base */
-    readonly insert?: Shape
+    readonly insert?: Shape;
     /** Update shape - only if different from insert (or base) */
-    readonly update?: Shape
-  }
+    readonly update?: Shape;
+  };
 
   /** Relations to other entities */
-  readonly relations: readonly Relation[]
+  readonly relations: readonly Relation[];
 
   /** Permissions for the connected role */
-  readonly permissions: EntityPermissions
+  readonly permissions: EntityPermissions;
 }
 
 // ============================================================================
@@ -244,11 +256,11 @@ export interface TableEntity extends EntityBase {
  */
 export interface EnumEntity extends EntityBase {
   /** Entity kind discriminator */
-  readonly kind: "enum"
+  readonly kind: "enum";
   /** Raw type from pg-introspection */
-  readonly pgType: PgType
+  readonly pgType: PgType;
   /** Enum values in order */
-  readonly values: readonly string[]
+  readonly values: readonly string[];
 }
 
 // ============================================================================
@@ -260,9 +272,9 @@ export interface EnumEntity extends EntityBase {
  */
 export interface DomainConstraint {
   /** Constraint name */
-  readonly name: string
+  readonly name: string;
   /** Raw constraint expression (from pg_constraint.conbin decompiled) */
-  readonly expression?: string
+  readonly expression?: string;
 }
 
 /**
@@ -270,17 +282,17 @@ export interface DomainConstraint {
  */
 export interface DomainEntity extends EntityBase {
   /** Entity kind discriminator */
-  readonly kind: "domain"
+  readonly kind: "domain";
   /** Raw type from pg-introspection */
-  readonly pgType: PgType
+  readonly pgType: PgType;
   /** Name of the underlying base type (e.g., "citext", "text") */
-  readonly baseTypeName: string
+  readonly baseTypeName: string;
   /** OID of the base type (for type mapping) */
-  readonly baseTypeOid: number
+  readonly baseTypeOid: number;
   /** Whether the domain has a NOT NULL constraint */
-  readonly notNull: boolean
+  readonly notNull: boolean;
   /** Domain CHECK constraints */
-  readonly constraints: readonly DomainConstraint[]
+  readonly constraints: readonly DomainConstraint[];
 }
 
 // ============================================================================
@@ -289,29 +301,27 @@ export interface DomainEntity extends EntityBase {
 
 /**
  * A composite entity - represents a user-defined PostgreSQL composite type
- * 
+ *
  * Note: Table row types (auto-generated composites with typrelid != 0) are NOT included.
  * Only explicitly created composite types are represented here.
  */
 export interface CompositeEntity extends EntityBase {
   /** Entity kind discriminator */
-  readonly kind: "composite"
+  readonly kind: "composite";
   /** Raw type from pg-introspection */
-  readonly pgType: PgType
+  readonly pgType: PgType;
   /** Fields in the composite type (reuses Field interface) */
-  readonly fields: readonly Field[]
+  readonly fields: readonly Field[];
 }
-
-
 
 // ============================================================================
 // Function Entity
 // ============================================================================
 
 export interface FunctionArg {
-  readonly name: string
-  readonly typeName: string
-  readonly hasDefault: boolean
+  readonly name: string;
+  readonly typeName: string;
+  readonly hasDefault: boolean;
 }
 
 /**
@@ -322,25 +332,25 @@ export interface FunctionArg {
  */
 export interface FunctionEntity extends EntityBase {
   /** Entity kind discriminator */
-  readonly kind: "function"
+  readonly kind: "function";
   /** Raw proc from pg-introspection */
-  readonly pgProc: PgProc
+  readonly pgProc: PgProc;
   /** Return type name (e.g., "text", "pg_catalog.int4") */
-  readonly returnTypeName: string
+  readonly returnTypeName: string;
   /** True if function returns SETOF */
-  readonly returnsSet: boolean
+  readonly returnsSet: boolean;
   /** Number of arguments (for overload disambiguation) */
-  readonly argCount: number
+  readonly argCount: number;
   /** Function arguments */
-  readonly args: readonly FunctionArg[]
+  readonly args: readonly FunctionArg[];
   /** Volatility classification */
-  readonly volatility: Volatility
+  readonly volatility: Volatility;
   /** True if function is STRICT (NULL input = NULL output) */
-  readonly isStrict: boolean
+  readonly isStrict: boolean;
   /** Whether the current role can execute this function */
-  readonly canExecute: boolean
+  readonly canExecute: boolean;
   /** True if function belongs to an installed extension */
-  readonly isFromExtension: boolean
+  readonly isFromExtension: boolean;
 }
 
 // ============================================================================
@@ -349,7 +359,7 @@ export interface FunctionEntity extends EntityBase {
 
 /**
  * An entity represents a table, view, enum, domain, or composite type in the database.
- * 
+ *
  * Use the `kind` discriminator to narrow the type:
  * ```typescript
  * if (entity.kind === "enum") {
@@ -363,7 +373,7 @@ export interface FunctionEntity extends EntityBase {
  * }
  * ```
  */
-export type Entity = TableEntity | EnumEntity | DomainEntity | CompositeEntity | FunctionEntity
+export type Entity = TableEntity | EnumEntity | DomainEntity | CompositeEntity | FunctionEntity;
 
 // ============================================================================
 // Type Guards
@@ -373,38 +383,36 @@ export type Entity = TableEntity | EnumEntity | DomainEntity | CompositeEntity |
  * Check if an entity is a table or view (has shapes, relations, etc.)
  */
 export function isTableEntity(entity: Entity): entity is TableEntity {
-  return entity.kind === "table" || entity.kind === "view"
+  return entity.kind === "table" || entity.kind === "view";
 }
 
 /**
  * Check if an entity is an enum (has values)
  */
 export function isEnumEntity(entity: Entity): entity is EnumEntity {
-  return entity.kind === "enum"
+  return entity.kind === "enum";
 }
 
 /**
  * Check if an entity is a domain (has baseTypeName, constraints)
  */
 export function isDomainEntity(entity: Entity): entity is DomainEntity {
-  return entity.kind === "domain"
+  return entity.kind === "domain";
 }
 
 /**
  * Check if an entity is a composite type (has fields)
  */
 export function isCompositeEntity(entity: Entity): entity is CompositeEntity {
-  return entity.kind === "composite"
+  return entity.kind === "composite";
 }
 
 /**
  * Check if an entity is a function (has args, volatility, etc.)
  */
 export function isFunctionEntity(entity: Entity): entity is FunctionEntity {
-  return entity.kind === "function"
+  return entity.kind === "function";
 }
-
-
 
 // ============================================================================
 // Other Types
@@ -414,18 +422,18 @@ export function isFunctionEntity(entity: Entity): entity is FunctionEntity {
  * Capability key - colon-separated hierarchical namespace
  * e.g., "types", "schemas", "schemas:zod", "queries:crud"
  */
-export type CapabilityKey = string
+export type CapabilityKey = string;
 
 /**
  * Artifact - plugin output stored in IR for downstream plugins
  */
 export interface Artifact {
   /** Capability this artifact provides */
-  readonly capability: CapabilityKey
+  readonly capability: CapabilityKey;
   /** Plugin that created this artifact */
-  readonly plugin: string
+  readonly plugin: string;
   /** Plugin-specific data */
-  readonly data: unknown
+  readonly data: unknown;
 }
 
 /**
@@ -433,11 +441,11 @@ export interface Artifact {
  */
 export interface ExtensionInfo {
   /** Extension name (e.g., "citext", "postgis") */
-  readonly name: string
+  readonly name: string;
   /** Namespace OID where extension objects are installed */
-  readonly namespaceOid: string
+  readonly namespaceOid: string;
   /** Extension version */
-  readonly version: string | null
+  readonly version: string | null;
 }
 
 /**
@@ -445,28 +453,28 @@ export interface ExtensionInfo {
  */
 export interface SemanticIR {
   /** All entities (tables, views, enums) keyed by name */
-  readonly entities: ReadonlyMap<string, Entity>
+  readonly entities: ReadonlyMap<string, Entity>;
   /** Artifacts from plugins, keyed by capability */
-  readonly artifacts: ReadonlyMap<CapabilityKey, Artifact>
+  readonly artifacts: ReadonlyMap<CapabilityKey, Artifact>;
   /** Installed PostgreSQL extensions */
-  readonly extensions: readonly ExtensionInfo[]
+  readonly extensions: readonly ExtensionInfo[];
 
   // Metadata
   /** When introspection was performed */
-  readonly introspectedAt: Date
+  readonly introspectedAt: Date;
   /** PostgreSQL schemas that were introspected */
-  readonly schemas: readonly string[]
+  readonly schemas: readonly string[];
 }
 
 /**
  * Mutable builder for SemanticIR - used during IR construction
  */
 export interface SemanticIRBuilder {
-  entities: Map<string, Entity>
-  artifacts: Map<CapabilityKey, Artifact>
-  extensions: ExtensionInfo[]
-  introspectedAt: Date
-  schemas: string[]
+  entities: Map<string, Entity>;
+  artifacts: Map<CapabilityKey, Artifact>;
+  extensions: ExtensionInfo[];
+  introspectedAt: Date;
+  schemas: string[];
 }
 
 /**
@@ -479,7 +487,7 @@ export function createIRBuilder(schemas: readonly string[]): SemanticIRBuilder {
     extensions: [],
     introspectedAt: new Date(),
     schemas: [...schemas],
-  }
+  };
 }
 
 /**
@@ -492,7 +500,7 @@ export function freezeIR(builder: SemanticIRBuilder): SemanticIR {
     extensions: [...builder.extensions],
     introspectedAt: builder.introspectedAt,
     schemas: [...builder.schemas],
-  }
+  };
 }
 
 // ============================================================================
@@ -503,35 +511,35 @@ export function freezeIR(builder: SemanticIRBuilder): SemanticIR {
  * Get all table/view entities from the IR
  */
 export function getTableEntities(ir: SemanticIR): TableEntity[] {
-  return [...ir.entities.values()].filter(isTableEntity)
+  return [...ir.entities.values()].filter(isTableEntity);
 }
 
 /**
  * Get all enum entities from the IR
  */
 export function getEnumEntities(ir: SemanticIR): EnumEntity[] {
-  return [...ir.entities.values()].filter(isEnumEntity)
+  return [...ir.entities.values()].filter(isEnumEntity);
 }
 
 /**
  * Get all domain entities from the IR
  */
 export function getDomainEntities(ir: SemanticIR): DomainEntity[] {
-  return [...ir.entities.values()].filter(isDomainEntity)
+  return [...ir.entities.values()].filter(isDomainEntity);
 }
 
 /**
  * Get all composite entities from the IR
  */
 export function getCompositeEntities(ir: SemanticIR): CompositeEntity[] {
-  return [...ir.entities.values()].filter(isCompositeEntity)
+  return [...ir.entities.values()].filter(isCompositeEntity);
 }
 
 /**
  * Get all function entities from the IR
  */
 export function getFunctionEntities(ir: SemanticIR): FunctionEntity[] {
-  return [...ir.entities.values()].filter(isFunctionEntity)
+  return [...ir.entities.values()].filter(isFunctionEntity);
 }
 
 // ============================================================================
@@ -540,34 +548,34 @@ export function getFunctionEntities(ir: SemanticIR): FunctionEntity[] {
 
 /**
  * A reversed relation - represents the "other side" of a belongsTo FK.
- * 
+ *
  * If orders.user_id → users.id creates a "orders belongsTo users" relation,
  * the reverse is "users hasMany orders".
  */
 export interface ReverseRelation {
   /** The kind of reverse relationship */
-  readonly kind: "hasMany" | "hasOne"
+  readonly kind: "hasMany" | "hasOne";
   /** Entity name that has the FK (the "child" table) */
-  readonly sourceEntity: string
+  readonly sourceEntity: string;
   /** Original constraint name */
-  readonly constraintName: string
+  readonly constraintName: string;
   /** Column mappings (same as original, but semantically reversed) */
   readonly columns: readonly {
     /** Column on the target (this) entity - the referenced column */
-    readonly local: string
+    readonly local: string;
     /** Column on the source entity - the FK column */
-    readonly foreign: string
-  }[]
+    readonly foreign: string;
+  }[];
   /** Original relation this was derived from */
-  readonly originalRelation: Relation
+  readonly originalRelation: Relation;
 }
 
 /**
  * Get all reverse relations pointing TO this entity.
- * 
+ *
  * Scans all entities for belongsTo relations targeting the given entity
  * and returns them as hasMany relations.
- * 
+ *
  * @example
  * ```typescript
  * // If orders.user_id → users.id exists as "orders belongsTo users"
@@ -577,12 +585,12 @@ export interface ReverseRelation {
  */
 export function getReverseRelations(
   ir: SemanticIR,
-  entityName: string
+  entityName: string,
 ): readonly ReverseRelation[] {
-  const results: ReverseRelation[] = []
+  const results: ReverseRelation[] = [];
 
   for (const entity of ir.entities.values()) {
-    if (!isTableEntity(entity)) continue
+    if (!isTableEntity(entity)) continue;
 
     for (const relation of entity.relations) {
       if (relation.targetEntity === entityName && relation.kind === "belongsTo") {
@@ -593,41 +601,102 @@ export function getReverseRelations(
           sourceEntity: entity.name,
           constraintName: relation.constraintName,
           // Swap local/foreign perspective
-          columns: relation.columns.map((col) => ({
-            local: col.foreign,   // Referenced column becomes "local"
-            foreign: col.local,   // FK column becomes "foreign"
+          columns: relation.columns.map(col => ({
+            local: col.foreign, // Referenced column becomes "local"
+            foreign: col.local, // FK column becomes "foreign"
           })),
           originalRelation: relation,
-        })
+        });
       }
     }
   }
 
-  return results
+  return results;
 }
 
 /**
  * Get all relations for an entity in both directions.
- * 
+ *
  * Combines the entity's direct relations (belongsTo) with reverse relations
  * (hasMany) from other entities pointing to this one.
  */
 export interface AllRelations {
   /** Direct relations from this entity (belongsTo) */
-  readonly belongsTo: readonly Relation[]
+  readonly belongsTo: readonly Relation[];
   /** Reverse relations to this entity (hasMany) */
-  readonly hasMany: readonly ReverseRelation[]
+  readonly hasMany: readonly ReverseRelation[];
 }
 
-export function getAllRelations(
-  ir: SemanticIR,
-  entityName: string
-): AllRelations | undefined {
-  const entity = ir.entities.get(entityName)
-  if (!entity || !isTableEntity(entity)) return undefined
+export function getAllRelations(ir: SemanticIR, entityName: string): AllRelations | undefined {
+  const entity = ir.entities.get(entityName);
+  if (!entity || !isTableEntity(entity)) return undefined;
 
   return {
-    belongsTo: entity.relations.filter((r) => r.kind === "belongsTo"),
+    belongsTo: entity.relations.filter(r => r.kind === "belongsTo"),
     hasMany: getReverseRelations(ir, entityName),
+  };
+}
+
+/**
+ * A cursor pagination candidate - an index suitable for cursor-based pagination
+ */
+export interface CursorPaginationCandidate {
+  /** The timestamptz column to paginate by (inflected name) */
+  readonly cursorColumn: string;
+  /** Original timestamptz column name (snake_case) */
+  readonly cursorColumnName: string;
+  /** Sort direction from the index (true = DESC) */
+  readonly desc: boolean;
+  /** Primary key column for tiebreaker (inflected name) */
+  readonly pkColumn: string;
+  /** Original PK column name */
+  readonly pkColumnName: string;
+}
+
+/**
+ * Get cursor pagination candidates for a table entity.
+ *
+ * Returns indexes that are suitable for cursor-based pagination:
+ * - btree method
+ * - NOT partial (no WHERE clause)
+ * - NOT expression-based (only real columns)
+ * - First column is timestamptz type
+ * - Entity has canSelect permission
+ * - Entity has a single-column primary key (for tiebreaker)
+ */
+export function getCursorPaginationCandidates(entity: TableEntity): readonly CursorPaginationCandidate[] {
+  const candidates: CursorPaginationCandidate[] = [];
+
+  if (!entity.permissions.canSelect) return candidates;
+
+  const pk = entity.primaryKey;
+  if (!pk || pk.columns.length !== 1) return candidates;
+
+  const pkColumnName = pk.columns[0];
+  const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumnName);
+  if (!pkField) return candidates;
+
+  for (const index of entity.indexes) {
+    if (index.method !== "btree") continue;
+    if (index.isPartial) continue;
+    if (index.hasExpressions) continue;
+    if (index.columns.length === 0) continue;
+
+    const firstColumnName = index.columnNames[0];
+    const firstField = entity.shapes.row.fields.find(f => f.columnName === firstColumnName);
+    if (!firstField) continue;
+
+    const pgType = firstField.pgAttribute.getType();
+    if (!pgType || pgType.typname !== "timestamptz") continue;
+
+    candidates.push({
+      cursorColumn: firstField.name,
+      cursorColumnName: firstField.columnName,
+      desc: index.sortOptions[0]?.desc ?? false,
+      pkColumn: pkField.name,
+      pkColumnName: pkField.columnName,
+    });
   }
+
+  return candidates;
 }

@@ -6,8 +6,11 @@
  */
 import { Context, Effect, Layer, Schema as S, ParseResult, pipe } from "effect";
 import { lilconfig } from "lilconfig";
+import path from "node:path";
 import { Config, type ConfigInput, type ResolvedConfig } from "../config.js";
+import type { Plugin } from "../runtime/types.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
+
 
 /**
  * Config Loader service interface
@@ -61,11 +64,14 @@ function createLilconfig() {
 }
 
 /**
- * Format Schema decode errors into readable strings
+ * Format Schema decode errors into readable strings using ArrayFormatter
  */
 function formatSchemaErrors(error: ParseResult.ParseError): readonly string[] {
-  // Use the error message which is already formatted
-  return [error.message];
+  const issues = ParseResult.ArrayFormatter.formatErrorSync(error);
+  return issues.map((issue: ParseResult.ArrayFormatterIssue) => {
+    const path = issue.path.join(".");
+    return path ? `${path}: ${issue.message}` : issue.message;
+  });
 }
 
 /**
@@ -107,6 +113,7 @@ export function createConfigLoader(): ConfigLoader {
         }
 
         const filepath = result.filepath;
+        const configDir = path.dirname(filepath);
 
         // Validate with Effect Schema
         const parseResult = yield* pipe(
@@ -121,7 +128,10 @@ export function createConfigLoader(): ConfigLoader {
           ),
         );
 
-        // Return resolved config
+        // Return resolved config with plugins flattened
+        // parseResult.plugins may contain Plugin | Plugin[] entries
+        const flatPlugins = (parseResult.plugins as (Plugin | Plugin[])[]).flat() as Plugin[];
+        
         const resolved: ResolvedConfig = {
           connectionString: parseResult.connectionString,
           schemas: parseResult.schemas,
@@ -130,8 +140,10 @@ export function createConfigLoader(): ConfigLoader {
           typeHints: parseResult.typeHints,
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- inflection is S.Any in schema, validated by plugin system
           inflection: parseResult.inflection,
-          plugins: parseResult.plugins,
+          plugins: flatPlugins,
           formatter: parseResult.formatter,
+          defaultFile: parseResult.defaultFile,
+          configDir,
         };
 
         return resolved;

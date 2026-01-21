@@ -1,7 +1,7 @@
 import postgres from "postgres";
 import pg from "pg";
 import { Kysely, PostgresDialect } from "kysely";
-import type { DB } from "./generated/db/DB.js";
+import type { DB } from "./generated/DB.js";
 
 export const sql = postgres(process.env.DATABASE_URL!);
 
