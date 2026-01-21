@@ -1112,6 +1112,54 @@ const param = {
 } as const;
 
 // =============================================================================
+// Import Statement Helpers (conjure.import.*)
+// =============================================================================
+
+/**
+ * Import statement builders for generating import declarations.
+ */
+const importHelpers = {
+  /**
+   * Named imports: `import { a, b, c } from "source"`
+   * Also supports renaming: `import { a as b } from "source"`
+   */
+  named: (
+    source: string,
+    ...names: (string | { imported: string; local: string })[]
+  ): n.ImportDeclaration => {
+    const specifiers = names.map(n => {
+      if (typeof n === "string") {
+        return b.importSpecifier(b.identifier(n), b.identifier(n));
+      } else {
+        return b.importSpecifier(b.identifier(n.imported), b.identifier(n.local));
+      }
+    });
+    return b.importDeclaration(specifiers, b.stringLiteral(source));
+  },
+
+  /**
+   * Default import: `import name from "source"`
+   */
+  default: (source: string, name: string): n.ImportDeclaration => {
+    return b.importDeclaration([b.importDefaultSpecifier(b.identifier(name))], b.stringLiteral(source));
+  },
+
+  /**
+   * Namespace import: `import * as name from "source"`
+   */
+  namespace: (source: string, name: string): n.ImportDeclaration => {
+    return b.importDeclaration([b.importNamespaceSpecifier(b.identifier(name))], b.stringLiteral(source));
+  },
+
+  /**
+   * Side-effect import: `import "source"`
+   */
+  sideEffect: (source: string): n.ImportDeclaration => {
+    return b.importDeclaration([], b.stringLiteral(source));
+  },
+} as const;
+
+// =============================================================================
 // Export Statement Helpers (conjure.export.*)
 // =============================================================================
 
@@ -1495,6 +1543,9 @@ export const conjure = {
   // === Statements ===
   stmt,
 
+  // === Import statements ===
+  import: importHelpers,
+
   // === Export statements ===
   export: exportHelpers,
 
@@ -1526,6 +1577,9 @@ export const conjure = {
 
   /** Await expression */
   await: (expr: n.Expression) => b.awaitExpression(toExpr(expr)),
+
+  /** Non-null assertion: `expr!` */
+  nonNull: (expr: n.Expression) => b.tsNonNullExpression(toExpr(expr)),
 
   /** Spread expression (for use in arrays/calls) */
   spread: (expr: n.Expression) => b.spreadElement(toExpr(expr)),

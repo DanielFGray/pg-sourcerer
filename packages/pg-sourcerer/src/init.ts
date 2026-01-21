@@ -7,21 +7,35 @@ import { Prompt } from "@effect/cli";
 import { FileSystem, Terminal } from "@effect/platform";
 import { Array, Console, Effect, HashMap, HashSet, Option, pipe } from "effect";
 import postgres from "postgres";
-import recast from "recast";
 import type { Introspection } from "@danielfgray/pg-introspection";
 import { introspectDatabase } from "./services/introspection.js";
 import { ConfigFromFile, FileConfigProvider } from "./services/config.js";
+import { conjure } from "./conjure/index.js";
 
 interface PluginInfo {
   readonly value: string;
   readonly importName: string;
 }
 
+/** Maps plugin selection values to their import names from pg-sourcerer */
 const pluginImportNames: Record<string, string> = {
-  types: "types",
+  // Type generators
+  types: "typesPlugin",
   zod: "zod",
-  "kysely-queries": "kyselyQueriesPlugin",
-  "http-elysia": "elysiaHttp",
+  arktype: "arktype",
+  effect: "effect",
+  valibot: "valibot",
+  // Kysely
+  "kysely-types": "kysely",
+  "kysely-queries": "kysely",
+  // SQL queries
+  "sql-queries": "sqlQueries",
+  // HTTP frameworks
+  "http-elysia": "elysia",
+  "http-express": "express",
+  "http-hono": "hono",
+  "http-trpc": "trpc",
+  "http-orpc": "orpc",
 };
 
 const getPluginInfo = (value: string): PluginInfo | undefined => {
@@ -272,13 +286,20 @@ const makePluginsPrompt = () =>
 
       const hasQueries = kyselyPlugins.includes("kysely-queries");
       if (hasQueries) {
-        const httpPlugins = yield* Prompt.multiSelect({
+        const httpPlugin = yield* Prompt.select({
           message: "HTTP/RPC framework (optional, requires query plugin)",
           choices: [
-            { title: "Elysia routes", value: "http-elysia", selected: false },
+            { title: "None", value: "" },
+            { title: "Elysia routes", value: "http-elysia" },
+            { title: "Express routes", value: "http-express" },
+            { title: "Hono routes", value: "http-hono" },
+            { title: "tRPC router", value: "http-trpc" },
+            { title: "oRPC router", value: "http-orpc" },
           ],
         });
-        return [...kyselyPlugins, ...httpPlugins] as readonly string[];
+        return httpPlugin
+          ? ([...kyselyPlugins, httpPlugin] as readonly string[])
+          : kyselyPlugins;
       }
       return kyselyPlugins;
     }
@@ -313,13 +334,20 @@ const makePluginsPrompt = () =>
     });
 
     if (queryPlugins.length > 0) {
-      const httpPlugins = yield* Prompt.multiSelect({
+      const httpPlugin = yield* Prompt.select({
         message: "HTTP/RPC framework (optional)",
         choices: [
-          { title: "Elysia routes", value: "http-elysia", selected: false },
+          { title: "None", value: "" },
+          { title: "Elysia routes", value: "http-elysia" },
+          { title: "Express routes", value: "http-express" },
+          { title: "Hono routes", value: "http-hono" },
+          { title: "tRPC router", value: "http-trpc" },
+          { title: "oRPC router", value: "http-orpc" },
         ],
       });
-      return [typePlugin, ...queryPlugins, ...httpPlugins] as readonly string[];
+      return httpPlugin
+        ? ([typePlugin, ...queryPlugins, httpPlugin] as readonly string[])
+        : ([typePlugin, ...queryPlugins] as readonly string[]);
     }
 
     return [typePlugin, ...queryPlugins] as readonly string[];
@@ -360,6 +388,7 @@ interface InitAnswers {
 }
 
 const generateConfigContent = (answers: InitAnswers): string => {
+  // Get unique plugin imports (dedupe e.g., kysely-types + kysely-queries -> single kysely import)
   const selectedPlugins = pipe(
     answers.plugins,
     Array.filterMap((value) => {
@@ -368,39 +397,68 @@ const generateConfigContent = (answers: InitAnswers): string => {
     }),
   );
 
-  const allImports = ["defineConfig", ...selectedPlugins.map((p) => p.importName)];
+  // Deduplicate by import name (keep first occurrence)
+  const uniqueImports = pipe(
+    selectedPlugins,
+    Array.dedupeWith((a, b) => a.importName === b.importName),
+  );
 
-  const importDecl = `import { ${allImports.join(", ")} } from "@danielfgray/pg-sourcerer";`;
+  const allImportNames = ["defineConfig", ...uniqueImports.map((p) => p.importName)];
 
-  let configObj = `{\n  connectionString: `;
+  // Build import declaration: import { defineConfig, plugin1, plugin2 } from "@danielfgray/pg-sourcerer"
+  const importDecl = conjure.import.named("@danielfgray/pg-sourcerer", ...allImportNames);
 
+  // Build config object
+  let configObj = conjure.obj();
+
+  // connectionString - either env ref or literal
   if (answers.isEnvRef) {
     const envKey = answers.connectionConfigValue.replace("process.env.", "");
-    configObj += `process.env.${envKey}!,\n`;
+    // process.env.VAR!
+    configObj = configObj.prop(
+      "connectionString",
+      conjure.nonNull(conjure.id("process").prop("env").prop(envKey).build())
+    );
   } else {
-    configObj += `"${answers.connectionConfigValue}",\n`;
+    configObj = configObj.prop("connectionString", conjure.str(answers.connectionConfigValue));
   }
 
+  // role (optional)
   if (answers.role) {
-    configObj += `  role: "${answers.role}",\n`;
+    configObj = configObj.prop("role", conjure.str(answers.role));
   }
 
+  // schemas (only if not default ["public"])
   if (answers.schemas.length !== 1 || answers.schemas[0] !== "public") {
-    configObj += `  schemas: [${answers.schemas.map((s) => `"${s}"`).join(", ")}],\n`;
+    configObj = configObj.prop(
+      "schemas",
+      conjure.arr(...answers.schemas.map((s) => conjure.str(s))).build()
+    );
   }
 
+  // outputDir (only if not default)
   if (answers.outputDir !== "src/generated") {
-    configObj += `  outputDir: "${answers.outputDir}",\n`;
+    configObj = configObj.prop("outputDir", conjure.str(answers.outputDir));
   }
 
+  // formatter (optional)
   if (answers.formatter.trim()) {
-    configObj += `  formatter: "${answers.formatter.trim()}",\n`;
+    configObj = configObj.prop("formatter", conjure.str(answers.formatter.trim()));
   }
 
-  const pluginCalls = selectedPlugins.map((p) => `  ${p.importName}()`).join(",\n");
-  configObj += `  plugins: [\n${pluginCalls}\n  ]\n}`;
+  // plugins array: [plugin1(), plugin2(), ...]
+  const pluginCalls = uniqueImports.map((p) =>
+    conjure.id(p.importName).call().build()
+  );
+  configObj = configObj.prop("plugins", conjure.arr(...pluginCalls).build());
 
-  return `${importDecl}\n\nexport default defineConfig(${configObj});\n`;
+  // Build: export default defineConfig({ ... })
+  const defineConfigCall = conjure.id("defineConfig").call([configObj.build()]).build();
+  const exportDefault = conjure.export.default(defineConfigCall);
+
+  // Create program and print
+  const program = conjure.program(importDecl, exportDefault);
+  return conjure.print(program) + "\n";
 };
 
 const CONFIG_FILENAME = "pgsourcerer.config.ts";
