@@ -146,11 +146,16 @@ export function effectModels(): Plugin {
 
       for (const entity of ir.entities.values()) {
         if (isTableEntity(entity)) {
-          const classDecl = buildModelClass(entity, enums, registry);
+          const capability = `effect:model:${entity.name}`;
+
+          // Scope cross-references (enum imports) to this specific capability
+          const classDecl = registry.forSymbol(capability, () =>
+            buildModelClass(entity, enums, registry),
+          );
 
           rendered.push({
             name: entity.name,
-            capability: `effect:model:${entity.name}`,
+            capability,
             node: classDecl,
             exports: "named",
             externalImports: [
