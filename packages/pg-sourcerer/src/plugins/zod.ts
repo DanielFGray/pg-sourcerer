@@ -1,579 +1,541 @@
 /**
- * Zod Plugin - Generate Zod schemas for entities
+ * Zod Plugin - Generates Zod schemas for entities
  *
  * Generates Zod schemas for Row, Insert, Update, and Patch shapes,
- * with inferred TypeScript types.
+ * with optional inferred TypeScript types.
+ *
+ * Capabilities provided:
+ * - `schema:zod:EntityName` for each table entity (Row schema)
+ * - `schema:zod:EntityName:insert` for Insert shape
+ * - `schema:zod:EntityName:update` for Update shape
+ * - `schema:zod:EnumName` for enum entities
  */
-import { Array as Arr, Option, pipe, Schema as S } from "effect";
+import { Effect, Array as Arr, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin, type PluginContext } from "../services/plugin.js";
-import { findEnumByPgName, TsType } from "../services/pg-types.js";
-import type {
-  Field,
-  Shape,
-  ExtensionInfo,
-  TableEntity,
-  EnumEntity,
-  CompositeEntity,
+import type { StatementKind } from "ast-types/lib/gen/kinds.js";
+
+import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
+import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { IR } from "../services/ir.js";
+import {
+  isTableEntity,
+  isEnumEntity,
+  type TableEntity,
+  type Field,
+  type EnumEntity,
 } from "../ir/semantic-ir.js";
-import {
-  SCHEMA_BUILDER_KIND,
-  type SchemaBuilder,
-  type SchemaBuilderRequest,
-  type SchemaBuilderResult,
+import { conjure, cast } from "../conjure/index.js";
+import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
+import type {
+  SchemaBuilder,
+  SchemaBuilderRequest,
+  SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
-import type { QueryMethodParam } from "../ir/extensions/queries.js";
-import { getTableEntities, getEnumEntities, getCompositeEntities } from "../ir/semantic-ir.js";
-import { conjure } from "../lib/conjure.js";
-import type { SymbolStatement } from "../lib/conjure.js";
-import type { ImportRef } from "../services/file-builder.js";
-import {
-  isUuidType,
-  isDateType,
-  isEnumType,
-  getPgTypeName,
-  resolveFieldType,
-} from "../lib/field-utils.js";
-
-const { ts, exp, obj } = conjure;
-
-// ============================================================================
-// Configuration
-// ============================================================================
 
 /**
- * Configuration for the zod provider
+ * Creates a consume callback for Zod schemas.
+ * Generates: `SchemaName.parse(input)`
+ *
+ * @param schemaName - The name of the Zod schema
+ * @returns A function that generates parse AST for an input expression
  */
-export interface ZodConfig {
-  /** Output directory relative to main outputDir */
-  readonly outputDir?: string
-  /** Export inferred types alongside schemas */
-  readonly exportTypes?: boolean
-  /** How to represent enum values: 'strings' uses z.enum([...]), 'enum' uses z.nativeEnum(TsEnum) */
-  readonly enumStyle?: "strings" | "enum"
-  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  readonly typeReferences?: "inline" | "separate"
+function createZodConsumeCallback(schemaName: string): (input: unknown) => n.Expression {
+  return (input: unknown) => {
+    return conjure.id(schemaName).method("parse", [cast.toExpr(input as n.Expression)]).build();
+  };
 }
 
-const ZodConfigSchema = S.Struct({
-  outputDir: S.optionalWith(S.String, { default: () => "zod" }),
-  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), { default: () => "strings" as const }),
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), { default: () => "separate" as const }),
-});
-
-// ============================================================================
-// Types
-// ============================================================================
-
-/** Context for field resolution */
-interface FieldContext {
-  readonly enums: readonly EnumEntity[];
-  readonly extensions: readonly ExtensionInfo[];
-  readonly enumStyle: "strings" | "enum";
-  readonly typeReferences: "inline" | "separate";
-}
-
-// ============================================================================
-// Zod Schema Builders (pure functions)
-// ============================================================================
-
 /**
- * Build z.<method>() and chain additional methods
+ * Zod SchemaBuilder implementation.
+ * Builds Zod schemas for path/query parameters.
  */
-const buildZodChain = (baseMethod: string, chainMethods: readonly string[]): n.Expression =>
-  chainMethods
-    .reduce((chain, method) => chain.method(method), conjure.id("z").method(baseMethod))
-    .build();
-
-/**
- * Build z.enum([...values])
- */
-const buildZodEnum = (values: readonly string[]): n.Expression =>
-  conjure
-    .id("z")
-    .method("enum", [conjure.arr(...values.map(v => conjure.str(v))).build()])
-    .build();
-
-/**
- * Build z.array(<inner>)
- */
-const buildZodArray = (inner: n.Expression): n.Expression =>
-  conjure.id("z").method("array", [inner]).build();
-
-/**
- * Add method calls to an existing expression
- */
-const chainZodMethods = (expr: n.Expression, methods: readonly string[]): n.Expression =>
-  methods.reduce((chain, method) => chain.method(method), conjure.chain(expr)).build();
-
-/**
- * Map TypeScript type to Zod method name
- */
-const tsTypeToZodMethod = (tsType: string): string => {
-  switch (tsType) {
-    case TsType.String:
-      return "string";
-    case TsType.Number:
-      return "number";
-    case TsType.Boolean:
-      return "boolean";
-    case TsType.BigInt:
-      return "bigint";
-    case TsType.Date:
-      return "date";
-    case TsType.Buffer:
-    case TsType.Unknown:
-    default:
-      return "unknown";
-  }
-};
-
-// ============================================================================
-// Field → Zod Schema Resolution
-// ============================================================================
-
-/**
- * Resolve a field to its Zod schema expression.
- *
- * Order of resolution (first match wins):
- * 1. UUID types → z.string().uuid()
- * 2. Date types → z.coerce.date()
- * 3. Enum types → z.enum([...]) or reference
- * 4. Fallback to resolved TypeScript type
- *
- * Then wraps with array/nullable/optional as needed.
- */
-const resolveFieldZodSchema = (field: Field, ctx: FieldContext): n.Expression => {
-  // Get the base schema expression
-  let baseSchema: n.Expression;
-
-  // 1. UUID types get special treatment
-  if (isUuidType(field)) {
-    baseSchema = buildZodChain("string", ["uuid"]);
-  }
-  // 2. Date types use coercion for flexibility
-  else if (isDateType(field)) {
-    baseSchema = conjure.id("z").prop("coerce").method("date").build();
-  }
-  // 3. Enum types
-  else if (isEnumType(field)) {
-    const pgTypeName = getPgTypeName(field);
-    const enumDef = pgTypeName
-      ? pipe(
-          findEnumByPgName(ctx.enums, pgTypeName),
-          Option.getOrUndefined,
-        )
-      : undefined;
-
-    if (enumDef) {
-      if (ctx.typeReferences === "inline") {
-        // Inline the enum values
-        baseSchema = buildZodEnum(enumDef.values);
-      } else {
-        // Reference the separate enum schema
-        baseSchema = conjure.id(enumDef.name).build();
-      }
-    } else {
-      baseSchema = buildZodChain("unknown", []);
-    }
-  }
-  // 4. Fallback to resolved TypeScript type
-  else {
-    const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
-    const zodMethod = tsTypeToZodMethod(resolved.tsType);
-    baseSchema = buildZodChain(zodMethod, []);
-  }
-
-  // Wrap with array if needed
-  if (field.isArray) {
-    baseSchema = buildZodArray(baseSchema);
-  }
-
-  // Collect modifiers to chain
-  const modifiers: string[] = [];
-  if (field.nullable) modifiers.push("nullable");
-  if (field.optional) modifiers.push("optional");
-
-  // Apply modifiers
-  return modifiers.length > 0 ? chainZodMethods(baseSchema, modifiers) : baseSchema;
-};
-
-// ============================================================================
-// Statement Generators
-// ============================================================================
-
-/**
- * Build z.object({...}) expression from shape fields
- */
-const buildShapeZodObject = (shape: Shape, ctx: FieldContext): n.Expression => {
-  const objBuilder = shape.fields.reduce(
-    (builder, field) => builder.prop(field.name, resolveFieldZodSchema(field, ctx)),
-    obj(),
-  );
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
-};
-
-/**
- * Generate schema const + optional inferred type for a shape
- */
-const generateShapeStatements = (
-  shape: Shape,
-  entityName: string,
-  shapeKind: "row" | "insert" | "update" | "patch",
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: entityName, shape: shapeKind };
-  const schemaExpr = buildShapeZodObject(shape, ctx);
-
-  const schemaStatement = exp.const(shape.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type ShapeName = z.infer<typeof ShapeName>
-  // Register under "types" capability so other plugins can import
-  const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(shape.name)]);
-  const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-// ============================================================================
-// Entity → File Generation
-// ============================================================================
-
-type ShapeEntry = readonly ["row" | "insert" | "update", Shape];
-
-/**
- * Collect all defined shapes from an entity as [kind, shape] pairs
- */
-const collectShapes = (entity: TableEntity): readonly ShapeEntry[] =>
-  [
-    ["row", entity.shapes.row] as const,
-    ["insert", entity.shapes.insert] as const,
-    ["update", entity.shapes.update] as const,
-  ].filter((entry): entry is ShapeEntry => entry[1] != null);
-
-/**
- * Generate all statements for an entity's shapes
- */
-const generateEntityStatements = (
-  entity: TableEntity,
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] =>
-  collectShapes(entity).flatMap(([kind, shape]) =>
-    generateShapeStatements(shape, entity.name, kind, ctx, exportTypes),
-  );
-
-// ============================================================================
-// Composite Type Generation
-// ============================================================================
-
-/**
- * Build z.object({...}) expression from composite fields
- */
-const buildCompositeZodObject = (composite: CompositeEntity, ctx: FieldContext): n.Expression => {
-  const objBuilder = composite.fields.reduce(
-    (builder, field) => builder.prop(field.name, resolveFieldZodSchema(field, ctx)),
-    obj(),
-  );
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
-};
-
-/**
- * Generate schema const + optional inferred type for a composite type
- */
-const generateCompositeStatements = (
-  composite: CompositeEntity,
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: composite.name };
-  const schemaExpr = buildCompositeZodObject(composite, ctx);
-
-  const schemaStatement = exp.const(composite.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type CompositeName = z.infer<typeof CompositeName>
-  // Register under "types" capability so other plugins can import
-  const typeSymbolCtx = { capability: "types", entity: composite.name };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(composite.name)]);
-  const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-// ============================================================================
-// Enum Generation
-// ============================================================================
-
-/**
- * Generate enum schema statement: export const EnumName = z.enum(['a', 'b', ...])
- * or for native enums: export enum EnumName { A = 'a', ... } + schema
- */
-const generateEnumStatement = (
-  enumEntity: EnumEntity,
-  enumStyle: "strings" | "enum",
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: enumEntity.name };
-
-  if (enumStyle === "enum") {
-    // Generate: export enum EnumName { A = 'a', B = 'b', ... }
-    // Then: export const EnumNameSchema = z.nativeEnum(EnumName)
-    const enumStatement = exp.tsEnum(
-      enumEntity.name,
-      { capability: "types", entity: enumEntity.name },
-      enumEntity.values,
-    );
-
-    const schemaName = `${enumEntity.name}Schema`;
-    const schemaExpr = conjure
-      .id("z")
-      .method("nativeEnum", [conjure.id(enumEntity.name).build()])
-      .build();
-    const schemaStatement = exp.const(schemaName, schemaSymbolCtx, schemaExpr);
-
-    return [enumStatement, schemaStatement];
-  }
-
-  // strings style: export const EnumName = z.enum(['a', 'b', ...])
-  const schemaExpr = buildZodEnum(enumEntity.values);
-  const schemaStatement = exp.const(enumEntity.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type EnumName = z.infer<typeof EnumName>
-  // Register under "types" capability so other plugins can import
-  const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
-  const inferType = ts.qualifiedRef("z", "infer", [ts.typeof(enumEntity.name)]);
-  const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-/** Collect enum names used by fields */
-const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> => {
-  const enumNames = fields.filter(isEnumType).flatMap(field => {
-    const pgTypeName = getPgTypeName(field);
-    if (!pgTypeName) return [];
-    return pipe(
-      findEnumByPgName(enums, pgTypeName),
-      Option.map(e => e.name),
-      Option.toArray,
-    );
-  });
-  return new Set(enumNames);
-};
-
-/** Build import refs for used enums */
-const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
-  Arr.fromIterable(usedEnums).map(enumName => ({
-    kind: "symbol" as const,
-    ref: { capability: "schemas", entity: enumName },
-  }));
-
-// ============================================================================
-// Schema Builder Service
-// ============================================================================
-
-/**
- * Build Zod schema expression for a single param.
- * Uses z.coerce for numeric types since URL params are always strings.
- */
-const buildParamFieldSchema = (param: QueryMethodParam): n.Expression => {
-  const tsType = param.type.toLowerCase();
-  let fieldSchema: n.Expression;
-
-  switch (tsType) {
-    case "number":
-      // z.coerce.number() - converts string "10" to number 10
-      fieldSchema = conjure.id("z").prop("coerce").method("number").build();
-      break;
-    case "boolean":
-      // z.coerce.boolean() - converts "true"/"false" strings
-      fieldSchema = conjure.id("z").prop("coerce").method("boolean").build();
-      break;
-    case "bigint":
-      // z.coerce.bigint()
-      fieldSchema = conjure.id("z").prop("coerce").method("bigint").build();
-      break;
-    case "date":
-      // z.coerce.date() - converts ISO strings to Date objects
-      fieldSchema = conjure.id("z").prop("coerce").method("date").build();
-      break;
-    case "string":
-    default:
-      // z.string() - no coercion needed
-      fieldSchema = buildZodChain("string", []);
-      break;
-  }
-
-  // Add .optional() for non-required params
-  if (!param.required) {
-    fieldSchema = chainZodMethods(fieldSchema, ["optional"]);
-  }
-
-  return fieldSchema;
-};
-
-/**
- * Build z.object({ ... }) expression from QueryMethodParam[].
- * For path/query parameter validation in HTTP handlers.
- */
-const buildParamZodObject = (params: readonly QueryMethodParam[]): n.Expression => {
-  const objBuilder = params.reduce(
-    (builder, param) => builder.prop(param.name, buildParamFieldSchema(param)),
-    obj(),
-  );
-
-  return conjure.id("z").method("object", [objBuilder.build()]).build();
-};
-
-/**
- * Create a SchemaBuilder implementation for Zod.
- */
-const createZodSchemaBuilder = (): SchemaBuilder => ({
-  build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
+const zodSchemaBuilder: SchemaBuilder = {
+  build(request: SchemaBuilderRequest): SchemaBuilderResult | undefined {
     if (request.params.length === 0) {
       return undefined;
     }
 
-    const ast = buildParamZodObject(request.params);
+    // Build z.object({ field: z.type(), ... })
+    let objBuilder = conjure.obj();
+    for (const param of request.params) {
+      const zodType = paramToZodType(param);
+      objBuilder = objBuilder.prop(param.name, zodType);
+    }
+
+    const ast = conjure.id("z").method("object", [objBuilder.build()]).build();
+
     return {
       ast,
-      importSpec: {
-        names: ["z"],
-        from: "zod",
-      },
+      importSpec: { from: "zod", names: ["z"] },
     };
   },
-});
-
-// ============================================================================
-// Provider Definition
-// ============================================================================
+};
 
 /**
- * Create a zod provider that generates Zod schemas.
- *
- * @example
- * ```typescript
- * import { zod } from "pg-sourcerer"
- *
- * export default defineConfig({
- *   plugins: [
- *     zod(),
- *     zod({ outputDir: "schemas", exportTypes: false }),
- *   ],
- * })
- * ```
+ * Convert a QueryMethodParam to a Zod type expression.
  */
-export function zod(config: ZodConfig = {}): ReturnType<typeof definePlugin> {
-  const parsed = S.decodeUnknownSync(ZodConfigSchema)(config);
+function paramToZodType(param: { type: string; required: boolean }): n.Expression {
+  const baseType = param.type.replace(/\[\]$/, "").replace(/\?$/, "").toLowerCase();
 
-  return definePlugin({
-    name: "zod",
-    kind: "schemas",
-    singleton: true,
+  let zodChain = conjure.id("z");
+  switch (baseType) {
+    case "number":
+    case "int":
+    case "integer":
+    case "float":
+    case "double":
+      zodChain = zodChain.prop("coerce").method("number");
+      break;
+    case "boolean":
+    case "bool":
+      zodChain = zodChain.method("boolean");
+      break;
+    case "date":
+      zodChain = zodChain.prop("coerce").method("date");
+      break;
+    case "string":
+    default:
+      zodChain = zodChain.method("string");
+      break;
+  }
 
-    canProvide: () => true,
+  if (!param.required) {
+    zodChain = zodChain.method("optional");
+  }
 
-    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
-      const { ir, inflection } = ctx;
-      const enumEntities = getEnumEntities(ir);
-
-      // Register schema-builder service for on-demand param/query schema generation
-      ctx.registerHandler(SCHEMA_BUILDER_KIND, createZodSchemaBuilder().build);
-
-      const fieldCtx: FieldContext = {
-        enums: enumEntities,
-        extensions: ir.extensions,
-        enumStyle: parsed.enumStyle,
-        typeReferences: parsed.typeReferences,
-      };
-
-      // Helper to build file path
-      const buildFilePath = (entityName: string): string =>
-        `${parsed.outputDir}/${entityName}.ts`;
-
-      // Generate separate enum files if configured
-      if (parsed.typeReferences === "separate") {
-        enumEntities
-          .filter(e => e.tags.omit !== true)
-          .forEach(enumEntity => {
-            const statements = generateEnumStatement(enumEntity, parsed.enumStyle, parsed.exportTypes);
-
-            ctx
-              .file(buildFilePath(enumEntity.name))
-              .import({ kind: "package", names: ["z"], from: "zod" })
-              .ast(conjure.symbolProgram(...statements))
-              .emit();
-          });
-      }
-
-      getTableEntities(ir)
-        .filter(entity => entity.tags.omit !== true)
-        .forEach(entity => {
-          const statements = generateEntityStatements(entity, fieldCtx, parsed.exportTypes);
-
-          const entityName = inflection.entityName(entity.pgClass, entity.tags);
-
-          // Collect all fields for enum detection
-          const allFields = [
-            ...entity.shapes.row.fields,
-            ...(entity.shapes.insert?.fields ?? []),
-            ...(entity.shapes.update?.fields ?? []),
-          ];
-          const usedEnums =
-            parsed.typeReferences === "separate"
-              ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
-              : new Set<string>();
-
-          const fileBuilder = ctx
-            .file(buildFilePath(entityName))
-            .import({ kind: "package", names: ["z"], from: "zod" });
-
-          // Add enum imports when using separate files
-          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-        });
-
-      // Generate composite type schemas
-      getCompositeEntities(ir)
-        .filter(composite => composite.tags.omit !== true)
-        .forEach(composite => {
-          const statements = generateCompositeStatements(composite, fieldCtx, parsed.exportTypes);
-
-          // Collect enum usage for imports
-          const usedEnums =
-            parsed.typeReferences === "separate"
-              ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
-              : new Set<string>();
-
-          const fileBuilder = ctx
-            .file(buildFilePath(composite.name))
-            .import({ kind: "package", names: ["z"], from: "zod" });
-
-          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
-
-          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-        });
-
-      return undefined;
-    },
-  });
+  return zodChain.build();
 }
 
+const b = conjure.b;
 
+const ZodSchemaConfig = S.Struct({
+  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
+});
+
+/** Schema-validated config options */
+type SchemaConfig = S.Schema.Type<typeof ZodSchemaConfig>;
+
+/**
+ * Zod plugin configuration.
+ *
+ * @example
+ * // Basic usage - all schemas in schemas.ts
+ * zod()
+ *
+ * @example
+ * // Per-entity schema files
+ * zod({
+ *   schemasFile: ({ entityName }) => `${entityName.toLowerCase()}/schemas.ts`,
+ * })
+ */
+export interface ZodConfig {
+  /** Export inferred TypeScript types alongside schemas (default: true) */
+  exportTypes?: boolean;
+  /**
+   * Output file path for schemas.
+   * Can be a string (static path) or function (dynamic per entity).
+   * @default "schemas.ts"
+   */
+  schemasFile?: string | FileNaming;
+}
+
+/** Resolved config with defaults applied */
+interface ResolvedZodConfig extends SchemaConfig {
+  schemasFile: FileNaming;
+}
+
+function toExpr(node: n.Expression): ExpressionKind {
+  return node as ExpressionKind;
+}
+
+function toStmt(node: n.Statement): StatementKind {
+  return node as StatementKind;
+}
+
+// =============================================================================
+// PostgreSQL Type to Zod Schema Mapping
+// =============================================================================
+
+const PG_STRING_TYPES = new Set([
+  "uuid",
+  "text",
+  "varchar",
+  "char",
+  "character",
+  "name",
+  "bpchar",
+  "citext",
+]);
+
+const PG_NUMBER_TYPES = new Set([
+  "int2",
+  "int4",
+  "int8",
+  "integer",
+  "smallint",
+  "bigint",
+  "numeric",
+  "decimal",
+  "real",
+  "float4",
+  "float8",
+  "double",
+]);
+
+const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
+
+const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
+
+const PG_JSON_TYPES = new Set(["json", "jsonb"]);
+
+// =============================================================================
+// Field to Zod Schema
+// =============================================================================
+
+/**
+ * Result of mapping a field to Zod.
+ * - `schema`: Zod schema expression (e.g., z.string(), z.number())
+ * - `enumRef`: Reference to a separately defined enum schema
+ */
+type ZodMapping =
+  | { kind: "schema"; schema: n.Expression; enumRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; schema?: undefined };
+
+function fieldToZodMapping(field: Field, enums: EnumEntity[]): ZodMapping {
+  const pgType = field.pgAttribute.getType();
+
+  if (!pgType) {
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
+  }
+
+  // For arrays, use element type; for domains, use base type; otherwise use pgType
+  let typeName: string;
+  let typeInfo: { typcategory?: string | null; typtype?: string | null };
+
+  if (pgType.typcategory === "A") {
+    // Array type - use element type name
+    typeName = field.elementTypeName ?? "unknown";
+    typeInfo = pgType;
+  } else if (pgType.typtype === "d" && field.domainBaseType) {
+    // Domain type - resolve to underlying base type
+    typeName = field.domainBaseType.typeName;
+    typeInfo = { typcategory: field.domainBaseType.category };
+  } else {
+    typeName = pgType.typname;
+    typeInfo = pgType;
+  }
+
+  const baseResult = baseTypeToZodMapping(typeName, typeInfo, enums);
+
+  // For enum references, return as-is (modifiers applied in shapeToZodObject)
+  if (baseResult.kind === "enumRef") {
+    return baseResult;
+  }
+
+  let schema = baseResult.schema;
+
+  if (field.isArray) {
+    schema = conjure.chain(schema).method("array").build();
+  }
+
+  const methods: string[] = [];
+  if (field.nullable) methods.push("nullable");
+  if (field.optional) methods.push("optional");
+
+  for (const method of methods) {
+    schema = conjure.chain(schema).method(method).build();
+  }
+
+  return { kind: "schema", schema };
+}
+
+function baseTypeToZodMapping(
+  typeName: string,
+  pgType: { typcategory?: string | null; typtype?: string | null },
+  enums: EnumEntity[],
+): ZodMapping {
+  const normalized = typeName.toLowerCase();
+
+  if (PG_STRING_TYPES.has(normalized)) {
+    if (normalized === "uuid") {
+      return { kind: "schema", schema: conjure.id("z").method("uuid").build() };
+    }
+    // citext is case-insensitive text - just treat as regular string
+    // (Zod doesn't have a built-in case-insensitive string validator)
+    return { kind: "schema", schema: conjure.id("z").method("string").build() };
+  }
+
+  if (PG_NUMBER_TYPES.has(normalized)) {
+    return { kind: "schema", schema: conjure.id("z").method("number").build() };
+  }
+
+  if (PG_BOOLEAN_TYPES.has(normalized)) {
+    return { kind: "schema", schema: conjure.id("z").method("boolean").build() };
+  }
+
+  if (PG_DATE_TYPES.has(normalized)) {
+    return { kind: "schema", schema: conjure.id("z").method("coerce").method("date").build() };
+  }
+
+  if (PG_JSON_TYPES.has(normalized)) {
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
+  }
+
+  if (pgType.typtype === "e" || pgType.typcategory === "E") {
+    const enumEntity = enums.find(e => e.pgType.typname === typeName);
+    if (enumEntity) {
+      // Return reference to the enum schema instead of inlining
+      return { kind: "enumRef", enumRef: enumEntity.name };
+    }
+    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
+  }
+
+  return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
+}
+
+// =============================================================================
+// Shape to Zod Object
+// =============================================================================
+
+function shapeToZodObject(
+  shape: { fields: readonly Field[] },
+  enums: EnumEntity[],
+  registry: SymbolRegistryService,
+): n.Expression {
+  const properties = shape.fields.map(field => {
+    const mapping = fieldToZodMapping(field, enums);
+
+    let value: n.Expression;
+    if (mapping.kind === "enumRef") {
+      // Get handle and track cross-reference
+      const enumHandle = registry.import(`schema:zod:${mapping.enumRef}`);
+      value = enumHandle.ref() as n.Expression;
+
+      // Apply modifiers for enum references
+      if (field.isArray) {
+        value = conjure.chain(value).method("array").build();
+      }
+      if (field.nullable) {
+        value = conjure.chain(value).method("nullable").build();
+      }
+      if (field.optional) {
+        value = conjure.chain(value).method("optional").build();
+      }
+    } else {
+      value = mapping.schema;
+    }
+
+    return b.objectProperty(b.identifier(field.name), toExpr(value));
+  });
+
+  const objExpr = b.objectExpression(properties);
+  const zObject = b.callExpression(b.memberExpression(b.identifier("z"), b.identifier("object")), [
+    objExpr,
+  ]);
+  return zObject;
+}
+
+// =============================================================================
+// Zod Plugin Definition
+// =============================================================================
+
+function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
+  const declarations: SymbolDeclaration[] = [];
+  const baseEntityName = entity.name;
+
+  // Row shape uses the entity name directly
+  declarations.push({
+    name: entity.shapes.row.name,
+    capability: `schema:zod:${entity.shapes.row.name}`,
+    baseEntityName,
+  });
+
+  if (entity.shapes.insert) {
+    const insertName = entity.shapes.insert.name;
+    declarations.push({
+      name: insertName,
+      capability: `schema:zod:${insertName}`,
+      baseEntityName,
+    });
+    declarations.push({
+      name: insertName,
+      capability: `schema:zod:${insertName}:type`,
+      baseEntityName,
+    });
+  }
+
+  if (entity.shapes.update) {
+    const updateName = entity.shapes.update.name;
+    declarations.push({
+      name: updateName,
+      capability: `schema:zod:${updateName}`,
+      baseEntityName,
+    });
+    declarations.push({
+      name: updateName,
+      capability: `schema:zod:${updateName}:type`,
+      baseEntityName,
+    });
+  }
+
+  return declarations;
+}
+
+export function zod(config?: ZodConfig): Plugin {
+  // Parse schema-validated options
+  const schemaConfig = S.decodeSync(ZodSchemaConfig)(config ?? {});
+
+  // Resolve file naming
+  const resolvedConfig: ResolvedZodConfig = {
+    ...schemaConfig,
+    schemasFile: normalizeFileNaming(config?.schemasFile, "schemas.ts"),
+  };
+
+  return {
+    name: "zod",
+
+    provides: ["schema"],
+
+    fileDefaults: [
+      {
+        pattern: "schema:",
+        fileNaming: resolvedConfig.schemasFile,
+      },
+    ],
+
+    declare: Effect.gen(function* () {
+      const ir = yield* IR;
+
+      const declarations: SymbolDeclaration[] = [];
+
+      for (const entity of ir.entities.values()) {
+        if (isTableEntity(entity)) {
+          // Push declarations directly - they already include baseEntityName
+          declarations.push(...getShapeDeclarations(entity));
+        } else if (isEnumEntity(entity)) {
+          declarations.push({
+            name: entity.name,
+            capability: `schema:zod:${entity.name}`,
+            baseEntityName: entity.name,
+          });
+          declarations.push({
+            name: entity.name,
+            capability: `schema:zod:${entity.name}:type`,
+            baseEntityName: entity.name,
+          });
+        }
+      }
+
+      // Declare the schema builder capability
+      declarations.push({
+        name: "zodSchemaBuilder",
+        capability: "schema:zod:builder",
+      });
+
+      return declarations;
+    }),
+
+    render: Effect.gen(function* () {
+      const ir = yield* IR;
+      const registry = yield* SymbolRegistry;
+
+      const enums = [...ir.entities.values()].filter(isEnumEntity);
+
+      const rendered: RenderedSymbol[] = [];
+
+      for (const entity of ir.entities.values()) {
+        if (isTableEntity(entity)) {
+          const shapes: NonNullable<TableEntity["shapes"]["row" | "insert" | "update"]>[] = [
+            entity.shapes.row,
+          ];
+          if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+          if (entity.shapes.update) shapes.push(entity.shapes.update);
+
+          for (const shape of shapes) {
+            const isRow = shape.kind === "row";
+            const capability = `schema:zod:${shape.name}`;
+
+            // Scope cross-references to this specific capability
+            const schemaNode = registry.forSymbol(capability, () =>
+              shapeToZodObject(shape, enums, registry),
+            );
+
+            const schemaDecl = conjure.export.const(shape.name, schemaNode);
+
+            rendered.push({
+              name: shape.name,
+              capability,
+              node: schemaDecl,
+              exports: "named",
+              externalImports: [{ from: "zod", names: ["z"] }],
+              metadata: {
+                consume: createZodConsumeCallback(shape.name),
+              },
+            });
+
+            if (resolvedConfig.exportTypes && !isRow) {
+              const inferType = conjure.ts.qualifiedRef("z", "infer", [
+                conjure.ts.typeof(shape.name),
+              ]);
+              const typeDecl = conjure.export.type(shape.name, inferType);
+
+              rendered.push({
+                name: shape.name,
+                capability: `schema:zod:${shape.name}:type`,
+                node: typeDecl,
+                exports: "named",
+                externalImports: [{ from: "zod", names: ["z"] }],
+              });
+            }
+          }
+        } else if (isEnumEntity(entity)) {
+          const schemaNode = conjure
+            .id("z")
+            .method("enum", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
+            .build();
+
+          const schemaDecl = conjure.export.const(entity.name, schemaNode);
+
+          const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(entity.name)]);
+          const typeDecl = conjure.export.type(entity.name, inferType);
+
+          rendered.push({
+            name: entity.name,
+            capability: `schema:zod:${entity.name}`,
+            node: schemaDecl,
+            exports: "named",
+            externalImports: [{ from: "zod", names: ["z"] }],
+            metadata: {
+              consume: createZodConsumeCallback(entity.name),
+            },
+          });
+
+          if (resolvedConfig.exportTypes) {
+            rendered.push({
+              name: entity.name,
+              capability: `schema:zod:${entity.name}:type`,
+              node: typeDecl,
+              exports: "named",
+              externalImports: [{ from: "zod", names: ["z"] }],
+            });
+          }
+        }
+      }
+
+      // Render the schema builder (virtual symbol - no node, just metadata)
+      // The builder is used by HTTP plugins to generate inline param schemas
+      rendered.push({
+        name: "zodSchemaBuilder",
+        capability: "schema:zod:builder",
+        node: null, // Virtual symbol - no emitted code
+        exports: false, // Not exported
+        metadata: {
+          builder: zodSchemaBuilder,
+        },
+      });
+
+      return rendered;
+    }),
+  };
+}

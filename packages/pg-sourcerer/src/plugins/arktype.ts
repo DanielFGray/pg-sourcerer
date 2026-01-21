@@ -1,610 +1,662 @@
 /**
- * ArkType Plugin - Generate ArkType schemas for entities
+ * ArkType Plugin - Generates ArkType schemas for entities
  *
- * Generates ArkType type definitions for Row, Insert, Update, and Patch shapes,
- * with inferred TypeScript types.
+ * Generates ArkType schemas for Row, Insert, Update, and Patch shapes,
+ * with optional inferred TypeScript types.
  *
- * ArkType uses string-based syntax for type definitions:
- * - `type({ foo: "string", bar: "number?" })` for objects
- * - `"string | null"` for nullable
- * - `"string[]"` for arrays
- * - Union syntax `"'a' | 'b' | 'c'"` for enums
+ * Capabilities provided:
+ * - `schema:arktype:EntityName` for each table entity (Row schema)
+ * - `schema:arktype:EntityName:insert` for Insert shape
+ * - `schema:arktype:EntityName:update` for Update shape
+ * - `schema:arktype:EnumName` for enum entities
  */
-import { Array as Arr, Option, pipe, Schema as S } from "effect";
+import { Effect, Array as Arr, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin, type PluginContext } from "../services/plugin.js";
-import { findEnumByPgName, TsType } from "../services/pg-types.js";
-import type {
-  Field,
-  Shape,
-  ExtensionInfo,
-  TableEntity,
-  EnumEntity,
-  CompositeEntity,
+
+import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
+import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { IR } from "../services/ir.js";
+import {
+  isTableEntity,
+  isEnumEntity,
+  type TableEntity,
+  type Field,
+  type EnumEntity,
 } from "../ir/semantic-ir.js";
-import { getTableEntities, getEnumEntities, getCompositeEntities } from "../ir/semantic-ir.js";
-import { conjure } from "../lib/conjure.js";
-import type { SymbolStatement } from "../lib/conjure.js";
-import type { ImportRef } from "../services/file-builder.js";
-import {
-  isUuidType,
-  isDateType,
-  isEnumType,
-  getPgTypeName,
-  resolveFieldType,
-} from "../lib/field-utils.js";
-import {
-  SCHEMA_BUILDER_KIND,
-  type SchemaBuilder,
-  type SchemaBuilderRequest,
-  type SchemaBuilderResult,
+import { conjure, cast } from "../conjure/index.js";
+import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
+import type {
+  SchemaBuilder,
+  SchemaBuilderRequest,
+  SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
-import type { QueryMethodParam } from "../ir/extensions/queries.js";
-
-const { ts, exp, obj } = conjure;
-
-// ============================================================================
-// Configuration
-// ============================================================================
 
 /**
- * Configuration for the arktype provider
- */
-export interface ArkTypeConfig {
-  /** Output directory relative to main outputDir */
-  readonly outputDir?: string;
-  /** Export inferred types alongside schemas */
-  readonly exportTypes?: boolean;
-  /** How to represent enum values: 'strings' uses union literals, 'enum' uses TS enum */
-  readonly enumStyle?: "strings" | "enum";
-  /** Where to define enum types: 'inline' embeds at usage, 'separate' generates enum files */
-  readonly typeReferences?: "inline" | "separate";
-}
-
-const ArkTypeConfigSchema = S.Struct({
-  outputDir: S.optionalWith(S.String, { default: () => "arktype" }),
-  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
-  enumStyle: S.optionalWith(S.Union(S.Literal("strings"), S.Literal("enum")), {
-    default: () => "strings" as const,
-  }),
-  typeReferences: S.optionalWith(S.Union(S.Literal("inline"), S.Literal("separate")), {
-    default: () => "separate" as const,
-  }),
-});
-
-// ============================================================================
-// ArkType Schema Builders (pure functions)
-// ============================================================================
-
-/**
- * Build ArkType string-based type expression.
+ * Creates a consume callback for ArkType schemas.
+ * Generates: `SchemaName.assert(input)` (throws on validation error)
  *
- * ArkType uses string syntax for most types:
- * - `"string"`, `"number"`, `"boolean"`, `"bigint"`
- * - `"Date"` for Date objects
- * - `"string?"` for optional
- * - `"string | null"` for nullable
- * - `"string[]"` for arrays
+ * @param schemaName - The name of the ArkType schema
+ * @returns A function that generates assert AST for an input expression
  */
-const buildArkTypeString = (
-  baseType: string,
-  modifiers: { nullable?: boolean; optional?: boolean; isArray?: boolean },
-): string => {
-  let result = baseType;
-
-  // Apply array first (before nullable/optional)
-  if (modifiers.isArray) {
-    result = `${result}[]`;
-  }
-
-  // For nullable, use union with null
-  if (modifiers.nullable) {
-    result = `${result} | null`;
-  }
-
-  // Optional uses ? suffix in object keys, not in the type string itself
-  // We handle this at the property level
-
-  return result;
-};
-
-/**
- * Build ArkType enum as union of string literals: `"'a' | 'b' | 'c'"`
- */
-const buildArkTypeEnumString = (values: readonly string[]): string =>
-  values.map(v => `'${v}'`).join(" | ");
-
-/**
- * Map TypeScript type to ArkType string type
- */
-const tsTypeToArkTypeString = (tsType: string): string => {
-  switch (tsType) {
-    case TsType.String:
-      return "string";
-    case TsType.Number:
-      return "number";
-    case TsType.Boolean:
-      return "boolean";
-    case TsType.BigInt:
-      return "bigint";
-    case TsType.Date:
-      return "Date";
-    case TsType.Buffer:
-    case TsType.Unknown:
-    default:
-      return "unknown";
-  }
-};
-
-// ============================================================================
-// Field → ArkType Schema Resolution
-// ============================================================================
-
-interface FieldContext {
-  readonly enums: Iterable<EnumEntity>;
-  readonly extensions: readonly ExtensionInfo[];
-  readonly enumStyle: "strings" | "enum";
-  readonly typeReferences: "inline" | "separate";
-}
-
-/**
- * Resolve a field to its ArkType type string or expression info.
- * Returns either a string (for inline string syntax) or an object with ref info.
- */
-interface ArkTypeFieldResult {
-  /** The type string to use in the object definition */
-  readonly typeString: string;
-  /** If true, this is a reference to an imported type, not a string literal */
-  readonly isReference: boolean;
-}
-
-const resolveFieldArkType = (field: Field, ctx: FieldContext): ArkTypeFieldResult => {
-  const resolved = resolveFieldType(field, ctx.enums, ctx.extensions);
-
-  // Enum handling
-  if (resolved.enumDef) {
-    if (ctx.typeReferences === "separate") {
-      // Reference by name - will be imported
-      const baseRef = resolved.enumDef.name;
-      const withMods = buildArkTypeString(baseRef, {
-        nullable: field.nullable,
-        isArray: field.isArray,
-      });
-      return { typeString: withMods, isReference: true };
-    }
-
-    // Inline: union of string literals
-    const baseType = buildArkTypeEnumString(resolved.enumDef.values);
-    const needsParens = field.nullable || field.isArray;
-    const wrapped = needsParens ? `(${baseType})` : baseType;
-    return {
-      typeString: buildArkTypeString(wrapped, {
-        nullable: field.nullable,
-        isArray: field.isArray,
-      }),
-      isReference: false,
-    };
-  }
-
-  // UUID → string.uuid
-  if (isUuidType(field)) {
-    return {
-      typeString: buildArkTypeString("string.uuid", {
-        nullable: field.nullable,
-        isArray: field.isArray,
-      }),
-      isReference: false,
-    };
-  }
-
-  // Date/timestamp → Date
-  if (isDateType(field)) {
-    return {
-      typeString: buildArkTypeString("Date", {
-        nullable: field.nullable,
-        isArray: field.isArray,
-      }),
-      isReference: false,
-    };
-  }
-
-  // Standard type mapping
-  return {
-    typeString: buildArkTypeString(tsTypeToArkTypeString(resolved.tsType), {
-      nullable: field.nullable,
-      isArray: field.isArray,
-    }),
-    isReference: false,
+function createArkTypeConsumeCallback(schemaName: string): (input: unknown) => n.Expression {
+  return (input: unknown) => {
+    return conjure.id(schemaName).method("assert", [cast.toExpr(input as n.Expression)]).build();
   };
-};
-
-// ============================================================================
-// Shape → Statement Generation
-// ============================================================================
+}
 
 /**
- * Build type({ ... }) expression from shape fields
- *
- * ArkType uses string keys for optionality: `"key?": "type"`
+ * Convert a param type to an ArkType type string.
  */
-const buildShapeArkTypeObject = (shape: Shape, ctx: FieldContext): n.Expression => {
-  const objBuilder = shape.fields.reduce((builder, field) => {
-    const result = resolveFieldArkType(field, ctx);
-    const value = result.isReference
-      ? conjure.id(result.typeString).build()
-      : conjure.str(result.typeString);
+function paramToArkTypeString(param: { type: string; required: boolean }): string {
+  const baseType = param.type.replace(/\[\]$/, "").replace(/\?$/, "").toLowerCase();
 
-    // Use "key?" syntax for optional fields - must use stringProp for valid JS
-    if (field.optional) {
-      return builder.stringProp(`${field.name}?`, value);
-    }
-    return builder.prop(field.name, value);
-  }, obj());
-
-  // Build: type({ ... })
-  return conjure.id("type").call([objBuilder.build()]).build();
-};
-
-/**
- * Generate schema const + optional inferred type for a shape
- */
-const generateShapeStatements = (
-  shape: Shape,
-  entityName: string,
-  shapeKind: "row" | "insert" | "update" | "patch",
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: entityName, shape: shapeKind };
-  const schemaExpr = buildShapeArkTypeObject(shape, ctx);
-
-  const schemaStatement = exp.const(shape.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type ShapeName = typeof ShapeName.infer
-  // ArkType uses Schema.infer for the inferred type
-  const typeSymbolCtx = { capability: "types", entity: entityName, shape: shapeKind };
-  const inferType = ts.typeof(`${shape.name}.infer`);
-  const typeStatement = exp.type(shape.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-// ============================================================================
-// Entity → File Generation
-// ============================================================================
-
-type ShapeEntry = readonly ["row" | "insert" | "update", Shape];
-
-/**
- * Collect all defined shapes from an entity as [kind, shape] pairs
- */
-const collectShapes = (entity: TableEntity): readonly ShapeEntry[] =>
-  [
-    ["row", entity.shapes.row] as const,
-    ["insert", entity.shapes.insert] as const,
-    ["update", entity.shapes.update] as const,
-  ].filter((entry): entry is ShapeEntry => entry[1] != null);
-
-/**
- * Generate all statements for an entity's shapes
- */
-const generateEntityStatements = (
-  entity: TableEntity,
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] =>
-  collectShapes(entity).flatMap(([kind, shape]) =>
-    generateShapeStatements(shape, entity.name, kind, ctx, exportTypes),
-  );
-
-// ============================================================================
-// Composite Type Generation
-// ============================================================================
-
-/**
- * Build type({ ... }) expression from composite fields
- */
-const buildCompositeArkTypeObject = (
-  composite: CompositeEntity,
-  ctx: FieldContext,
-): n.Expression => {
-  const objBuilder = composite.fields.reduce((builder, field) => {
-    const result = resolveFieldArkType(field, ctx);
-    const value = result.isReference
-      ? conjure.id(result.typeString).build()
-      : conjure.str(result.typeString);
-
-    // Use "key?" syntax for optional fields
-    if (field.optional) {
-      return builder.stringProp(`${field.name}?`, value);
-    }
-    return builder.prop(field.name, value);
-  }, obj());
-
-  return conjure.id("type").call([objBuilder.build()]).build();
-};
-
-/**
- * Generate schema const + optional inferred type for a composite type
- */
-const generateCompositeStatements = (
-  composite: CompositeEntity,
-  ctx: FieldContext,
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: composite.name };
-  const schemaExpr = buildCompositeArkTypeObject(composite, ctx);
-
-  const schemaStatement = exp.const(composite.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type CompositeName = typeof CompositeName.infer
-  const typeSymbolCtx = { capability: "types", entity: composite.name };
-  const inferType = ts.typeof(`${composite.name}.infer`);
-  const typeStatement = exp.type(composite.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-// ============================================================================
-// Enum Generation
-// ============================================================================
-
-/**
- * Generate enum type for ArkType.
- * - For 'strings': export const EnumName = type("'a' | 'b' | 'c'")
- * - For 'enum': export enum EnumName { ... } + const EnumNameType = type("keyof", typeof EnumName)
- */
-const generateEnumStatement = (
-  enumEntity: EnumEntity,
-  enumStyle: "strings" | "enum",
-  exportTypes: boolean,
-): readonly SymbolStatement[] => {
-  const schemaSymbolCtx = { capability: "schemas", entity: enumEntity.name };
-
-  if (enumStyle === "enum") {
-    // Generate: export enum EnumName { A = 'a', B = 'b', ... }
-    const enumStatement = exp.tsEnum(
-      enumEntity.name,
-      { capability: "types", entity: enumEntity.name },
-      enumEntity.values,
-    );
-
-    // For arktype with native enums: type("keyof", typeof EnumName)
-    const schemaName = `${enumEntity.name}Type`;
-    const typeofExpr = conjure.b.unaryExpression(
-      "typeof",
-      conjure.id(enumEntity.name).build() as Parameters<typeof conjure.b.unaryExpression>[1],
-      true,
-    );
-    const schemaExpr = conjure
-      .id("type")
-      .call([conjure.str("keyof"), typeofExpr as n.Expression])
-      .build();
-    const schemaStatement = exp.const(schemaName, schemaSymbolCtx, schemaExpr);
-
-    return [enumStatement, schemaStatement];
-  }
-
-  // strings style: export const EnumName = type("'a' | 'b' | 'c'")
-  const enumString = buildArkTypeEnumString(enumEntity.values);
-  const schemaExpr = conjure
-    .id("type")
-    .call([conjure.str(enumString)])
-    .build();
-  const schemaStatement = exp.const(enumEntity.name, schemaSymbolCtx, schemaExpr);
-
-  if (!exportTypes) {
-    return [schemaStatement];
-  }
-
-  // Generate: export type EnumName = typeof EnumName.infer
-  const typeSymbolCtx = { capability: "types", entity: enumEntity.name };
-  const inferType = ts.typeof(`${enumEntity.name}.infer`);
-  const typeStatement = exp.type(enumEntity.name, typeSymbolCtx, inferType);
-
-  return [schemaStatement, typeStatement];
-};
-
-/** Collect enum names used by fields */
-const collectUsedEnums = (fields: readonly Field[], enums: readonly EnumEntity[]): Set<string> => {
-  const enumNames = fields.filter(isEnumType).flatMap(field => {
-    const pgTypeName = getPgTypeName(field);
-    if (!pgTypeName) return [];
-    return pipe(
-      findEnumByPgName(enums, pgTypeName),
-      Option.map(e => e.name),
-      Option.toArray,
-    );
-  });
-  return new Set(enumNames);
-};
-
-/** Build import refs for used enums */
-const buildEnumImports = (usedEnums: Set<string>): readonly ImportRef[] =>
-  Arr.fromIterable(usedEnums).map(enumName => ({
-    kind: "symbol" as const,
-    ref: { capability: "schemas", entity: enumName },
-  }));
-
-// ============================================================================
-// Schema Builder Service
-// ============================================================================
-
-/**
- * Map TypeScript type string to ArkType string for params.
- * URL params are strings, so we use string.integer for numbers (coerces).
- */
-const paramTypeToArkTypeString = (tsType: string): string => {
-  switch (tsType.toLowerCase()) {
+  let arkType: string;
+  switch (baseType) {
     case "number":
-      // string.integer parses string to integer
-      return "string.integer.parse";
+    case "int":
+    case "integer":
+    case "float":
+    case "double":
+      arkType = "number";
+      break;
     case "boolean":
-      return "string";  // ArkType doesn't have built-in boolean coercion from string
-    case "bigint":
-      return "string";  // Handle as string, parse manually
+    case "bool":
+      arkType = "boolean";
+      break;
+    case "date":
+      arkType = "Date";
+      break;
     case "string":
     default:
-      return "string";
+      arkType = "string";
+      break;
   }
-};
+
+  if (!param.required) {
+    arkType = `${arkType}?`;
+  }
+
+  return arkType;
+}
 
 /**
- * Build type({ ... }) expression from QueryMethodParam[].
- * For path/query parameter validation in HTTP handlers.
+ * ArkType SchemaBuilder implementation.
+ * Builds ArkType schemas for path/query parameters.
  */
-const buildParamArkTypeObject = (params: readonly QueryMethodParam[]): n.Expression => {
-  const objBuilder = params.reduce((builder, param) => {
-    const arkType = paramTypeToArkTypeString(param.type);
-
-    // Use "key?" syntax for optional params
-    const key = param.required ? param.name : `${param.name}?`;
-    return builder.stringProp(key, conjure.str(arkType));
-  }, obj());
-
-  return conjure.id("type").call([objBuilder.build()]).build();
-};
-
-/**
- * Create a SchemaBuilder implementation for ArkType.
- */
-const createArkTypeSchemaBuilder = (): SchemaBuilder => ({
-  build: (request: SchemaBuilderRequest): SchemaBuilderResult | undefined => {
+const arkTypeSchemaBuilder: SchemaBuilder = {
+  build(request: SchemaBuilderRequest): SchemaBuilderResult | undefined {
     if (request.params.length === 0) {
       return undefined;
     }
 
-    const ast = buildParamArkTypeObject(request.params);
+    // Build type({ field: "string", ... })
+    const typeObj: Record<string, string> = {};
+    for (const param of request.params) {
+      typeObj[param.name] = paramToArkTypeString(param);
+    }
+
+    // Generate: type({ id: "number", email: "string" })
+    let objBuilder = conjure.obj();
+    for (const [name, arkType] of Object.entries(typeObj)) {
+      objBuilder = objBuilder.prop(name, conjure.str(arkType));
+    }
+
+    const ast = conjure.id("type").call([objBuilder.build()]).build();
+
     return {
       ast,
-      importSpec: {
-        names: ["type"],
-        from: "arktype",
-      },
+      importSpec: { from: "arktype", names: ["type"] },
     };
   },
+};
+
+const ArkTypeSchemaConfig = S.Struct({
+  exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
 });
 
-// ============================================================================
-// Provider Definition
-// ============================================================================
+/** Schema-validated config options */
+type SchemaConfig = S.Schema.Type<typeof ArkTypeSchemaConfig>;
 
 /**
- * Create an arktype provider that generates ArkType schemas.
+ * ArkType plugin configuration.
  *
  * @example
- * ```typescript
- * import { arktype } from "pg-sourcerer"
+ * // Basic usage - all schemas in schemas.ts
+ * arktype()
  *
- * export default defineConfig({
- *   plugins: [
- *     arktype(),
- *     arktype({ outputDir: "schemas", exportTypes: false }),
- *   ],
+ * @example
+ * // Per-entity schema files
+ * arktype({
+ *   schemasFile: ({ entityName }) => `${entityName.toLowerCase()}/schemas.ts`,
  * })
- * ```
  */
-export function arktype(config: ArkTypeConfig = {}): ReturnType<typeof definePlugin> {
-  const parsed = S.decodeUnknownSync(ArkTypeConfigSchema)(config);
+export interface ArkTypeConfig {
+  /** Export inferred TypeScript types alongside schemas (default: true) */
+  exportTypes?: boolean;
+  /**
+   * Output file path for schemas.
+   * Can be a string (static path) or function (dynamic per entity).
+   * @default "schemas.ts"
+   */
+  schemasFile?: string | FileNaming;
+}
 
-  return definePlugin({
+/** Resolved config with defaults applied */
+interface ResolvedArkTypeConfig extends SchemaConfig {
+  schemasFile: FileNaming;
+}
+
+function toExpr(node: n.Expression): ExpressionKind {
+  return node as ExpressionKind;
+}
+
+// =============================================================================
+// PostgreSQL Type to ArkType String Mapping
+// =============================================================================
+
+const PG_STRING_TYPES = new Set([
+  "uuid",
+  "text",
+  "varchar",
+  "char",
+  "character",
+  "name",
+  "bpchar",
+  "citext",
+]);
+
+const PG_NUMBER_TYPES = new Set([
+  "int2",
+  "int4",
+  "int8",
+  "integer",
+  "smallint",
+  "bigint",
+  "numeric",
+  "decimal",
+  "real",
+  "float4",
+  "float8",
+  "double",
+]);
+
+const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
+
+const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
+
+const PG_JSON_TYPES = new Set(["json", "jsonb"]);
+
+// =============================================================================
+// Field to ArkType Type
+// =============================================================================
+
+/**
+ * Result of mapping a field to ArkType.
+ * - `typeString`: ArkType string type (e.g., "string", "number", "string.uuid")
+ * - `enumRef`: Reference to a separately defined enum schema
+ */
+type ArkTypeMapping =
+  | { kind: "string"; typeString: string; enumRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; typeString?: undefined };
+
+function fieldToArkType(field: Field, enums: EnumEntity[]): ArkTypeMapping {
+  const pgType = field.pgAttribute.getType();
+
+  if (!pgType) {
+    return { kind: "string", typeString: "unknown" };
+  }
+
+  // For arrays, use element type; for domains, use base type; otherwise use pgType
+  let typeName: string;
+  let typeInfo: { typcategory?: string | null; typtype?: string | null };
+
+  if (pgType.typcategory === "A") {
+    // Array type - use element type name
+    typeName = field.elementTypeName ?? "unknown";
+    typeInfo = pgType;
+  } else if (pgType.typtype === "d" && field.domainBaseType) {
+    // Domain type - resolve to underlying base type
+    typeName = field.domainBaseType.typeName;
+    typeInfo = { typcategory: field.domainBaseType.category };
+  } else {
+    typeName = pgType.typname;
+    typeInfo = pgType;
+  }
+
+  const baseResult = baseTypeToArkType(typeName, typeInfo, enums);
+
+  // For enum references, we can't easily add modifiers in string form,
+  // so we handle them specially in shapeToArkTypeObject
+  if (baseResult.kind === "enumRef") {
+    return baseResult;
+  }
+
+  let typeStr = baseResult.typeString;
+
+  if (field.isArray) {
+    typeStr = `${typeStr}[]`;
+  }
+
+  if (field.nullable) {
+    typeStr = `${typeStr} | null`;
+  }
+
+  if (field.optional) {
+    typeStr = `${typeStr}?`;
+  }
+
+  return { kind: "string", typeString: typeStr };
+}
+
+function baseTypeToArkType(
+  typeName: string,
+  pgType: { typcategory?: string | null; typtype?: string | null },
+  enums: EnumEntity[],
+): ArkTypeMapping {
+  const normalized = typeName.toLowerCase();
+
+  if (PG_STRING_TYPES.has(normalized)) {
+    if (normalized === "uuid") {
+      return { kind: "string", typeString: "string.uuid" };
+    }
+    // citext is case-insensitive text, but ArkType doesn't have a specific validator
+    // Just treat it as a regular string
+    return { kind: "string", typeString: "string" };
+  }
+
+  if (PG_NUMBER_TYPES.has(normalized)) {
+    return { kind: "string", typeString: "number" };
+  }
+
+  if (PG_BOOLEAN_TYPES.has(normalized)) {
+    return { kind: "string", typeString: "boolean" };
+  }
+
+  if (PG_DATE_TYPES.has(normalized)) {
+    return { kind: "string", typeString: "Date" };
+  }
+
+  if (PG_JSON_TYPES.has(normalized)) {
+    return { kind: "string", typeString: "unknown" };
+  }
+
+  if (pgType.typtype === "e" || pgType.typcategory === "E") {
+    const enumEntity = enums.find(e => e.pgType.typname === typeName);
+    if (enumEntity) {
+      // Return reference to the enum schema instead of inlining
+      return { kind: "enumRef", enumRef: enumEntity.name };
+    }
+    return { kind: "string", typeString: "unknown" };
+  }
+
+  return { kind: "string", typeString: "unknown" };
+}
+
+// =============================================================================
+// Shape to ArkType Object
+// =============================================================================
+
+function shapeToArkTypeObject(
+  shape: { fields: readonly Field[] },
+  enums: EnumEntity[],
+  registry: SymbolRegistryService,
+): n.Expression {
+  let objBuilder = conjure.obj();
+
+  for (const field of shape.fields) {
+    const mapping = fieldToArkType(field, enums);
+
+    if (mapping.kind === "enumRef") {
+      // Get handle and track cross-reference
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      let enumExpr = enumHandle.ref() as n.Expression;
+
+      if (field.isArray) {
+        enumExpr = conjure.chain(enumExpr).method("array").build();
+      }
+      if (field.nullable) {
+        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+      }
+      // Note: ArkType doesn't have a direct .optional() method like Zod
+      // Optional is typically handled at the object level with "key?" syntax
+      // For now, we'll treat optional enum fields the same as required
+      // This is a limitation - may need scope() for full support
+
+      objBuilder = objBuilder.prop(field.name, enumExpr);
+    } else {
+      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString));
+    }
+  }
+
+  return conjure.id("type").call([objBuilder.build()]).build();
+}
+
+/**
+ * Build an UpdateInput schema: PK fields required, non-PK update fields optional.
+ * This is used for update operations where we need to identify the row (PK) and
+ * specify which fields to change (non-PK).
+ */
+function buildUpdateInputSchema(
+  entity: TableEntity,
+  enums: EnumEntity[],
+  registry: SymbolRegistryService,
+): n.Expression | null {
+  const updateShape = entity.shapes.update;
+  const primaryKey = entity.primaryKey;
+
+  if (!updateShape || !primaryKey) {
+    return null;
+  }
+
+  const pkColumnSet = new Set(primaryKey.columns);
+  let objBuilder = conjure.obj();
+
+  // First, add PK fields as REQUIRED (from row shape to get correct types)
+  for (const pkColName of primaryKey.columns) {
+    // Find the field in the row shape (PK fields always exist in row)
+    const pkField = entity.shapes.row.fields.find(f => f.name === pkColName);
+    if (!pkField) continue;
+
+    // Get the base type without optional/nullable modifiers for PK
+    const mapping = fieldToArkType(
+      { ...pkField, optional: false, nullable: false },
+      enums,
+    );
+
+    if (mapping.kind === "enumRef") {
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      objBuilder = objBuilder.prop(pkField.name, enumHandle.ref() as n.Expression);
+    } else {
+      objBuilder = objBuilder.prop(pkField.name, conjure.str(mapping.typeString));
+    }
+  }
+
+  // Then add non-PK fields from update shape as OPTIONAL
+  for (const field of updateShape.fields) {
+    if (pkColumnSet.has(field.name)) {
+      continue; // Skip PK fields, already added above
+    }
+
+    // Force optional for non-PK fields (partial updates)
+    const mapping = fieldToArkType({ ...field, optional: true }, enums);
+
+    if (mapping.kind === "enumRef") {
+      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
+      let enumExpr = enumHandle.ref() as n.Expression;
+
+      if (field.isArray) {
+        enumExpr = conjure.chain(enumExpr).method("array").build();
+      }
+      if (field.nullable) {
+        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+      }
+      // For optional enum fields, we need to use .optional() method
+      enumExpr = conjure.chain(enumExpr).method("optional").build();
+
+      objBuilder = objBuilder.prop(field.name, enumExpr);
+    } else {
+      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString));
+    }
+  }
+
+  return conjure.id("type").call([objBuilder.build()]).build();
+}
+
+// =============================================================================
+// ArkType Plugin Definition
+// =============================================================================
+
+/**
+ * Get the UpdateInput schema name for an entity.
+ * Convention: EntityNameUpdateInput (e.g., CommentUpdateInput)
+ */
+function getUpdateInputName(entity: TableEntity): string {
+  return `${entity.name}UpdateInput`;
+}
+
+function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
+  const declarations: SymbolDeclaration[] = [];
+  const baseEntityName = entity.name;
+
+  declarations.push({
+    name: entity.shapes.row.name,
+    capability: `schema:arktype:${entity.shapes.row.name}`,
+    baseEntityName,
+  });
+
+  if (entity.shapes.insert) {
+    const insertName = entity.shapes.insert.name;
+    declarations.push({
+      name: insertName,
+      capability: `schema:arktype:${insertName}`,
+      baseEntityName,
+    });
+    declarations.push({
+      name: insertName,
+      capability: `schema:arktype:${insertName}:type`,
+      baseEntityName,
+    });
+  }
+
+  if (entity.shapes.update) {
+    const updateName = entity.shapes.update.name;
+    declarations.push({
+      name: updateName,
+      capability: `schema:arktype:${updateName}`,
+      baseEntityName,
+    });
+    declarations.push({
+      name: updateName,
+      capability: `schema:arktype:${updateName}:type`,
+      baseEntityName,
+    });
+
+    // UpdateInput schema: required PK + optional non-PK fields
+    // Only declare if entity has both update shape AND primary key
+    if (entity.primaryKey) {
+      const updateInputName = getUpdateInputName(entity);
+      declarations.push({
+        name: updateInputName,
+        capability: `schema:arktype:${updateInputName}`,
+        baseEntityName,
+      });
+      declarations.push({
+        name: updateInputName,
+        capability: `schema:arktype:${updateInputName}:type`,
+        baseEntityName,
+      });
+    }
+  }
+
+  return declarations;
+}
+
+export function arktype(config?: ArkTypeConfig): Plugin {
+  const schemaConfig = S.decodeSync(ArkTypeSchemaConfig)(config ?? {});
+
+  const resolvedConfig: ResolvedArkTypeConfig = {
+    ...schemaConfig,
+    schemasFile: normalizeFileNaming(config?.schemasFile, "schemas.ts"),
+  };
+
+  return {
     name: "arktype",
-    kind: "schemas",
-    singleton: true,
 
-    canProvide: () => true,
+    provides: ["schema"],
 
-    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext) => {
-      const { ir, inflection } = ctx;
-      const enumEntities = getEnumEntities(ir);
+    fileDefaults: [
+      {
+        pattern: "schema:",
+        fileNaming: resolvedConfig.schemasFile,
+      },
+    ],
 
-      // Register schema-builder service for on-demand param/query schema generation
-      ctx.registerHandler(SCHEMA_BUILDER_KIND, createArkTypeSchemaBuilder().build);
+    declare: Effect.gen(function* () {
+      const ir = yield* IR;
 
-      const fieldCtx: FieldContext = {
-        enums: enumEntities,
-        extensions: ir.extensions,
-        enumStyle: parsed.enumStyle,
-        typeReferences: parsed.typeReferences,
-      };
+      const declarations: SymbolDeclaration[] = [];
 
-      // Helper to build file path
-      const buildFilePath = (entityName: string): string =>
-        `${parsed.outputDir}/${entityName}.ts`;
-
-      // Generate separate enum files if configured
-      if (parsed.typeReferences === "separate") {
-        enumEntities
-          .filter(e => e.tags.omit !== true)
-          .forEach(enumEntity => {
-            const statements = generateEnumStatement(enumEntity, parsed.enumStyle, parsed.exportTypes);
-
-            ctx
-              .file(buildFilePath(enumEntity.name))
-              .import({ kind: "package", names: ["type"], from: "arktype" })
-              .ast(conjure.symbolProgram(...statements))
-              .emit();
+      for (const entity of ir.entities.values()) {
+        if (isTableEntity(entity)) {
+          declarations.push(...getShapeDeclarations(entity));
+        } else if (isEnumEntity(entity)) {
+          declarations.push({
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}`,
+            baseEntityName: entity.name,
           });
+          declarations.push({
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}:type`,
+            baseEntityName: entity.name,
+          });
+        }
       }
 
-      getTableEntities(ir)
-        .filter(entity => entity.tags.omit !== true)
-        .forEach(entity => {
-          const statements = generateEntityStatements(entity, fieldCtx, parsed.exportTypes);
+      // Declare the schema builder capability
+      declarations.push({
+        name: "arkTypeSchemaBuilder",
+        capability: "schema:arktype:builder",
+      });
 
-          const entityName = inflection.entityName(entity.pgClass, entity.tags);
+      return declarations;
+    }),
 
-          // Collect all fields for enum detection
-          const allFields = [
-            ...entity.shapes.row.fields,
-            ...(entity.shapes.insert?.fields ?? []),
-            ...(entity.shapes.update?.fields ?? []),
+    render: Effect.gen(function* () {
+      const ir = yield* IR;
+      const registry = yield* SymbolRegistry;
+
+      const enums = [...ir.entities.values()].filter(isEnumEntity);
+
+      const rendered: RenderedSymbol[] = [];
+
+      for (const entity of ir.entities.values()) {
+        if (isTableEntity(entity)) {
+          const shapes: NonNullable<TableEntity["shapes"]["row" | "insert" | "update"]>[] = [
+            entity.shapes.row,
           ];
-          const usedEnums =
-            parsed.typeReferences === "separate"
-              ? collectUsedEnums(allFields, Arr.fromIterable(fieldCtx.enums))
-              : new Set<string>();
+          if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+          if (entity.shapes.update) shapes.push(entity.shapes.update);
 
-          const fileBuilder = ctx
-            .file(buildFilePath(entityName))
-            .import({ kind: "package", names: ["type"], from: "arktype" });
+          for (const shape of shapes) {
+            const isRow = shape.kind === "row";
+            const capability = `schema:arktype:${shape.name}`;
 
-          // Add enum imports when using separate files
-          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+            // Scope cross-references to this specific capability
+            const schemaNode = registry.forSymbol(capability, () =>
+              shapeToArkTypeObject(shape, enums, registry),
+            );
 
-          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-        });
+            const schemaDecl = conjure.export.const(shape.name, schemaNode);
 
-      // Generate composite type schemas
-      getCompositeEntities(ir)
-        .filter(composite => composite.tags.omit !== true)
-        .forEach(composite => {
-          const statements = generateCompositeStatements(composite, fieldCtx, parsed.exportTypes);
+            rendered.push({
+              name: shape.name,
+              capability,
+              node: schemaDecl,
+              exports: "named",
+              externalImports: [{ from: "arktype", names: ["type"] }],
+              metadata: {
+                consume: createArkTypeConsumeCallback(shape.name),
+              },
+            });
 
-          // Collect enum usage for imports
-          const usedEnums =
-            parsed.typeReferences === "separate"
-              ? collectUsedEnums(composite.fields, Arr.fromIterable(fieldCtx.enums))
-              : new Set<string>();
+            if (resolvedConfig.exportTypes && !isRow) {
+              const inferType = conjure.ts.typeof(`${shape.name}.infer`);
+              const typeDecl = conjure.export.type(shape.name, inferType);
 
-          const fileBuilder = ctx
-            .file(buildFilePath(composite.name))
-            .import({ kind: "package", names: ["type"], from: "arktype" });
+              rendered.push({
+                name: shape.name,
+                capability: `schema:arktype:${shape.name}:type`,
+                node: typeDecl,
+                exports: "named",
+                externalImports: [{ from: "arktype", names: ["type"] }],
+              });
+            }
+          }
 
-          buildEnumImports(usedEnums).forEach(ref => fileBuilder.import(ref));
+          // Render UpdateInput schema if entity has update shape AND primary key
+          if (entity.shapes.update && entity.primaryKey) {
+            const updateInputName = getUpdateInputName(entity);
+            const capability = `schema:arktype:${updateInputName}`;
 
-          fileBuilder.ast(conjure.symbolProgram(...statements)).emit();
-        });
+            const schemaNode = registry.forSymbol(capability, () =>
+              buildUpdateInputSchema(entity, enums, registry),
+            );
 
-      return undefined;
-    },
-  });
+            if (schemaNode) {
+              const schemaDecl = conjure.export.const(updateInputName, schemaNode);
+
+              rendered.push({
+                name: updateInputName,
+                capability,
+                node: schemaDecl,
+                exports: "named",
+                externalImports: [{ from: "arktype", names: ["type"] }],
+                metadata: {
+                  consume: createArkTypeConsumeCallback(updateInputName),
+                },
+              });
+
+              if (resolvedConfig.exportTypes) {
+                const inferType = conjure.ts.typeof(`${updateInputName}.infer`);
+                const typeDecl = conjure.export.type(updateInputName, inferType);
+
+                rendered.push({
+                  name: updateInputName,
+                  capability: `schema:arktype:${updateInputName}:type`,
+                  node: typeDecl,
+                  exports: "named",
+                  externalImports: [{ from: "arktype", names: ["type"] }],
+                });
+              }
+            }
+          }
+        } else if (isEnumEntity(entity)) {
+          const enumString = entity.values.map(v => `'${v}'`).join(" | ");
+          const schemaNode = conjure.id("type").call([conjure.str(enumString)]).build();
+
+          const schemaDecl = conjure.export.const(entity.name, schemaNode);
+
+          const inferType = conjure.ts.typeof(`${entity.name}.infer`);
+          const typeDecl = conjure.export.type(entity.name, inferType);
+
+          rendered.push({
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}`,
+            node: schemaDecl,
+            exports: "named",
+            externalImports: [{ from: "arktype", names: ["type"] }],
+            metadata: {
+              consume: createArkTypeConsumeCallback(entity.name),
+            },
+          });
+
+          if (resolvedConfig.exportTypes) {
+            rendered.push({
+              name: entity.name,
+              capability: `schema:arktype:${entity.name}:type`,
+              node: typeDecl,
+              exports: "named",
+              externalImports: [{ from: "arktype", names: ["type"] }],
+            });
+          }
+        }
+      }
+
+      // Render the schema builder (virtual symbol - no node, just metadata)
+      // The builder is used by HTTP plugins to generate inline param schemas
+      rendered.push({
+        name: "arkTypeSchemaBuilder",
+        capability: "schema:arktype:builder",
+        node: null, // Virtual symbol - no emitted code
+        exports: false, // Not exported
+        metadata: {
+          builder: arkTypeSchemaBuilder,
+        },
+      });
+
+      return rendered;
+    }),
+  };
 }

@@ -6,64 +6,64 @@
 ## Quick Start
 
 ```typescript
-import { Graph } from "effect"
+import { Graph } from "effect";
 
 // Create a directed graph with initial nodes and edges
-const graph = Graph.directed<string, number>((g) => {
-  const a = Graph.addNode(g, "A")
-  const b = Graph.addNode(g, "B")
-  const c = Graph.addNode(g, "C")
-  Graph.addEdge(g, a, b, 1)
-  Graph.addEdge(g, b, c, 2)
-})
+const graph = Graph.directed<string, number>(g => {
+  const a = Graph.addNode(g, "A");
+  const b = Graph.addNode(g, "B");
+  const c = Graph.addNode(g, "C");
+  Graph.addEdge(g, a, b, 1);
+  Graph.addEdge(g, b, c, 2);
+});
 
 // Check for cycles
-console.log(Graph.isAcyclic(graph)) // true
+console.log(Graph.isAcyclic(graph)); // true
 
 // Topological sort
 for (const [idx, data] of Graph.topo(graph)) {
-  console.log(idx, data) // 0 "A", 1 "B", 2 "C"
+  console.log(idx, data); // 0 "A", 1 "B", 2 "C"
 }
 ```
 
 ## Constructors
 
-| Function | Description |
-|----------|-------------|
-| `Graph.directed<N, E>(mutate?)` | Create directed graph, optionally with mutation function |
-| `Graph.undirected<N, E>(mutate?)` | Create undirected graph |
+| Function                          | Description                                              |
+| --------------------------------- | -------------------------------------------------------- |
+| `Graph.directed<N, E>(mutate?)`   | Create directed graph, optionally with mutation function |
+| `Graph.undirected<N, E>(mutate?)` | Create undirected graph                                  |
 
 ## Mutations
 
 ```typescript
 // During construction or with beginMutation/endMutation
-Graph.addNode(mutable, data)           // Returns NodeIndex
-Graph.addEdge(mutable, src, tgt, data) // Returns EdgeIndex
-Graph.removeNode(mutable, nodeIdx)
-Graph.removeEdge(mutable, edgeIdx)
-Graph.updateNode(mutable, idx, fn)
-Graph.updateEdge(mutable, idx, fn)
+Graph.addNode(mutable, data); // Returns NodeIndex
+Graph.addEdge(mutable, src, tgt, data); // Returns EdgeIndex
+Graph.removeNode(mutable, nodeIdx);
+Graph.removeEdge(mutable, edgeIdx);
+Graph.updateNode(mutable, idx, fn);
+Graph.updateEdge(mutable, idx, fn);
 
 // Scoped mutation
-const newGraph = Graph.mutate(graph, (g) => {
-  Graph.addNode(g, "new node")
-})
+const newGraph = Graph.mutate(graph, g => {
+  Graph.addNode(g, "new node");
+});
 ```
 
 ## Getters
 
-| Function | Returns |
-|----------|---------|
-| `Graph.getNode(graph, idx)` | `Option<N>` |
-| `Graph.getEdge(graph, idx)` | `Option<Edge<E>>` |
-| `Graph.hasNode(graph, idx)` | `boolean` |
-| `Graph.hasEdge(graph, src, tgt)` | `boolean` |
-| `Graph.nodeCount(graph)` | `number` |
-| `Graph.edgeCount(graph)` | `number` |
-| `Graph.neighbors(graph, idx)` | `Array<NodeIndex>` |
-| `Graph.neighborsDirected(graph, idx, dir)` | `Array<NodeIndex>` |
-| `Graph.findNode(graph, pred)` | `Option<NodeIndex>` |
-| `Graph.findNodes(graph, pred)` | `Array<NodeIndex>` |
+| Function                                   | Returns             |
+| ------------------------------------------ | ------------------- |
+| `Graph.getNode(graph, idx)`                | `Option<N>`         |
+| `Graph.getEdge(graph, idx)`                | `Option<Edge<E>>`   |
+| `Graph.hasNode(graph, idx)`                | `boolean`           |
+| `Graph.hasEdge(graph, src, tgt)`           | `boolean`           |
+| `Graph.nodeCount(graph)`                   | `number`            |
+| `Graph.edgeCount(graph)`                   | `number`            |
+| `Graph.neighbors(graph, idx)`              | `Array<NodeIndex>`  |
+| `Graph.neighborsDirected(graph, idx, dir)` | `Array<NodeIndex>`  |
+| `Graph.findNode(graph, pred)`              | `Option<NodeIndex>` |
+| `Graph.findNodes(graph, pred)`             | `Array<NodeIndex>`  |
 
 ## Algorithms
 
@@ -88,16 +88,16 @@ Graph.isBipartite(graph)
 
 ```typescript
 // Dijkstra (non-negative weights)
-Graph.dijkstra(graph, { source, target, cost: (e) => e })
+Graph.dijkstra(graph, { source, target, cost: e => e });
 
 // A* (with heuristic)
-Graph.astar(graph, { source, target, cost, heuristic })
+Graph.astar(graph, { source, target, cost, heuristic });
 
 // Bellman-Ford (handles negative weights)
-Graph.bellmanFord(graph, { source, target, cost })
+Graph.bellmanFord(graph, { source, target, cost });
 
 // Floyd-Warshall (all pairs)
-Graph.floydWarshall(graph, cost)
+Graph.floydWarshall(graph, cost);
 ```
 
 ## Traversal Iterators
@@ -168,13 +168,13 @@ class GraphError extends Data.TaggedError  // thrown on invalid operations
 ### Topological Sort with Cycle Detection
 
 ```typescript
-import { Graph, Option } from "effect"
+import { Graph, Option } from "effect";
 
 function topoSort<N, E>(graph: Graph.DirectedGraph<N, E>): N[] | "cycle" {
   if (!Graph.isAcyclic(graph)) {
-    return "cycle"
+    return "cycle";
   }
-  return Array.from(Graph.values(Graph.topo(graph)))
+  return Array.from(Graph.values(Graph.topo(graph)));
 }
 ```
 
@@ -185,23 +185,23 @@ const plugins = [
   { name: "a", deps: [] },
   { name: "b", deps: ["a"] },
   { name: "c", deps: ["b"] },
-]
+];
 
-const graph = Graph.directed<string, void>((g) => {
-  const nodeMap = new Map<string, number>()
-  
+const graph = Graph.directed<string, void>(g => {
+  const nodeMap = new Map<string, number>();
+
   // Add all nodes
   for (const p of plugins) {
-    nodeMap.set(p.name, Graph.addNode(g, p.name))
+    nodeMap.set(p.name, Graph.addNode(g, p.name));
   }
-  
+
   // Add dependency edges
   for (const p of plugins) {
-    const target = nodeMap.get(p.name)!
+    const target = nodeMap.get(p.name)!;
     for (const dep of p.deps) {
-      const source = nodeMap.get(dep)!
-      Graph.addEdge(g, source, target, undefined)
+      const source = nodeMap.get(dep)!;
+      Graph.addEdge(g, source, target, undefined);
     }
   }
-})
+});
 ```

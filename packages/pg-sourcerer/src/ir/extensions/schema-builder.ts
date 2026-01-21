@@ -8,19 +8,19 @@
  * Schema plugins register this service via ctx.registerHandler("schema-builder", ...).
  * HTTP plugins consume via ctx.request("schema-builder", params).
  */
-import type { namedTypes as n } from "ast-types"
-import type { QueryMethodParam } from "./queries.js"
+import type { namedTypes as n } from "ast-types";
+import type { QueryMethodParam } from "./queries.js";
 
 /**
  * Import specification for the schema library.
  */
 export interface SchemaImportSpec {
   /** Named imports, e.g., ["z"] for Zod */
-  readonly names?: readonly string[]
+  readonly names?: readonly string[];
   /** Namespace import, e.g., "v" for Valibot */
-  readonly namespace?: string
+  readonly namespace?: string;
   /** Package name, e.g., "zod" */
-  readonly from: string
+  readonly from: string;
 }
 
 /**
@@ -28,9 +28,9 @@ export interface SchemaImportSpec {
  */
 export interface SchemaBuilderRequest {
   /** What kind of schema to build */
-  readonly variant: "params" | "query"
+  readonly variant: "params" | "query";
   /** The parameters to generate schema for */
-  readonly params: readonly QueryMethodParam[]
+  readonly params: readonly QueryMethodParam[];
 }
 
 /**
@@ -38,9 +38,9 @@ export interface SchemaBuilderRequest {
  */
 export interface SchemaBuilderResult {
   /** The AST expression for the schema (e.g., z.object({ id: z.string() })) */
-  readonly ast: n.Expression
+  readonly ast: n.Expression;
   /** Import needed for the schema library */
-  readonly importSpec: SchemaImportSpec
+  readonly importSpec: SchemaImportSpec;
 }
 
 /**
@@ -56,10 +56,10 @@ export interface SchemaBuilder {
    * @param request - What to build and from what params
    * @returns AST expression and import spec, or undefined if cannot build
    */
-  readonly build: (request: SchemaBuilderRequest) => SchemaBuilderResult | undefined
+  readonly build: (request: SchemaBuilderRequest) => SchemaBuilderResult | undefined;
 }
 
 /**
  * Service kind for schema-builder.
  */
-export const SCHEMA_BUILDER_KIND = "schema-builder" as const
+export const SCHEMA_BUILDER_KIND = "schema-builder" as const;

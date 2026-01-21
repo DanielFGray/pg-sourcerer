@@ -15,17 +15,14 @@ npm install @danielfgray/pg-sourcerer
 1. Create a config file `pgsourcerer.config.ts`:
 
 ```typescript
-import { defineConfig, typesPlugin, zod } from "@danielfgray/pg-sourcerer"
+import { defineConfig, typesPlugin, zod } from "@danielfgray/pg-sourcerer";
 
 export default defineConfig({
   connectionString: process.env.DATABASE_URL,
   schemas: ["public"],
   outputDir: "./src/generated",
-  plugins: [
-    typesPlugin({ outputDir: "types" }),
-    zod({ outputDir: "schemas" }),
-  ],
-})
+  plugins: [typesPlugin({ outputDir: "types" }), zod({ outputDir: "schemas" })],
+});
 ```
 
 2. Run the generator:
@@ -41,27 +38,27 @@ pgsourcerer generate [options]
 
 Options:
   -c, --config <path>   Path to config file
-  -o, --output <dir>    Override output directory  
+  -o, --output <dir>    Override output directory
   -n, --dry-run         Show what would be generated
   --log-level <level>   debug | info | none
 ```
 
 ## Plugins
 
-| Plugin | Provides | Description |
-|--------|----------|-------------|
-| `typesPlugin` | TypeScript interfaces | `User`, `UserInsert`, `UserUpdate` |
-| `zod` | Zod schemas | Runtime validation with inferred types |
-| `arktype` | ArkType validators | String-based type syntax with inference |
-| `valibot` | Valibot schemas | Modular validation with tree-shaking |
-| `effect` | Effect SQL Models + Repositories | Models, repos, and optional HTTP API |
-| `kysely` | Kysely types + queries | DB interface + type-safe CRUD functions |
-| `sqlQueries` | Raw SQL functions | Parameterized query helpers |
-| `httpElysia` | Elysia routes | REST endpoints with TypeBox validation |
-| `httpExpress` | Express routes | REST endpoints with validation middleware |
-| `httpHono` | Hono routes | REST endpoints with standard-validator |
-| `httpTrpc` | tRPC routers | Type-safe RPC with Zod validation |
-| `httpOrpc` | oRPC handlers | Lightweight RPC with TypeScript inference |
+| Plugin        | Provides                         | Description                               |
+| ------------- | -------------------------------- | ----------------------------------------- |
+| `typesPlugin` | TypeScript interfaces            | `User`, `UserInsert`, `UserUpdate`        |
+| `zod`         | Zod schemas                      | Runtime validation with inferred types    |
+| `arktype`     | ArkType validators               | String-based type syntax with inference   |
+| `valibot`     | Valibot schemas                  | Modular validation with tree-shaking      |
+| `effect`      | Effect SQL Models + Repositories | Models, repos, and optional HTTP API      |
+| `kysely`      | Kysely types + queries           | DB interface + type-safe CRUD functions   |
+| `sqlQueries`  | Raw SQL functions                | Parameterized query helpers               |
+| `httpElysia`  | Elysia routes                    | REST endpoints with TypeBox validation    |
+| `httpExpress` | Express routes                   | REST endpoints with validation middleware |
+| `httpHono`    | Hono routes                      | REST endpoints with standard-validator    |
+| `httpTrpc`    | tRPC routers                     | Type-safe RPC with Zod validation         |
+| `httpOrpc`    | oRPC handlers                    | Lightweight RPC with TypeScript inference |
 
 ## What Gets Generated
 
@@ -85,7 +82,8 @@ create table app_public.users (
 );
 
 alter table app_public.users enable row level security;
-create index on app_public.users (username);
+create unique index on app_public.users (username);
+create index on app_public.users (created_at desc);
 
 grant
   select,
@@ -149,6 +147,7 @@ export const User = z.object({
 export type User = z.infer<typeof User>;
 
 export const UserUpdate = z.object({
+  id: z.string().uuid(),
   username: z.string().optional(),
   name: z.string().nullable().optional(),
   avatar_url: z.string().nullable().optional(),
@@ -234,78 +233,6 @@ export const UserUpdate = v.object({
 export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 ```
 
-### `effect` — Effect SQL Models + Repositories
-
-The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
-
-```typescript
-// Model class with variant schemas
-import { Model } from "@effect/sql";
-import { Schema as S } from "effect";
-
-export class User extends Model.Class<User>("User")({
-  id: Model.Generated(S.UUID),
-  username: S.String,
-  name: S.NullOr(S.String),
-  role: S.Union(S.Literal("admin"), S.Literal("moderator"), S.Literal("user")),
-  bio: S.String,
-  isVerified: S.Boolean,
-  createdAt: Model.DateTimeInsertFromDate,
-  updatedAt: Model.DateTimeUpdateFromDate,
-}) {}
-
-// Repository (when queryMode: "repository")
-import { Model, SqlClient } from "@effect/sql";
-import { User } from "./User.js";
-
-export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
-  effect: Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const repo = yield* Model.makeRepository(User, {
-      tableName: "app_public.users",
-      spanPrefix: "UserRepo",
-      idColumn: "id",
-    });
-    return { ...repo };
-  }),
-}) {}
-```
-
-### `sqlQueries` — Raw SQL Query Functions
-
-with `sqlQueries({ sqlStyle: "tag" })`
-```typescript
-import { sql } from "../../db.js";
-import type { User } from "../types/User.js";
-
-export async function findUserById({ id }: Pick<User, "id">) {
-  const [result] = await sql<User[]>`
-    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
-    from app_public.users where id = ${id}`;
-  return result;
-}
-
-export async function findUserManys({ limit = 50, offset = 0 }: { limit?: number; offset?: number }) {
-  return await sql<User[]>`
-    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
-    from app_public.users limit ${limit} offset ${offset}`;
-}
-
-export async function getUserByUsername({ username }: { username: NonNullable<User["username"]> }) {
-  const [result] = await sql<User[]>`
-    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
-    from app_public.users where username = ${username}`;
-  return result;
-}
-
-export async function currentUser() {
-  const [result] = await sql<User[]>`select * from app_public.current_user()`;
-  return result;
-}
-```
-
-not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
-
 ### `kysely` — Kysely Types + Query Builders
 
 The unified `kysely` plugin generates both type definitions and query functions:
@@ -332,7 +259,7 @@ export interface DB {
   "app_public.users": UsersTable;
 }
 
-// Query functions (when generateQueries: true)
+//
 import { db } from "../../db.js";
 import type { UsersTable } from "./db.js";
 import type { Insertable, Updateable } from "kysely";
@@ -340,7 +267,17 @@ import type { Insertable, Updateable } from "kysely";
 export const findById = ({ id }: { id: string }) =>
   db
     .selectFrom("app_public.users")
-    .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
+    .select([
+      "id",
+      "username",
+      "name",
+      "avatar_url",
+      "role",
+      "bio",
+      "is_verified",
+      "created_at",
+      "updated_at",
+    ])
     .where("id", "=", id)
     .executeTakeFirst();
 
@@ -348,21 +285,120 @@ export const create = ({ data }: { data: Insertable<UsersTable> }) =>
   db.insertInto("app_public.users").values(data).returningAll().executeTakeFirstOrThrow();
 
 export const update = ({ id, data }: { id: string; data: Updateable<UsersTable> }) =>
-  db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll().executeTakeFirstOrThrow();
+  db
+    .updateTable("app_public.users")
+    .set(data)
+    .where("id", "=", id)
+    .returningAll()
+    .executeTakeFirstOrThrow();
 
 export const findByUsername = ({ username }: { username: string }) =>
   db
     .selectFrom("app_public.users")
-    .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
+    .select([
+      "id",
+      "username",
+      "name",
+      "avatar_url",
+      "role",
+      "bio",
+      "is_verified",
+      "created_at",
+      "updated_at",
+    ])
     .where("username", "=", username)
     .executeTakeFirst();
+```
+
+### `sqlQueries` — Raw SQL Query Functions
+
+with `sqlQueries({ sqlStyle: "tag" })`
+
+```typescript
+import { sql } from "../../db.js";
+import type { User } from "../types/User.js";
+
+export const update = ({
+  id,
+  ...fields
+}: Pick<User, "id"> & Partial<Pick<User, "username" | "name" | "bio" | "avatarUrl">>) =>
+  sql`update users set ${sql(user, ["username" | "name" | "bio" | "avatarUrl"])} where id = ${id}`;
+
+export const latest = ({ limit = 50, offset = 0 }: { limit?: number; offset?: number }) =>
+  sql<User[]>`
+    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
+    from app_public.users order by created_at desc limit ${limit} offset ${offset}`;
+
+export async function findByUsername({ username }: { username: NonNullable<User["username"]> }) {
+  const [result] = await sql<User[]>`
+    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
+    from app_public.users where username = ${username}`;
+  return result;
+}
+```
+
+not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
+
+### `effect` — Effect SQL Models + Repositories
+
+The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
+
+```typescript
+// users/model.ts
+import { Model } from "@effect/sql";
+import { Schema as S } from "effect";
+
+export class User extends Model.Class<User>("User")({
+  id: Model.Generated(S.UUID),
+  username: S.String,
+  name: S.NullOr(S.String),
+  role: S.Union(S.Literal("admin"), S.Literal("moderator"), S.Literal("user")),
+  bio: S.String,
+  isVerified: S.Boolean,
+  createdAt: Model.DateTimeInsertFromDate,
+  updatedAt: Model.DateTimeUpdateFromDate,
+}) {}
+
+// users/service.ts
+import { Model, SqlClient } from "@effect/sql";
+import { User } from "./User.js";
+
+export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
+  effect: Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const queries = {
+      findById: ({ id }: { id: string }) => db
+        .selectFrom("app_public.users")
+        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
+        .where("id", "=", id),
+
+      create: ({ data }: { data: Insertable<UsersTable> }) =>
+        db.insertInto("app_public.users").values(data).returningAll(),
+
+      update: ({ id, data }: { id: string; data: Updateable<UsersTable> }) =>
+        db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll(),,
+
+      findByUsername: ({ username }: { username: string }) => db
+        .selectFrom("app_public.users")
+        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
+        .where("username", "=", username),
+
+      latest: ({ offset = 0, limit = 50 }: { offset: number; limit: number }) => db
+        .selectFrom("app_public.users")
+        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
+        .orderBy("created_at", "desc")
+        .limit(limit).offset(offset),
+    }
+    return { ...queries };
+  }),
+}) {}
 ```
 
 ### `httpElysia` — Elysia REST Routes
 
 ```typescript
 import { Elysia, t } from "elysia";
-import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+import { findUserById, findUserManys, getUserByUsername } from "../queries/User.js";
 
 export const userRoutes = new Elysia({ prefix: "/api/users" })
   .get(
@@ -377,7 +413,7 @@ export const userRoutes = new Elysia({ prefix: "/api/users" })
   .get(
     "/",
     async ({ query }) => {
-      return await findUserManys({ limit: query.limit, offset: query.offset });
+      return await latest({ limit: query.limit, offset: query.offset });
     },
     { query: t.Object({ limit: t.Optional(t.Numeric()), offset: t.Optional(t.Numeric()) }) },
   )
@@ -396,31 +432,37 @@ export const userRoutes = new Elysia({ prefix: "/api/users" })
 
 ```typescript
 import { Router } from "express";
-import { z } from "zod";
-import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
-import { UserUpdate } from "../schemas/User.js";
+import { findUserById, listUsers, updateUser } from "../sql-queries/User.js";
+import { User, UserUpdate } from "../schemas/User.js";
 
 export const userRoutes = Router();
 
 userRoutes.get("/:id", async (req, res) => {
-  const { id } = req.params;
-  const result = await findUserById({ id });
+  const { params } = z.object({
+    params: z.object({ id: User.shape.id })
+  }).parse({ params: req.params }})
+  const result = await findUserById({ id: params.id });
   if (!result) return res.status(404).json({ error: "Not found" });
   return res.json(result);
 });
 
 userRoutes.get("/", async (req, res) => {
-  const { limit, offset } = z.object({
-    limit: z.coerce.number().optional(),
-    offset: z.coerce.number().optional(),
-  }).parse(req.query);
-  return res.json(await findUserManys({ limit, offset }));
+  const { query } = z.object({
+    query: z.object({
+      limit: z.coerce.number().optional(),
+      offset: z.coerce.number().optional(),
+    })
+  }).parse({ query: req.query }})
+  return res.json(await latest(query);
 });
 
 userRoutes.put("/:id", async (req, res) => {
-  const { id } = req.params;
-  const data = UserUpdate.parse(req.body);
-  const result = await updateUser({ id, data });
+  const { success,  } = z.object({
+    params: z.object({ id: User.shape.id })
+    body: UserUpdate,
+  }).safeParse({ params: req.params, body: req.body }})
+  if (!success) return res.status(400);
+  const result = await updateUser({ id, ...data });
   return res.json(result);
 });
 ```
@@ -431,27 +473,34 @@ userRoutes.put("/:id", async (req, res) => {
 import { Hono } from "hono";
 import { sValidator } from "@hono/standard-validator";
 import { z } from "zod";
-import { findUserById, findUserManys, updateUser } from "../sql-queries/User.js";
+import { findUserById, listUsers, updateUser } from "../sql-queries/User.js";
 import { UserUpdate } from "../schemas/User.js";
 
 export const userRoutes = new Hono()
-  .get("/:id", async (c) => {
+  .get("/:id", async c => {
     const id = c.req.param("id");
     const result = await findUserById({ id });
     if (!result) return c.json({ error: "Not found" }, 404);
     return c.json(result);
   })
-  .get("/", sValidator("query", z.object({
-    limit: z.coerce.number().optional(),
-    offset: z.coerce.number().optional(),
-  })), async (c) => {
-    const { limit, offset } = c.req.valid("query");
-    return c.json(await findUserManys({ limit, offset }));
-  })
-  .put("/:id", sValidator("json", UserUpdate), async (c) => {
+  .get(
+    "/",
+    sValidator(
+      "query",
+      z.object({
+        limit: z.coerce.number().optional(),
+        offset: z.coerce.number().optional(),
+      }),
+    ),
+    async c => {
+      const { limit, offset } = c.req.valid("query");
+      return c.json(await latest({ limit, offset }));
+    },
+  )
+  .put("/:id", sValidator("json", UserUpdate), async c => {
     const id = c.req.param("id");
     const data = c.req.valid("json");
-    const result = await updateUser({ id, data });
+    const result = await updateUser({ id, ...data });
     return c.json(result);
   });
 ```
@@ -461,19 +510,17 @@ export const userRoutes = new Hono()
 ```typescript
 import { z } from "zod";
 import { router, publicProcedure } from "../trpc.js";
-import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+import { findUserById, listUsers, getUserByUsername } from "../sql-queries/User.js";
 
 export const userRouter = router({
-  findUserById: publicProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
-      return await findUserById({ id: input.id });
-    }),
+  findUserById: publicProcedure.input(z.object({ id: z.string() })).query(async ({ input }) => {
+    return await findUserById({ id: input.id });
+  }),
 
-  findUserManys: publicProcedure
+  listUsers: publicProcedure
     .input(z.object({ limit: z.coerce.number().optional(), offset: z.coerce.number().optional() }))
     .query(async ({ input }) => {
-      return await findUserManys({ limit: input.limit, offset: input.offset });
+      return await listUsers({ limit: input.limit, offset: input.offset });
     }),
 
   getUserByUsername: publicProcedure
@@ -487,7 +534,7 @@ export const userRouter = router({
 ### `httpOrpc` — oRPC Handlers
 
 ```typescript
-import { findUserById, findUserManys, getUserByUsername } from "../sql-queries/User.js";
+import { findUserById, listUsers, getUserByUsername } from "../sql-queries/User.js";
 import { os, type } from "@orpc/server";
 
 export const findById = os
@@ -496,7 +543,7 @@ export const findById = os
 
 export const list = os
   .input(type<{ limit?: number; offset?: number }>())
-  .handler(async ({ input }) => await findUserManys(input));
+  .handler(async ({ input }) => await listUsers(input));
 
 export const findByUsername = os
   .input(type<{ username: string }>())
@@ -520,7 +567,7 @@ COMMENT ON COLUMN users.password_hash IS '{"sourcerer": {"omit": true}}';
 COMMENT ON COLUMN users.created_at IS '{"sourcerer": {"omit": ["insert", "update"]}}';
 
 -- Custom relation names
-COMMENT ON CONSTRAINT posts_author_fkey ON posts IS 
+COMMENT ON CONSTRAINT posts_author_fkey ON posts IS
   '{"sourcerer": {"fieldName": "author", "foreignFieldName": "posts"}}';
 ```
 
@@ -534,14 +581,14 @@ defineConfig({
   typeHints: [
     {
       match: { pgType: "uuid" },
-      hints: { ts: "string", zod: "z.string().uuid()" }
+      hints: { ts: "string", zod: "z.string().uuid()" },
     },
     {
       match: { table: "users", column: "email" },
-      hints: { ts: "Email", zod: "emailSchema", import: { Email: "./branded.js" } }
+      hints: { ts: "Email", zod: "emailSchema", import: { Email: "./branded.js" } },
     },
   ],
-})
+});
 ```
 
 ## Writing Plugins
@@ -551,9 +598,9 @@ Plugins generate code from the introspected database schema. Use `definePlugin` 
 ### Minimal Example
 
 ```typescript
-import { definePlugin, conjure, Schema as S } from "@danielfgray/pg-sourcerer"
+import { definePlugin, conjure, Schema as S } from "@danielfgray/pg-sourcerer";
 
-const { ts, exp } = conjure
+const { ts, exp } = conjure;
 
 export const myPlugin = definePlugin({
   name: "my-plugin",
@@ -562,51 +609,50 @@ export const myPlugin = definePlugin({
     outputDir: S.String,
   }),
   inflection: {
-    outputFile: (ctx) => `${ctx.entityName}.ts`,
+    outputFile: ctx => `${ctx.entityName}.ts`,
     symbolName: (entity, kind) => `${entity}${kind}`,
   },
 
   run: (ctx, config) => {
     ctx.ir.entities.forEach((entity, name) => {
       // Build interface properties from row shape
-      const props = entity.shapes.row.fields.map((field) => ({
+      const props = entity.shapes.row.fields.map(field => ({
         name: field.name,
-        type: field.nullable 
-          ? ts.union(ts.string(), ts.null()) 
-          : ts.string(),
+        type: field.nullable ? ts.union(ts.string(), ts.null()) : ts.string(),
         optional: field.optional,
-      }))
+      }));
 
       // Create exported interface with symbol tracking
       const statement = exp.interface(
         `${name}Row`,
         { capability: "my-types", entity: name, shape: "row" },
-        props
-      )
+        props,
+      );
 
       // Emit file
-      ctx.file(`${config.outputDir}/${name}.ts`)
+      ctx
+        .file(`${config.outputDir}/${name}.ts`)
         .header("// Auto-generated\n")
         .ast(conjure.symbolProgram(statement))
-        .emit()
-    })
+        .emit();
+    });
   },
-})
+});
 ```
 
 ### Plugin Context
 
 The `ctx` object provides:
 
-| Property | Description |
-|----------|-------------|
-| `ctx.ir` | Semantic IR with `entities`, `enums`, `extensions` |
-| `ctx.inflection` | Naming utilities (`camelCase`, `singularize`, etc.) |
-| `ctx.typeHints` | User-configured type overrides |
-| `ctx.file(path)` | Create a `FileBuilder` for structured emission |
-| `ctx.emit(path, content)` | Emit raw string content |
-| `ctx.getArtifact(cap)` | Read data from upstream plugins |
-| `ctx.setArtifact(cap, data)` | Share data with downstream plugins |
+| Property                     | Description                                         |
+| ---------------------------- | --------------------------------------------------- |
+| `ctx.ir`                     | Semantic IR with `entities`, `enums`, `extensions`  |
+| `ctx.inflection`             | Naming utilities (`camelCase`, `singularize`, etc.) |
+| `ctx.typeHints`              | User-configured type overrides                      |
+| `ctx.file(path)`             | Create a `FileBuilder` for structured emission      |
+| `ctx.emit(path, content)`    | Emit raw string content                             |
+| `ctx.getArtifact(cap)`       | Read data from upstream plugins                     |
+| `ctx.setArtifact(cap, data)` | Share data with downstream plugins                  |
 
 ### Conjure API
 
@@ -614,31 +660,28 @@ Conjure builds AST nodes for code generation:
 
 ```typescript
 // Method chains: z.string().uuid()
-conjure.id("z").method("string").method("uuid").build()
+conjure.id("z").method("string").method("uuid").build();
 
 // Object literals: { path: "/users", method: "GET" }
-conjure.obj()
-  .prop("path", conjure.str("/users"))
-  .prop("method", conjure.str("GET"))
-  .build()
+conjure.obj().prop("path", conjure.str("/users")).prop("method", conjure.str("GET")).build();
 
 // TypeScript types
-conjure.ts.string()                              // string
-conjure.ts.ref("User")                           // User
-conjure.ts.array(conjure.ts.string())            // string[]
-conjure.ts.union(conjure.ts.string(), ts.null()) // string | null
+conjure.ts.string(); // string
+conjure.ts.ref("User"); // User
+conjure.ts.array(conjure.ts.string()); // string[]
+conjure.ts.union(conjure.ts.string(), ts.null()); // string | null
 
 // Statements
-conjure.stmt.const("x", conjure.num(42))         // const x = 42
-conjure.stmt.return(conjure.id("result"))        // return result
+conjure.stmt.const("x", conjure.num(42)); // const x = 42
+conjure.stmt.return(conjure.id("result")); // return result
 
 // Exports with symbol tracking (for import resolution)
-exp.interface("UserRow", symbolCtx, properties)
-exp.const("UserSchema", symbolCtx, schemaExpr)
-exp.typeAlias("UserId", symbolCtx, ts.string())
+exp.interface("UserRow", symbolCtx, properties);
+exp.const("UserSchema", symbolCtx, schemaExpr);
+exp.typeAlias("UserId", symbolCtx, ts.string());
 
 // Print to code string
-conjure.print(node)
+conjure.print(node);
 ```
 
 ### Depending on Other Plugins
@@ -648,19 +691,19 @@ Use `requires` to depend on capabilities from other plugins:
 ```typescript
 definePlugin({
   name: "zod-schemas",
-  requires: ["types"],  // Must run after types plugin
+  requires: ["types"], // Must run after types plugin
   provides: ["schemas:zod"],
   // ...
-})
+});
 ```
 
 Access upstream artifacts:
 
 ```typescript
-run: (ctx) => {
-  const typesArtifact = ctx.getArtifact("types")
+run: ctx => {
+  const typesArtifact = ctx.getArtifact("types");
   // Use data from types plugin
-}
+};
 ```
 
 ## Development

@@ -3,14 +3,14 @@
  *
  * Tests for matching fields against configured type hints with precedence rules.
  */
-import { describe, it, expect } from "@effect/vitest"
-import { Option } from "effect"
+import { describe, it, expect } from "@effect/vitest";
+import { Option } from "effect";
 import {
   createTypeHintRegistry,
   emptyTypeHintRegistry,
   type TypeHintFieldMatch,
-} from "../services/type-hints.js"
-import type { TypeHint } from "../config.js"
+} from "../services/type-hints.js";
+import type { TypeHint } from "../config.js";
 
 describe("TypeHintRegistry", () => {
   describe("emptyTypeHintRegistry", () => {
@@ -20,11 +20,11 @@ describe("TypeHintRegistry", () => {
         table: "users",
         column: "id",
         pgType: "uuid",
-      }
+      };
 
-      const hints = emptyTypeHintRegistry.getHints(field)
-      expect(hints).toEqual({})
-    })
+      const hints = emptyTypeHintRegistry.getHints(field);
+      expect(hints).toEqual({});
+    });
 
     it("returns undefined for any specific hint", () => {
       const field: TypeHintFieldMatch = {
@@ -32,12 +32,12 @@ describe("TypeHintRegistry", () => {
         table: "users",
         column: "id",
         pgType: "uuid",
-      }
+      };
 
-      const result = emptyTypeHintRegistry.getHint<string>(field, "ts")
-      expect(Option.isNone(result)).toBe(true)
-    })
-  })
+      const result = emptyTypeHintRegistry.getHint<string>(field, "ts");
+      expect(Option.isNone(result)).toBe(true);
+    });
+  });
 
   describe("createTypeHintRegistry", () => {
     describe("basic matching", () => {
@@ -47,19 +47,19 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "string", zod: "z.string().uuid()" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ ts: "string", zod: "z.string().uuid()" })
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ ts: "string", zod: "z.string().uuid()" });
+      });
 
       it("matches by column only", () => {
         const hints: TypeHint[] = [
@@ -67,19 +67,19 @@ describe("TypeHintRegistry", () => {
             match: { column: "email" },
             hints: { ts: "Email" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "email",
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ ts: "Email" })
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ ts: "Email" });
+      });
 
       it("matches by table only", () => {
         const hints: TypeHint[] = [
@@ -87,19 +87,19 @@ describe("TypeHintRegistry", () => {
             match: { table: "audit_log" },
             hints: { readonly: true },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "audit_log",
           column: "event",
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ readonly: true })
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ readonly: true });
+      });
 
       it("matches by schema only", () => {
         const hints: TypeHint[] = [
@@ -107,19 +107,19 @@ describe("TypeHintRegistry", () => {
             match: { schema: "internal" },
             hints: { internal: true },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "internal",
           table: "metrics",
           column: "value",
           pgType: "numeric",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ internal: true })
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ internal: true });
+      });
 
       it("matches by table + column", () => {
         const hints: TypeHint[] = [
@@ -127,19 +127,19 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ ts: "UserId" })
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ ts: "UserId" });
+      });
 
       it("matches by schema + table + column", () => {
         const hints: TypeHint[] = [
@@ -147,20 +147,20 @@ describe("TypeHintRegistry", () => {
             match: { schema: "auth", table: "users", column: "id" },
             hints: { ts: "AuthUserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "auth",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({ ts: "AuthUserId" })
-      })
-    })
+        const result = registry.getHints(field);
+        expect(result).toEqual({ ts: "AuthUserId" });
+      });
+    });
 
     describe("non-matching", () => {
       it("returns empty when pgType does not match", () => {
@@ -169,19 +169,19 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "string" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "name",
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({})
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({});
+      });
 
       it("returns empty when all criteria must match but one fails", () => {
         const hints: TypeHint[] = [
@@ -189,33 +189,33 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "name", // Different column
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({})
-      })
+        const result = registry.getHints(field);
+        expect(result).toEqual({});
+      });
 
       it("returns empty when no hints are configured", () => {
-        const registry = createTypeHintRegistry([])
+        const registry = createTypeHintRegistry([]);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({})
-      })
-    })
+        const result = registry.getHints(field);
+        expect(result).toEqual({});
+      });
+    });
 
     describe("precedence", () => {
       it("table+column overrides pgType", () => {
@@ -228,19 +228,19 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result["ts"]).toBe("UserId")
-      })
+        const result = registry.getHints(field);
+        expect(result["ts"]).toBe("UserId");
+      });
 
       it("column overrides pgType", () => {
         const hints: TypeHint[] = [
@@ -252,19 +252,19 @@ describe("TypeHintRegistry", () => {
             match: { column: "email" },
             hints: { ts: "Email" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "email",
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result["ts"]).toBe("Email")
-      })
+        const result = registry.getHints(field);
+        expect(result["ts"]).toBe("Email");
+      });
 
       it("table overrides pgType", () => {
         const hints: TypeHint[] = [
@@ -276,19 +276,19 @@ describe("TypeHintRegistry", () => {
             match: { table: "special" },
             hints: { style: "special" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "special",
           column: "value",
           pgType: "text",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result["style"]).toBe("special")
-      })
+        const result = registry.getHints(field);
+        expect(result["style"]).toBe("special");
+      });
 
       it("schema+table+column overrides table+column", () => {
         const hints: TypeHint[] = [
@@ -300,19 +300,19 @@ describe("TypeHintRegistry", () => {
             match: { schema: "auth", table: "users", column: "id" },
             hints: { ts: "AuthUserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "auth",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result["ts"]).toBe("AuthUserId")
-      })
+        const result = registry.getHints(field);
+        expect(result["ts"]).toBe("AuthUserId");
+      });
 
       it("later rules override earlier for same specificity", () => {
         const hints: TypeHint[] = [
@@ -324,20 +324,20 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "SecondUuid" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result["ts"]).toBe("SecondUuid")
-      })
-    })
+        const result = registry.getHints(field);
+        expect(result["ts"]).toBe("SecondUuid");
+      });
+    });
 
     describe("merging", () => {
       it("merges hints from multiple matching rules", () => {
@@ -354,23 +354,23 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId" }, // Overrides ts from pgType
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
+        const result = registry.getHints(field);
         expect(result).toEqual({
           ts: "UserId", // Overridden by most specific
           zod: "z.string().uuid()", // From pgType match
           branded: true, // From column match
-        })
-      })
+        });
+      });
 
       it("preserves non-overlapping hints from lower precedence", () => {
         const hints: TypeHint[] = [
@@ -382,24 +382,24 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
+        const result = registry.getHints(field);
         expect(result).toEqual({
           ts: "UserId",
           zod: "z.string().uuid()",
           import: "@/schemas",
-        })
-      })
-    })
+        });
+      });
+    });
 
     describe("getHint", () => {
       it("returns specific hint value", () => {
@@ -408,19 +408,19 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "string", zod: "z.string().uuid()" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        expect(Option.getOrNull(registry.getHint<string>(field, "ts"))).toBe("string")
-        expect(Option.getOrNull(registry.getHint<string>(field, "zod"))).toBe("z.string().uuid()")
-      })
+        expect(Option.getOrNull(registry.getHint<string>(field, "ts"))).toBe("string");
+        expect(Option.getOrNull(registry.getHint<string>(field, "zod"))).toBe("z.string().uuid()");
+      });
 
       it("returns None for missing key", () => {
         const hints: TypeHint[] = [
@@ -428,18 +428,18 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "string" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        expect(Option.isNone(registry.getHint<string>(field, "zod"))).toBe(true)
-      })
+        expect(Option.isNone(registry.getHint<string>(field, "zod"))).toBe(true);
+      });
 
       it("returns None for non-matching field", () => {
         const hints: TypeHint[] = [
@@ -447,19 +447,19 @@ describe("TypeHintRegistry", () => {
             match: { pgType: "uuid" },
             hints: { ts: "string" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "name",
           pgType: "text",
-        }
+        };
 
-        expect(Option.isNone(registry.getHint<string>(field, "ts"))).toBe(true)
-      })
-    })
+        expect(Option.isNone(registry.getHint<string>(field, "ts"))).toBe(true);
+      });
+    });
 
     describe("complex scenarios", () => {
       it("handles typical configuration with multiple override levels", () => {
@@ -484,9 +484,9 @@ describe("TypeHintRegistry", () => {
             match: { table: "users", column: "id" },
             hints: { ts: "UserId", branded: "UserId" },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
 
         // users.id (uuid) -> UserId with uuid zod
         const userId: TypeHintFieldMatch = {
@@ -494,11 +494,11 @@ describe("TypeHintRegistry", () => {
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
-        const userIdHints = registry.getHints(userId)
-        expect(userIdHints["ts"]).toBe("UserId")
-        expect(userIdHints["zod"]).toBe("z.string().uuid()")
-        expect(userIdHints["branded"]).toBe("UserId")
+        };
+        const userIdHints = registry.getHints(userId);
+        expect(userIdHints["ts"]).toBe("UserId");
+        expect(userIdHints["zod"]).toBe("z.string().uuid()");
+        expect(userIdHints["branded"]).toBe("UserId");
 
         // users.email (text) -> Email
         const userEmail: TypeHintFieldMatch = {
@@ -506,10 +506,10 @@ describe("TypeHintRegistry", () => {
           table: "users",
           column: "email",
           pgType: "text",
-        }
-        const emailHints = registry.getHints(userEmail)
-        expect(emailHints["ts"]).toBe("Email")
-        expect(emailHints["zod"]).toBe("emailSchema")
+        };
+        const emailHints = registry.getHints(userEmail);
+        expect(emailHints["ts"]).toBe("Email");
+        expect(emailHints["zod"]).toBe("emailSchema");
 
         // posts.id (uuid) -> just uuid hints
         const postId: TypeHintFieldMatch = {
@@ -517,11 +517,11 @@ describe("TypeHintRegistry", () => {
           table: "posts",
           column: "id",
           pgType: "uuid",
-        }
-        const postIdHints = registry.getHints(postId)
-        expect(postIdHints["ts"]).toBe("string")
-        expect(postIdHints["zod"]).toBe("z.string().uuid()")
-        expect(postIdHints["branded"]).toBeUndefined()
+        };
+        const postIdHints = registry.getHints(postId);
+        expect(postIdHints["ts"]).toBe("string");
+        expect(postIdHints["zod"]).toBe("z.string().uuid()");
+        expect(postIdHints["branded"]).toBeUndefined();
 
         // posts.title (text) -> just text hints
         const postTitle: TypeHintFieldMatch = {
@@ -529,11 +529,11 @@ describe("TypeHintRegistry", () => {
           table: "posts",
           column: "title",
           pgType: "text",
-        }
-        const titleHints = registry.getHints(postTitle)
-        expect(titleHints["ts"]).toBe("string")
-        expect(titleHints["zod"]).toBe("z.string()")
-      })
+        };
+        const titleHints = registry.getHints(postTitle);
+        expect(titleHints["ts"]).toBe("string");
+        expect(titleHints["zod"]).toBe("z.string()");
+      });
 
       it("handles empty match (requires at least one criterion)", () => {
         const hints: TypeHint[] = [
@@ -541,19 +541,19 @@ describe("TypeHintRegistry", () => {
             match: {}, // Empty match - should never match
             hints: { shouldNotMatch: true },
           },
-        ]
+        ];
 
-        const registry = createTypeHintRegistry(hints)
+        const registry = createTypeHintRegistry(hints);
         const field: TypeHintFieldMatch = {
           schema: "public",
           table: "users",
           column: "id",
           pgType: "uuid",
-        }
+        };
 
-        const result = registry.getHints(field)
-        expect(result).toEqual({})
-      })
-    })
-  })
-})
+        const result = registry.getHints(field);
+        expect(result).toEqual({});
+      });
+    });
+  });
+});

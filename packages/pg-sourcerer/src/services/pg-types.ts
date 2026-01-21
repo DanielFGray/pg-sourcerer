@@ -4,7 +4,7 @@
  * Provides well-known PostgreSQL type OIDs and a default mapping to TypeScript types.
  * Plugins can use these as a starting point and override as needed.
  */
-import { Array as Arr, Option, pipe } from "effect"
+import { Array as Arr, Option, pipe } from "effect";
 
 /**
  * Well-known PostgreSQL built-in type OIDs.
@@ -79,9 +79,9 @@ export const PgTypeOid = {
   VarBit: 1562,
   TsVector: 3614,
   TsQuery: 3615,
-} as const
+} as const;
 
-export type PgTypeOid = (typeof PgTypeOid)[keyof typeof PgTypeOid]
+export type PgTypeOid = (typeof PgTypeOid)[keyof typeof PgTypeOid];
 
 /**
  * TypeScript primitive types for code generation
@@ -95,22 +95,22 @@ export const TsType = {
   Buffer: "Buffer",
   Unknown: "unknown",
   Null: "null",
-} as const
+} as const;
 
-export type TsType = (typeof TsType)[keyof typeof TsType]
+export type TsType = (typeof TsType)[keyof typeof TsType];
 
 /**
  * Result of resolving a PostgreSQL type to TypeScript
  */
 export interface TypeMappingResult {
   /** The TypeScript type string */
-  readonly tsType: string
+  readonly tsType: string;
   /** Whether this is an enum type from the IR */
-  readonly isEnum: boolean
+  readonly isEnum: boolean;
   /** If isEnum, the enum name from IR */
-  readonly enumName?: string
+  readonly enumName?: string;
   /** Whether this is an array type */
-  readonly isArray: boolean
+  readonly isArray: boolean;
 }
 
 /**
@@ -123,25 +123,25 @@ export function defaultPgToTs(oid: number): Option.Option<TsType> {
   switch (oid) {
     // Boolean
     case PgTypeOid.Bool:
-      return Option.some(TsType.Boolean)
+      return Option.some(TsType.Boolean);
 
     // Integer types → number
     case PgTypeOid.Int2:
     case PgTypeOid.Int4:
     case PgTypeOid.Oid:
-      return Option.some(TsType.Number)
+      return Option.some(TsType.Number);
 
     // Floating point → number
     case PgTypeOid.Float4:
     case PgTypeOid.Float8:
-      return Option.some(TsType.Number)
+      return Option.some(TsType.Number);
 
     // Big integers → string (to avoid precision loss)
     // Plugins like Kysely may override to bigint
     case PgTypeOid.Int8:
     case PgTypeOid.Numeric:
     case PgTypeOid.Money:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // Text types → string
     case PgTypeOid.Char:
@@ -152,40 +152,40 @@ export function defaultPgToTs(oid: number): Option.Option<TsType> {
     case PgTypeOid.Xml:
     case PgTypeOid.Bit:
     case PgTypeOid.VarBit:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // UUID → string
     case PgTypeOid.Uuid:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // Network types → string
     case PgTypeOid.Inet:
     case PgTypeOid.Cidr:
     case PgTypeOid.MacAddr:
     case PgTypeOid.MacAddr8:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // Date/Time with date component → Date
     case PgTypeOid.Date:
     case PgTypeOid.Timestamp:
     case PgTypeOid.TimestampTz:
-      return Option.some(TsType.Date)
+      return Option.some(TsType.Date);
 
     // Time without date → string
     case PgTypeOid.Time:
     case PgTypeOid.TimeTz:
     case PgTypeOid.Interval:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // JSON → unknown
     case PgTypeOid.Json:
     case PgTypeOid.JsonB:
     case PgTypeOid.JsonPath:
-      return Option.some(TsType.Unknown)
+      return Option.some(TsType.Unknown);
 
     // Binary → Buffer
     case PgTypeOid.Bytea:
-      return Option.some(TsType.Buffer)
+      return Option.some(TsType.Buffer);
 
     // Geometric types → string (typically serialized)
     case PgTypeOid.Point:
@@ -195,7 +195,7 @@ export function defaultPgToTs(oid: number): Option.Option<TsType> {
     case PgTypeOid.Path:
     case PgTypeOid.Polygon:
     case PgTypeOid.Circle:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // Range types → string
     case PgTypeOid.Int4Range:
@@ -204,15 +204,15 @@ export function defaultPgToTs(oid: number): Option.Option<TsType> {
     case PgTypeOid.TsRange:
     case PgTypeOid.TsTzRange:
     case PgTypeOid.DateRange:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     // Full-text search → string
     case PgTypeOid.TsVector:
     case PgTypeOid.TsQuery:
-      return Option.some(TsType.String)
+      return Option.some(TsType.String);
 
     default:
-      return Option.none()
+      return Option.none();
   }
 }
 
@@ -220,7 +220,7 @@ export function defaultPgToTs(oid: number): Option.Option<TsType> {
  * Type mapper function signature.
  * Takes an OID and returns an Option of TypeScript type string.
  */
-export type TypeMapper = (oid: number) => Option.Option<string>
+export type TypeMapper = (oid: number) => Option.Option<string>;
 
 /**
  * Compose multiple type mappers into one.
@@ -240,16 +240,16 @@ export function composeMappers(...mappers: TypeMapper[]): TypeMapper {
   return (oid: number) =>
     pipe(
       mappers,
-      Arr.findFirst((mapper) => Option.isSome(mapper(oid))),
-      Option.flatMap((mapper) => mapper(oid))
-    )
+      Arr.findFirst(mapper => Option.isSome(mapper(oid))),
+      Option.flatMap(mapper => mapper(oid)),
+    );
 }
 
 /**
  * Wrap a type string as an array type if needed.
  */
 export function wrapArrayType(baseType: string, isArray: boolean): string {
-  return isArray ? `${baseType}[]` : baseType
+  return isArray ? `${baseType}[]` : baseType;
 }
 
 /**
@@ -258,10 +258,10 @@ export function wrapArrayType(baseType: string, isArray: boolean): string {
 export function wrapNullable(
   baseType: string,
   nullable: boolean,
-  style: "union" | "optional" = "union"
+  style: "union" | "optional" = "union",
 ): string {
-  if (!nullable) return baseType
-  return style === "union" ? `${baseType} | null` : `${baseType}?`
+  if (!nullable) return baseType;
+  return style === "union" ? `${baseType} | null` : `${baseType}?`;
 }
 
 /**
@@ -269,11 +269,11 @@ export function wrapNullable(
  */
 export interface EnumLookupResult {
   /** The inflected TypeScript enum name */
-  readonly name: string
+  readonly name: string;
   /** The original PostgreSQL enum name */
-  readonly pgName: string
+  readonly pgName: string;
   /** The enum values */
-  readonly values: readonly string[]
+  readonly values: readonly string[];
 }
 
 // ============================================================================
@@ -284,8 +284,8 @@ export interface EnumLookupResult {
  * Minimal extension info needed for type mapping
  */
 export interface ExtensionInfo {
-  readonly name: string
-  readonly namespaceOid: string
+  readonly name: string;
+  readonly namespaceOid: string;
 }
 
 /**
@@ -297,7 +297,7 @@ export const ExtensionTypeMap: Readonly<Record<string, Readonly<Record<string, T
     citext: TsType.String,
   },
   // Add more extensions as needed (hstore, ltree, postgis, etc.)
-}
+};
 
 /**
  * Look up a type's TypeScript mapping by checking if it belongs to a known extension.
@@ -328,18 +328,18 @@ export const ExtensionTypeMap: Readonly<Record<string, Readonly<Record<string, T
 export function getExtensionTypeMapping(
   typeName: string,
   typeNamespaceOid: string,
-  extensions: readonly ExtensionInfo[]
+  extensions: readonly ExtensionInfo[],
 ): Option.Option<TsType> {
   return pipe(
     extensions,
-    Arr.filter((ext) => ext.namespaceOid === typeNamespaceOid),
-    Arr.findFirst((ext) => {
-      const extTypeMap = ExtensionTypeMap[ext.name]
-      return extTypeMap !== undefined && extTypeMap[typeName] !== undefined
+    Arr.filter(ext => ext.namespaceOid === typeNamespaceOid),
+    Arr.findFirst(ext => {
+      const extTypeMap = ExtensionTypeMap[ext.name];
+      return extTypeMap !== undefined && extTypeMap[typeName] !== undefined;
     }),
-    Option.flatMap((ext) => Option.fromNullable(ExtensionTypeMap[ext.name])),
-    Option.flatMap((extTypeMap) => Option.fromNullable(extTypeMap[typeName]))
-  )
+    Option.flatMap(ext => Option.fromNullable(ExtensionTypeMap[ext.name])),
+    Option.flatMap(extTypeMap => Option.fromNullable(extTypeMap[typeName])),
+  );
 }
 
 // ============================================================================
@@ -365,8 +365,12 @@ export function getExtensionTypeMapping(
  * ```
  */
 export function findEnumByPgName(
-  enums: Iterable<{ readonly pgName: string; readonly name: string; readonly values: readonly string[] }>,
-  pgTypeName: string
+  enums: Iterable<{
+    readonly pgName: string;
+    readonly name: string;
+    readonly values: readonly string[];
+  }>,
+  pgTypeName: string,
 ): Option.Option<EnumLookupResult> {
   return pipe(
     Array.from(enums),
@@ -375,8 +379,8 @@ export function findEnumByPgName(
       name: enumDef.name,
       pgName: enumDef.pgName,
       values: enumDef.values,
-    }))
-  )
+    })),
+  );
 }
 
 // ============================================================================
@@ -388,9 +392,9 @@ export function findEnumByPgName(
  */
 export interface CompositeLookupResult {
   /** The inflected TypeScript type name */
-  readonly name: string
+  readonly name: string;
   /** The original PostgreSQL composite type name */
-  readonly pgName: string
+  readonly pgName: string;
 }
 
 /**
@@ -413,7 +417,7 @@ export interface CompositeLookupResult {
  */
 export function findCompositeByPgName(
   composites: Iterable<{ readonly pgName: string; readonly name: string }>,
-  pgTypeName: string
+  pgTypeName: string,
 ): Option.Option<CompositeLookupResult> {
   return pipe(
     Array.from(composites),
@@ -421,6 +425,6 @@ export function findCompositeByPgName(
     Option.map(composite => ({
       name: composite.name,
       pgName: composite.pgName,
-    }))
-  )
+    })),
+  );
 }

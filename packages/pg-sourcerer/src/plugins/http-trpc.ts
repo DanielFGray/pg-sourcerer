@@ -1,67 +1,107 @@
 /**
- * HTTP tRPC Plugin - Generate tRPC routers from query plugins
+ * HTTP tRPC Plugin - Generates tRPC routers from query symbols
  *
- * Consumes method symbols from sql-queries or kysely-queries via the symbol registry
- * and generates type-safe tRPC routers with schema validation.
+ * Consumes "queries" and "schema" capabilities (provider-agnostic).
+ * Works with any queries provider (kysely, drizzle, effect-sql, etc.)
+ * and any schema provider (zod, arktype, effect, etc.).
+ *
+ * Uses the SymbolRegistry to resolve query functions and optionally
+ * schema symbols for request validation.
+ *
+ * Imports are resolved via the cross-reference system:
+ * - Calls registry.import(queryCapability).ref() during render
+ * - Emit phase generates imports from the recorded references
  */
-import { Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import { definePlugin, type PluginContext } from "../services/plugin.js";
-import { conjure, cast } from "../lib/conjure.js";
-import { inflect } from "../services/inflection.js";
-import type { MethodSymbol } from "../services/symbols.js";
-import type { QueryMethodKind, QueryMethodParam } from "../ir/extensions/queries.js";
-import {
-  SCHEMA_BUILDER_KIND,
-  type SchemaBuilderRequest,
-  type SchemaBuilderResult,
-} from "../ir/extensions/schema-builder.js";
 
-const { b } = conjure;
+import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
+import { IR } from "../services/ir.js";
+import { Inflection, type CoreInflection } from "../services/inflection.js";
+import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { isTableEntity } from "../ir/semantic-ir.js";
+import { QueryMethodKind } from "../ir/extensions/queries.js";
+import { conjure, cast } from "../conjure/index.js";
+import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
+import type { ExternalImport, RenderedSymbolWithImports } from "../runtime/emit.js";
+import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
+import { type UserModuleRef } from "../user-module.js";
+
+const b = conjure.b;
+const stmt = conjure.stmt;
+
+const PLUGIN_NAME = "trpc-http";
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
+const DEFAULT_OUTPUT_DIR = "";
+const DEFAULT_ROUTES_FILE = "trpc.ts";
+const DEFAULT_APP_FILE = "trpc.ts";
+
+/**
+ * Schema-validated portion of the config (simple types only).
+ */
 const HttpTrpcConfigSchema = S.Struct({
-  /** Output directory for generated router files. Default: "trpc" */
-  outputDir: S.optionalWith(S.String, { default: () => "trpc" }),
-
-  /**
-   * Header content to prepend to each generated file.
-   * MUST import `router` and a base procedure (e.g., `publicProcedure`).
-   *
-   * @example
-   * ```typescript
-   * header: `import { router, publicProcedure } from "../trpc.js";`
-   * ```
-   */
-  header: S.String,
-
-  /**
-   * Name of the base procedure to use in generated code.
-   * Must match an import from your header.
-   * Default: "publicProcedure"
-   */
+  outputDir: S.optionalWith(S.String, { default: () => DEFAULT_OUTPUT_DIR }),
+  /** Name of the base procedure to use. Default: "publicProcedure" */
   baseProcedure: S.optionalWith(S.String, { default: () => "publicProcedure" }),
-
   /** Name of the aggregated router export. Default: "appRouter" */
   aggregatorName: S.optionalWith(S.String, { default: () => "appRouter" }),
 });
 
-/** Input config type (with optional fields) */
-export type HttpTrpcConfig = S.Schema.Encoded<typeof HttpTrpcConfigSchema>;
+/**
+ * Config type for user input.
+ */
+export interface HttpTrpcConfig {
+  outputDir?: string;
+  baseProcedure?: string;
+  aggregatorName?: string;
+  /**
+   * Import for tRPC router and procedure.
+   * Use userModule() helper to specify the path relative to your config file.
+   *
+   * @example
+   * ```typescript
+   * import { userModule } from "pg-sourcerer";
+   *
+   * trpc({
+   *   trpcImport: userModule("./trpc.ts", { named: ["router", "publicProcedure"] }),
+   * })
+   * ```
+   */
+  trpcImport?: UserModuleRef;
+  /**
+   * Output file for router handlers.
+   * Can be a static string or a function receiving FileNamingContext.
+   * @example "trpc.ts" - all routers in one file
+   * @example ({ entityName }) => `${entityName}/router.ts` - per-entity files
+   */
+  routesFile?: string | FileNaming;
+  /**
+   * Output file for the aggregator router.
+   * @example "index.ts"
+   */
+  appFile?: string | FileNaming;
+}
+
+/** Resolved config type with normalized FileNaming functions */
+interface ResolvedHttpTrpcConfig {
+  outputDir: string;
+  baseProcedure: string;
+  aggregatorName: string;
+  routesFile: FileNaming;
+  appFile: FileNaming;
+  trpcImport?: UserModuleRef;
+}
 
 // ============================================================================
-// String Helpers
+// String Helpers - removed, now using inflection service:
+// - inflection.variableName(entity, "Router") for router variable names
+// - inflection.camelCase(entity) for merged router keys
+// - inflection.pascalCase(field) for lookup field suffix
 // ============================================================================
-
-/** Convert PascalCase/camelCase to kebab-case */
-const toKebabCase = (str: string): string =>
-  str
-    .replace(/([a-z])([A-Z])/g, "$1-$2")
-    .replace(/_/g, "-")
-    .toLowerCase();
 
 // ============================================================================
 // Procedure Builders
@@ -85,15 +125,23 @@ const kindToProcedureType = (kind: QueryMethodKind): "query" | "mutation" => {
 };
 
 /**
- * Build the handler function body for a procedure.
- * tRPC handlers receive { input, ctx } and return data directly.
+ * Check if a param needs coercion (comes from URL string).
  */
-const buildProcedureBody = (method: MethodSymbol): n.Statement[] => {
-  const queryFnName = method.name;
-  const callSig = method.callSignature ?? { style: "named" as const };
-  const statements: n.Statement[] = [];
+function needsCoercion(param: QueryMethodParam): boolean {
+  return (
+    param.source === "pk" ||
+    param.source === "fk" ||
+    param.source === "lookup" ||
+    param.source === "pagination"
+  );
+}
 
-  // Build the function call arguments based on callSignature
+/**
+ * Build the handler function body for a tRPC procedure.
+ * tRPC handlers receive { input } and return data directly.
+ */
+function buildProcedureBody(method: QueryMethod): n.Statement[] {
+  const callSig = method.callSignature ?? { style: "named" as const };
   const args: n.Expression[] = [];
 
   if (callSig.style === "positional") {
@@ -102,7 +150,7 @@ const buildProcedureBody = (method: MethodSymbol): n.Statement[] => {
       args.push(b.memberExpression(b.identifier("input"), b.identifier(param.name)));
     }
   } else {
-    // Named: fn({ a, b, c }) or fn(input) for body
+    // Named style
     const bodyParam = method.params.find((p) => p.source === "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
@@ -110,34 +158,27 @@ const buildProcedureBody = (method: MethodSymbol): n.Statement[] => {
       args.push(b.identifier("input"));
     } else if (bodyParam && callSig.bodyStyle === "property") {
       // Body wrapped in property: fn({ id, data })
-      // Collect non-body params that need to be extracted from input
       const nonBodyParams = method.params.filter(
         (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination",
       );
 
       if (nonBodyParams.length > 0) {
-        // Generate: const { id, ...data } = input;
-        const destructureProps: n.Property[] = nonBodyParams.map((p) =>
-          b.property.from({ kind: "init", key: b.identifier(p.name), value: b.identifier(p.name), shorthand: true }),
-        );
-        const restId = b.identifier(bodyParam.name);
-        const restElem = b.restElement(restId);
-        const pattern = b.objectPattern([...destructureProps, restElem]);
-        const destructureDecl = b.variableDeclaration("const", [
-          b.variableDeclarator(pattern, b.identifier("input")),
-        ]);
-        statements.push(destructureDecl);
-
-        // Build: { id, data } using the destructured variables
+        // Build object with non-body params + body property
         let objBuilder = conjure.obj();
         for (const param of nonBodyParams) {
-          objBuilder = objBuilder.shorthand(param.name);
+          objBuilder = objBuilder.prop(
+            param.name,
+            b.memberExpression(b.identifier("input"), b.identifier(param.name)),
+          );
         }
-        objBuilder = objBuilder.shorthand(bodyParam.name);
+        objBuilder = objBuilder.prop(
+          bodyParam.name,
+          b.memberExpression(b.identifier("input"), b.identifier(bodyParam.name)),
+        );
         args.push(objBuilder.build());
       } else {
-        // No non-body params, just wrap input: fn({ data: input })
-        args.push(conjure.obj().prop(bodyParam.name, b.identifier("input")).build());
+        // No non-body params, just pass input
+        args.push(b.identifier("input"));
       }
     } else if (method.params.length > 0) {
       // Simple named params: fn(input) since input matches the shape
@@ -145,128 +186,38 @@ const buildProcedureBody = (method: MethodSymbol): n.Statement[] => {
     }
   }
 
-  // Build: return await queryFn(args)
-  const queryCall = b.callExpression(b.identifier(queryFnName), args.map(cast.toExpr));
-  const awaitExpr = b.awaitExpression(queryCall);
+  // Build: queryFn(args)
+  const queryCall = b.callExpression(b.identifier(method.name), args.map(cast.toExpr));
+
+  // Add the appropriate .execute*() method based on query kind
+  const executeMethod =
+    method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)
+      ? "executeTakeFirst"
+      : method.kind === "create" || method.kind === "update"
+        ? "executeTakeFirstOrThrow"
+        : "execute";
+
+  const queryWithExecute = b.callExpression(
+    b.memberExpression(queryCall, b.identifier(executeMethod)),
+    [],
+  );
+  const awaitExpr = b.awaitExpression(queryWithExecute);
 
   // For delete, return success object
   if (method.kind === "delete") {
-    statements.push(b.expressionStatement(awaitExpr));
-    statements.push(b.returnStatement(conjure.obj().prop("success", b.booleanLiteral(true)).build()));
-    return statements;
+    return [
+      b.expressionStatement(awaitExpr),
+      b.returnStatement(conjure.obj().prop("success", b.booleanLiteral(true)).build()),
+    ];
   }
 
-  statements.push(b.returnStatement(awaitExpr));
-  return statements;
-};
-
-/** Schema import info needed for body validation */
-interface SchemaImport {
-  readonly entity: string;
-  readonly shape: "insert" | "update";
-  readonly schemaName: string;
+  return [b.returnStatement(awaitExpr)];
 }
 
 /**
- * Determine if a method needs body validation and which schema to use.
+ * Build Zod type expression for a param.
  */
-const getBodySchemaImport = (method: MethodSymbol, entityName: string): SchemaImport | null => {
-  if (method.kind === "create") {
-    return { entity: entityName, shape: "insert", schemaName: `${entityName}Insert` };
-  }
-  if (method.kind === "update") {
-    return { entity: entityName, shape: "update", schemaName: `${entityName}Update` };
-  }
-  return null;
-};
-
-/**
- * Function type for requesting schema builder results.
- */
-type SchemaBuilderFn = (params: readonly QueryMethodParam[]) => SchemaBuilderResult | undefined;
-
-/**
- * Build the input schema expression for a procedure.
- */
-const buildInputSchema = (
-  method: MethodSymbol,
-  entityName: string,
-  requestSchema: SchemaBuilderFn,
-): {
-  inputExpr: n.Expression | null;
-  bodySchema: SchemaImport | null;
-  schemaBuilderImport: SchemaBuilderResult["importSpec"] | null;
-} => {
-  const bodySchema = getBodySchemaImport(method, entityName);
-  const nonBodyParams = method.params.filter((p) => p.source !== "body");
-  const callSig = method.callSignature ?? { style: "named" as const };
-
-  // For update with bodyStyle: "property", we need to merge PK params with body schema
-  if (bodySchema && nonBodyParams.length > 0 && callSig.bodyStyle === "property") {
-    // Build: z.object({ id: z.coerce.number() }).merge(PostUpdate)
-    let objBuilder = conjure.obj();
-    for (const p of nonBodyParams) {
-      objBuilder = objBuilder.prop(p.name, buildZodParamType(p));
-    }
-    const zodObject = b.callExpression(
-      b.memberExpression(b.identifier("z"), b.identifier("object")),
-      [cast.toExpr(objBuilder.build())],
-    );
-    const mergedSchema = b.callExpression(
-      b.memberExpression(zodObject, b.identifier("merge")),
-      [b.identifier(bodySchema.schemaName)],
-    );
-    return {
-      inputExpr: mergedSchema,
-      bodySchema,
-      schemaBuilderImport: { names: ["z"], from: "zod" },
-    };
-  }
-
-  // Body params only use imported entity schemas
-  if (bodySchema) {
-    return {
-      inputExpr: b.identifier(bodySchema.schemaName),
-      bodySchema,
-      schemaBuilderImport: null,
-    };
-  }
-
-  // Non-body params: use schema builder
-  if (nonBodyParams.length === 0) {
-    return { inputExpr: null, bodySchema: null, schemaBuilderImport: null };
-  }
-
-  const schemaResult = requestSchema(nonBodyParams);
-  if (schemaResult) {
-    return {
-      inputExpr: schemaResult.ast,
-      bodySchema: null,
-      schemaBuilderImport: schemaResult.importSpec,
-    };
-  }
-
-  // Fallback: build inline z.object (tRPC requires Zod)
-  let objBuilder = conjure.obj();
-  for (const param of nonBodyParams) {
-    const zodType = buildZodParamType(param);
-    objBuilder = objBuilder.prop(param.name, zodType);
-  }
-
-  return {
-    inputExpr: b.callExpression(
-      b.memberExpression(b.identifier("z"), b.identifier("object")),
-      [cast.toExpr(objBuilder.build())],
-    ),
-    bodySchema: null,
-    schemaBuilderImport: { names: ["z"], from: "zod" },
-  };
-};
-
-/**
- * Build Zod type expression for a param (fallback when no schema-builder).
- */
-const buildZodParamType = (param: QueryMethodParam): n.Expression => {
+function buildZodParamType(param: QueryMethodParam): n.Expression {
   const baseType = param.type.toLowerCase();
 
   let zodCall: n.Expression;
@@ -312,32 +263,108 @@ const buildZodParamType = (param: QueryMethodParam): n.Expression => {
   }
 
   return zodCall;
-};
+}
 
 /**
- * Build a single tRPC procedure.
+ * Get the body schema name for a method if it needs validation.
  */
-const buildProcedure = (
-  method: MethodSymbol,
+function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
+  if (method.kind === "create") {
+    return `${entityName}Insert`;
+  }
+  if (method.kind === "update") {
+    // Use UpdateInput schema: required PK + optional non-PK fields
+    return `${entityName}UpdateInput`;
+  }
+  return null;
+}
+
+/**
+ * Build input schema expression for a procedure.
+ * Returns the schema expression and whether we need z import.
+ */
+function buildInputSchema(
+  method: QueryMethod,
+  entityName: string,
+): {
+  inputExpr: n.Expression | null;
+  bodySchemaName: string | null;
+  needsZodImport: boolean;
+} {
+  const bodySchemaName = getBodySchemaName(method, entityName);
+  const nonBodyParams = method.params.filter((p) => p.source !== "body");
+  const callSig = method.callSignature ?? { style: "named" as const };
+
+  // For update with bodyStyle: "property", merge PK params with body schema
+  if (bodySchemaName && nonBodyParams.length > 0 && callSig.bodyStyle === "property") {
+    let objBuilder = conjure.obj();
+    for (const p of nonBodyParams) {
+      objBuilder = objBuilder.prop(p.name, buildZodParamType(p));
+    }
+    const zodObject = b.callExpression(
+      b.memberExpression(b.identifier("z"), b.identifier("object")),
+      [cast.toExpr(objBuilder.build())],
+    );
+    const mergedSchema = b.callExpression(
+      b.memberExpression(zodObject, b.identifier("merge")),
+      [b.identifier(bodySchemaName)],
+    );
+    return {
+      inputExpr: mergedSchema,
+      bodySchemaName,
+      needsZodImport: true,
+    };
+  }
+
+  // Body params only use imported entity schemas
+  if (bodySchemaName) {
+    return {
+      inputExpr: b.identifier(bodySchemaName),
+      bodySchemaName,
+      needsZodImport: false,
+    };
+  }
+
+  // Non-body params: build inline z.object
+  if (nonBodyParams.length === 0) {
+    return { inputExpr: null, bodySchemaName: null, needsZodImport: false };
+  }
+
+  let objBuilder = conjure.obj();
+  for (const param of nonBodyParams) {
+    const zodType = buildZodParamType(param);
+    objBuilder = objBuilder.prop(param.name, zodType);
+  }
+
+  return {
+    inputExpr: b.callExpression(
+      b.memberExpression(b.identifier("z"), b.identifier("object")),
+      [cast.toExpr(objBuilder.build())],
+    ),
+    bodySchemaName: null,
+    needsZodImport: true,
+  };
+}
+
+/**
+ * Build a single tRPC procedure expression.
+ */
+function buildProcedure(
+  method: QueryMethod,
   entityName: string,
   baseProcedure: string,
-  requestSchema: SchemaBuilderFn,
 ): {
   procedureExpr: n.Expression;
-  bodySchema: SchemaImport | null;
-  schemaBuilderImport: SchemaBuilderResult["importSpec"] | null;
-} => {
+  bodySchemaName: string | null;
+  needsZodImport: boolean;
+} {
   const procedureType = kindToProcedureType(method.kind);
 
   // Start with base procedure
   let chainExpr: n.Expression = b.identifier(baseProcedure);
 
   // Build input schema
-  const { inputExpr, bodySchema, schemaBuilderImport } = buildInputSchema(
-    method,
-    entityName,
-    requestSchema,
-  );
+  const { inputExpr, bodySchemaName, needsZodImport } = buildInputSchema(method, entityName);
 
   // Add .input(schema) if there are params
   if (inputExpr) {
@@ -368,187 +395,324 @@ const buildProcedure = (
     [handler],
   );
 
-  return { procedureExpr: chainExpr, bodySchema, schemaBuilderImport };
-};
+  return { procedureExpr: chainExpr, bodySchemaName, needsZodImport };
+}
+
+/**
+ * Get the capability suffix for a query method.
+ */
+function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflection): string {
+  switch (method.kind) {
+    case "read":
+      return "findById";
+    case "list":
+      return "list";
+    case "create":
+      return "create";
+    case "update":
+      return "update";
+    case "delete":
+      return "delete";
+    case "lookup":
+      if (method.lookupField) {
+        const pascalField = inflection.pascalCase(method.lookupField);
+        return `findBy${pascalField}`;
+      }
+      return "lookup";
+    case "function":
+      return method.name;
+  }
+}
+
+/**
+ * Generate tRPC router for an entity.
+ */
+function generateTrpcRouter(
+  entityName: string,
+  queries: EntityQueriesExtension,
+  config: ResolvedHttpTrpcConfig,
+  registry: SymbolRegistryService,
+  inflection: CoreInflection,
+): {
+  statements: n.Statement[];
+  externalImports: ExternalImport[];
+} {
+  const routerName = inflection.variableName(entityName, "Router");
+  let needsZodImport = false;
+  const bodySchemaNames: string[] = [];
+
+  // Build router object
+  let routerObjBuilder = conjure.obj();
+
+  for (const method of queries.methods) {
+    // Record cross-reference for this query method
+    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, inflection)}`;
+    if (registry.has(methodCapability)) {
+      registry.import(methodCapability).ref();
+    }
+
+    const { procedureExpr, bodySchemaName, needsZodImport: methodNeedsZod } = buildProcedure(
+      method,
+      entityName,
+      config.baseProcedure,
+    );
+
+    if (bodySchemaName && !bodySchemaNames.includes(bodySchemaName)) {
+      bodySchemaNames.push(bodySchemaName);
+      // Import schema via cross-reference system
+      const schemaCapability = `schema:${bodySchemaName}`;
+      if (registry.has(schemaCapability)) {
+        registry.import(schemaCapability).ref();
+      }
+    }
+
+    if (methodNeedsZod) needsZodImport = true;
+
+    routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
+  }
+
+  // Build: export const userRouter = router({ ... })
+  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
+  const variableDeclarator = b.variableDeclarator(b.identifier(routerName), cast.toExpr(routerCall));
+  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
+
+  const externalImports: ExternalImport[] = [];
+
+  if (needsZodImport) {
+    externalImports.push({ from: "zod", names: ["z"] });
+  }
+
+  return {
+    statements: [variableDeclaration as n.Statement],
+    externalImports,
+  };
+}
+
+/**
+ * Generate aggregator router that combines all entity routers.
+ */
+function generateAggregator(
+  entities: Map<string, EntityQueriesExtension>,
+  config: ResolvedHttpTrpcConfig,
+  registry: SymbolRegistryService,
+  inflection: CoreInflection,
+): {
+  statements: n.Statement[];
+  externalImports: ExternalImport[];
+} {
+  const entityEntries = Array.from(entities.entries());
+
+  if (entityEntries.length === 0) {
+    return { statements: [], externalImports: [] };
+  }
+
+  // Build: router({ user: userRouter, post: postRouter, ... })
+  let routerObjBuilder = conjure.obj();
+
+  for (const [entityName] of entityEntries) {
+  const routerName = inflection.variableName(entityName, "Router");
+    const key = inflection.camelCase(entityName);
+
+    routerObjBuilder = routerObjBuilder.prop(key, b.identifier(routerName));
+
+    // Record cross-reference to the entity's router capability
+    const routeCapability = `http-routes:trpc:${entityName}`;
+    if (registry.has(routeCapability)) {
+      registry.import(routeCapability).ref();
+    }
+  }
+
+  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
+  const variableDeclarator = b.variableDeclarator(
+    b.identifier(config.aggregatorName),
+    cast.toExpr(routerCall),
+  );
+  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
+
+  // Also export the type: export type AppRouter = typeof appRouter
+  const typeExport = b.exportNamedDeclaration(
+    b.tsTypeAliasDeclaration(
+      b.identifier("AppRouter"),
+      b.tsTypeQuery(b.identifier(config.aggregatorName)),
+    ),
+  );
+
+  return {
+    statements: [variableDeclaration as n.Statement, typeExport as n.Statement],
+    externalImports: [],
+  };
+}
 
 // ============================================================================
 // Plugin Definition
 // ============================================================================
 
 /**
- * Create an http-trpc provider that generates tRPC routers.
+ * Create an http-trpc plugin that generates tRPC routers.
  *
  * @example
  * ```typescript
- * import { httpTrpc } from "pg-sourcerer"
+ * import { trpc } from "pg-sourcerer"
  *
  * export default defineConfig({
  *   plugins: [
  *     zod(),
- *     sqlQueries(),
- *     httpTrpc({
- *       header: `import { router, publicProcedure } from "../trpc.js";`,
+ *     kyselyQueries(),
+ *     trpc({
+ *       baseProcedure: "publicProcedure",
  *     }),
  *   ],
  * })
  * ```
  */
-export function httpTrpc(config: HttpTrpcConfig): ReturnType<typeof definePlugin> {
-  const parsed = S.decodeUnknownSync(HttpTrpcConfigSchema)(config);
+export function trpc(config?: HttpTrpcConfig): Plugin {
+  const schemaConfig = S.decodeSync(HttpTrpcConfigSchema)(config ?? {});
 
-  return definePlugin({
-    name: "http-trpc",
-    kind: "http-routes",
-    singleton: true,
+  const resolvedConfig: ResolvedHttpTrpcConfig = {
+    outputDir: schemaConfig.outputDir,
+    baseProcedure: schemaConfig.baseProcedure,
+    aggregatorName: schemaConfig.aggregatorName,
+    routesFile: normalizeFileNaming(config?.routesFile, DEFAULT_ROUTES_FILE),
+    appFile: normalizeFileNaming(config?.appFile, DEFAULT_APP_FILE),
+    trpcImport: config?.trpcImport,
+  };
 
-    canProvide: () => true,
+  return {
+    name: PLUGIN_NAME,
 
-    requires: () => [
-      { kind: "queries", params: {} },
-      { kind: "schemas", params: {} },
+    provides: [],
+
+    fileDefaults: [
+      // Entity routers use routesFile config
+      {
+        pattern: "http-routes:trpc:",
+        outputDir: resolvedConfig.outputDir,
+        fileNaming: resolvedConfig.routesFile,
+      },
+      // App aggregator uses appFile config (more specific pattern wins)
+      {
+        pattern: "http-routes:trpc:app",
+        outputDir: resolvedConfig.outputDir,
+        fileNaming: resolvedConfig.appFile,
+      },
     ],
 
-    provide: (_params: unknown, _deps: readonly unknown[], ctx: PluginContext): void => {
-      const { outputDir, baseProcedure, header, aggregatorName } = parsed;
+    declare: Effect.gen(function* () {
+      const ir = yield* IR;
+      const inflection = yield* Inflection;
 
-      // Get all entities with registered query methods
-      const entityNames = ctx.symbols.getEntitiesWithMethods();
+      const declarations: SymbolDeclaration[] = [];
 
-      if (entityNames.length === 0) {
-        return;
-      }
+      // Declare routers for all table entities that might have queries
+      for (const entity of ir.entities.values()) {
+        if (!isTableEntity(entity)) continue;
+        if (entity.tags.omit === true) continue;
 
-      // Track generated routers for aggregator
-      const generatedRouters: Array<{ fileName: string; routerName: string }> = [];
+        const hasAnyPermissions =
+          entity.permissions.canSelect ||
+          entity.permissions.canInsert ||
+          entity.permissions.canUpdate ||
+          entity.permissions.canDelete;
 
-      // Create schema builder function
-      const requestSchema: SchemaBuilderFn = (params) => {
-        if (params.length === 0) return undefined;
-        try {
-          const request: SchemaBuilderRequest = { variant: "params", params };
-          return ctx.request<SchemaBuilderResult | undefined>(SCHEMA_BUILDER_KIND, request);
-        } catch {
-          return undefined;
-        }
-      };
-
-      // Generate router for each entity
-      for (const entityName of entityNames) {
-        const entityMethods = ctx.symbols.getEntityMethods(entityName);
-        if (!entityMethods || entityMethods.methods.length === 0) continue;
-
-        const filePath = `${outputDir}/${inflect.uncapitalize(entityName)}.ts`;
-        const routerName = `${inflect.uncapitalize(entityName)}Router`;
-
-        const file = ctx.file(filePath);
-
-        // Header provides router and baseProcedure imports
-        file.header(header);
-
-        // Import query functions
-        const queryFunctionNames = entityMethods.methods.map((m) => m.name);
-        const queriesImportPath = `../${entityMethods.importPath.replace(/\.ts$/, ".js")}`;
-        file.import({
-          kind: "relative",
-          names: queryFunctionNames,
-          from: queriesImportPath,
-        });
-
-        // Build router object
-        let routerObjBuilder = conjure.obj();
-        const bodySchemaImports: SchemaImport[] = [];
-        let schemaLibraryImport: SchemaBuilderResult["importSpec"] | null = null;
-
-        for (const method of entityMethods.methods) {
-          const { procedureExpr, bodySchema, schemaBuilderImport } = buildProcedure(
-            method,
-            entityName,
-            baseProcedure,
-            requestSchema,
-          );
-
-          if (bodySchema) bodySchemaImports.push(bodySchema);
-          if (schemaBuilderImport) schemaLibraryImport = schemaBuilderImport;
-
-          routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
-        }
-
-        // Import schema library if needed
-        if (schemaLibraryImport) {
-          if (schemaLibraryImport.names) {
-            file.import({
-              kind: "package",
-              names: [...schemaLibraryImport.names],
-              from: schemaLibraryImport.from,
-            });
-          }
-        }
-
-        // Import body schemas
-        for (const schemaImport of bodySchemaImports) {
-          file.import({
-            kind: "symbol",
-            ref: {
-              capability: "schemas",
-              entity: schemaImport.entity,
-              shape: schemaImport.shape,
-            },
+        if (hasAnyPermissions) {
+          declarations.push({
+            name: inflection.variableName(entity.name, "Router"),
+            capability: `http-routes:trpc:${entity.name}`,
+            baseEntityName: entity.name,
           });
         }
+      }
 
-        // Build: export const userRouter = router({ ... })
-        const routerCall = b.callExpression(
-          b.identifier("router"),
-          [cast.toExpr(routerObjBuilder.build())],
+      // Also declare the aggregator
+      declarations.push({
+        name: resolvedConfig.aggregatorName,
+        capability: "http-routes:trpc:app",
+      });
+
+      return declarations;
+    }),
+
+    render: Effect.gen(function* () {
+      const ir = yield* IR;
+      const registry = yield* SymbolRegistry;
+      const inflection = yield* Inflection;
+
+      const rendered: RenderedSymbolWithImports[] = [];
+
+      // Query the registry for all entity query capabilities
+      const entityQueries = new Map<string, EntityQueriesExtension>();
+      const queryCapabilities = registry.query("queries:");
+
+      for (const decl of queryCapabilities) {
+        // Only look at aggregate capabilities (queries:impl:EntityName, not queries:impl:EntityName:method)
+        const parts = decl.capability.split(":");
+        if (parts.length !== 3) continue;
+
+        const entityName = parts[2]!;
+        const metadata = registry.getMetadata(decl.capability);
+        if (metadata && typeof metadata === "object" && "methods" in metadata) {
+          entityQueries.set(entityName, metadata as EntityQueriesExtension);
+        }
+      }
+
+      // User module imports for router and procedure (if configured)
+      const trpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.trpcImport
+        ? [resolvedConfig.trpcImport]
+        : undefined;
+
+      for (const [entityName, queries] of entityQueries) {
+        const entity = ir.entities.get(entityName);
+        if (!entity || !isTableEntity(entity)) continue;
+
+        const capability = `http-routes:trpc:${entityName}`;
+
+        // Scope cross-references to this specific capability
+        const { statements, externalImports } = registry.forSymbol(capability, () =>
+          generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
         );
-        const exportStmt = conjure.export.const(routerName, routerCall);
-        file.ast(conjure.program(exportStmt)).emit();
 
-        generatedRouters.push({
-          fileName: `${inflect.uncapitalize(entityName)}.js`,
-          routerName,
+        rendered.push({
+          name: inflection.variableName(entityName, "Router"),
+          capability,
+          node: statements[0],
+          exports: "named",
+          externalImports,
+          userImports: trpcUserImports,
         });
       }
 
-      // Generate aggregator index.ts
-      if (generatedRouters.length > 0) {
-        const indexPath = `${outputDir}/index.ts`;
-        const indexFile = ctx.file(indexPath);
+      if (entityQueries.size > 0) {
+        const appCapability = "http-routes:trpc:app";
 
-        // Header provides router import
-        indexFile.header(header);
+        // Scope cross-references to the app capability
+        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
+          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
+        );
 
-        for (const route of generatedRouters) {
-          indexFile.import({
-            kind: "relative",
-            names: [route.routerName],
-            from: `./${route.fileName}`,
+        // The aggregator has multiple statements (const + type export)
+        // We need to handle this differently - wrap in a program or return multiple
+        rendered.push({
+          name: resolvedConfig.aggregatorName,
+          capability: appCapability,
+          node: statements[0], // The const declaration
+          exports: "named",
+          externalImports,
+          userImports: trpcUserImports,
+        });
+
+        // Add the type export as a separate rendered symbol
+        if (statements[1]) {
+          rendered.push({
+            name: "AppRouter",
+            capability: "http-routes:trpc:app:type",
+            node: statements[1],
+            exports: false, // Already has export in the node
+            // No userImports needed for type export
           });
         }
-
-        // Build: export const appRouter = router({ user: userRouter, ... })
-        let routerObjBuilder = conjure.obj();
-        for (const route of generatedRouters) {
-          const key = route.routerName.replace(/Router$/, "");
-          routerObjBuilder = routerObjBuilder.prop(key, b.identifier(route.routerName));
-        }
-
-        const routerCall = b.callExpression(
-          b.identifier("router"),
-          [cast.toExpr(routerObjBuilder.build())],
-        );
-        const exportStmt = conjure.export.const(aggregatorName, routerCall);
-
-        // Also export the type
-        const typeExport = b.exportNamedDeclaration(
-          b.tsTypeAliasDeclaration(
-            b.identifier("AppRouter"),
-            b.tsTypeQuery(b.identifier(aggregatorName)),
-          ),
-        );
-
-        indexFile.ast(conjure.program(exportStmt, typeExport)).emit();
       }
-    },
-  });
+
+      return rendered;
+    }),
+  };
 }

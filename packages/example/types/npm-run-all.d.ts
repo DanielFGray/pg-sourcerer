@@ -8,10 +8,7 @@ declare module "npm-run-all" {
     printName?: boolean;
   }
 
-  function runAll(
-    scripts: string[],
-    options?: RunOptions
-  ): Promise<void>;
+  function runAll(scripts: string[], options?: RunOptions): Promise<void>;
 
   export = runAll;
 }

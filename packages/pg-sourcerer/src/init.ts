@@ -2,49 +2,32 @@
  * pg-sourcerer init command
  *
  * Interactive config generator using @effect/cli Prompt.
- * Uses conjure AST builder to generate the config file.
  */
 import { Prompt } from "@effect/cli";
 import { FileSystem, Terminal } from "@effect/platform";
 import { Array, Console, Effect, HashMap, HashSet, Option, pipe } from "effect";
 import postgres from "postgres";
-import { conjure } from "./lib/conjure.js";
 import recast from "recast";
-import { introspectDatabase } from "./services/introspection.js";
 import type { Introspection } from "@danielfgray/pg-introspection";
-
-// ============================================================================
-// Plugin Registry
-// ============================================================================
+import { introspectDatabase } from "./services/introspection.js";
+import { ConfigFromFile, FileConfigProvider } from "./services/config.js";
 
 interface PluginInfo {
   readonly value: string;
   readonly importName: string;
 }
 
-/** Maps plugin value to import name for config generation */
 const pluginImportNames: Record<string, string> = {
   types: "types",
   zod: "zod",
-  arktype: "arktypePlugin",
-  effect: "effect",
-  "sql-queries": "sqlQueries",
-  "kysely-types": "kyselyTypesPlugin",
   "kysely-queries": "kyselyQueriesPlugin",
-  "http-elysia": "httpElysiaPlugin",
-  "http-trpc": "httpTrpcPlugin",
-  "http-orpc": "httpOrpcPlugin",
+  "http-elysia": "elysiaHttp",
 };
 
-/** Get plugin info by value */
 const getPluginInfo = (value: string): PluginInfo | undefined => {
   const importName = pluginImportNames[value];
   return importName ? { value, importName } : undefined;
 };
-
-// ============================================================================
-// Environment Scanning
-// ============================================================================
 
 interface EnvMatch {
   readonly key: string;
@@ -54,27 +37,19 @@ interface EnvMatch {
 
 const POSTGRES_URL_REGEX = /^postgres(ql)?:\/\//i;
 
-/**
- * Parse .env content into HashMap<string, string>
- * Handles: KEY=value, KEY="value", KEY='value', comments, empty lines
- */
 const parseDotEnv = (content: string): HashMap.HashMap<string, string> =>
   pipe(
     content.split("\n"),
-    Array.map(line => line.trim()),
-    Array.filter(line => line.length > 0 && !line.startsWith("#")),
-    Array.filterMap(line => {
+    Array.map((line) => line.trim()),
+    Array.filter((line) => line.length > 0 && !line.startsWith("#")),
+    Array.filterMap((line) => {
       const eqIndex = line.indexOf("=");
       if (eqIndex === -1) return Option.none();
 
       const key = line.slice(0, eqIndex).trim();
       let value = line.slice(eqIndex + 1).trim();
 
-      // Remove surrounding quotes
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
 
@@ -83,23 +58,17 @@ const parseDotEnv = (content: string): HashMap.HashMap<string, string> =>
     HashMap.fromIterable,
   );
 
-/**
- * Filter entries matching postgres URL pattern
- */
 const filterPostgresUrls = (
   entries: HashMap.HashMap<string, string>,
   source: ".env" | "process.env",
 ): readonly EnvMatch[] =>
   pipe(
     entries,
-    HashMap.filter(value => POSTGRES_URL_REGEX.test(value)),
+    HashMap.filter((value) => POSTGRES_URL_REGEX.test(value)),
     HashMap.toEntries,
     Array.map(([key, value]) => ({ key, value, source })),
   );
 
-/**
- * Get process.env as HashMap, excluding specified keys
- */
 const processEnvExcluding = (exclude: HashSet.HashSet<string>): HashMap.HashMap<string, string> =>
   pipe(
     Object.entries(process.env),
@@ -108,9 +77,6 @@ const processEnvExcluding = (exclude: HashSet.HashSet<string>): HashMap.HashMap<
     HashMap.fromIterable,
   );
 
-/**
- * Scan .env file and process.env for postgres connection strings.
- */
 const scanEnvForConnectionStrings: Effect.Effect<
   readonly EnvMatch[],
   never,
@@ -119,16 +85,14 @@ const scanEnvForConnectionStrings: Effect.Effect<
   const fs = yield* FileSystem.FileSystem;
   const envPath = `${process.cwd()}/.env`;
 
-  // Try to read .env file
   const dotEnvMatches = yield* fs.readFileString(envPath).pipe(
-    Effect.map(content => filterPostgresUrls(parseDotEnv(content), ".env")),
+    Effect.map((content) => filterPostgresUrls(parseDotEnv(content), ".env")),
     Effect.catchAll(() => Effect.succeed([] as readonly EnvMatch[])),
   );
 
-  // Scan process.env, excluding keys already found in .env
   const dotEnvKeys = pipe(
     dotEnvMatches,
-    Array.map(m => m.key),
+    Array.map((m) => m.key),
     HashSet.fromIterable,
   );
 
@@ -137,22 +101,14 @@ const scanEnvForConnectionStrings: Effect.Effect<
   return [...dotEnvMatches, ...processEnvMatches];
 });
 
-// ============================================================================
-// Prompts
-// ============================================================================
-
 const connectionStringPrompt = Prompt.text({
   message: "Database connection string",
-  validate: value =>
+  validate: (value) =>
     value.trim().length === 0
       ? Effect.fail("Connection string is required")
       : Effect.succeed(value.trim()),
 });
 
-/**
- * Prompt for connection string and immediately test it.
- * Re-prompts on failure until successful.
- */
 const promptAndTestConnection = (
   defaultValue?: string,
 ): Effect.Effect<string, Terminal.QuitException, Terminal.Terminal> =>
@@ -164,8 +120,8 @@ const promptAndTestConnection = (
 
     yield* Console.log("Testing connection...");
     const result = yield* testConnection(connStr).pipe(
-      Effect.map(version => ({ success: true as const, version })),
-      Effect.catchAll(e => Effect.succeed({ success: false as const, error: e.message })),
+      Effect.map((version) => ({ success: true as const, version })),
+      Effect.catchAll((e) => Effect.succeed({ success: false as const, error: e.message })),
     );
 
     if (result.success) {
@@ -174,25 +130,16 @@ const promptAndTestConnection = (
     } else {
       yield* Console.error(`✗ ${result.error}`);
       yield* Console.log("Please try again.\n");
-      // On retry, use the failed value as the new default so user can edit it
       return yield* promptAndTestConnection(connStr);
     }
   });
 
-/**
- * Result of connection string selection.
- * If isEnvRef is true, configValue contains "process.env.KEY" and should
- * be emitted as an identifier expression rather than a string literal.
- */
 interface ConnectionResult {
   readonly connectionString: string;
   readonly configValue: string;
   readonly isEnvRef: boolean;
 }
 
-/**
- * Get connection string - either from detected env var or manual entry.
- */
 const getConnectionString: Effect.Effect<
   ConnectionResult,
   Terminal.QuitException,
@@ -200,7 +147,6 @@ const getConnectionString: Effect.Effect<
 > = Effect.gen(function* () {
   const envMatches = yield* scanEnvForConnectionStrings;
 
-  // No matches → manual entry
   if (Array.isEmptyReadonlyArray(envMatches)) {
     const connectionString = yield* promptAndTestConnection();
     return { connectionString, configValue: connectionString, isEnvRef: false };
@@ -212,7 +158,7 @@ const getConnectionString: Effect.Effect<
 
   const choices = pipe(
     envMatches,
-    Array.map(m => ({
+    Array.map((m) => ({
       title: `${m.key} (${m.source})`,
       value: m.key,
     })),
@@ -229,18 +175,17 @@ const getConnectionString: Effect.Effect<
     return { connectionString, configValue: connectionString, isEnvRef: false };
   }
 
-  // Find selected match and test connection
   const match = pipe(
     envMatches,
-    Array.findFirst(m => m.key === selected),
-    Option.getOrThrow, // Safe: we know it exists from the choices
+    Array.findFirst((m) => m.key === selected),
+    Option.getOrThrow,
   );
 
   yield* Console.log(`\nTesting ${match.key}...`);
 
   const testResult = yield* testConnection(match.value).pipe(
-    Effect.map(version => ({ success: true as const, version })),
-    Effect.catchAll(e => Effect.succeed({ success: false as const, error: e.message })),
+    Effect.map((version) => ({ success: true as const, version })),
+    Effect.catchAll((e) => Effect.succeed({ success: false as const, error: e.message })),
   );
 
   if (testResult.success) {
@@ -252,28 +197,19 @@ const getConnectionString: Effect.Effect<
     };
   }
 
-  // Failed → fall back to manual with value as default
   yield* Console.error(`✗ ${testResult.error}`);
   yield* Console.log("Connection failed. Please enter manually.\n");
   const connectionString = yield* promptAndTestConnection(match.value);
   return { connectionString, configValue: connectionString, isEnvRef: false };
 });
 
-/**
- * Role prompt with explanation of when to use it.
- *
- * If using Row Level Security (RLS), set this to the role your app connects as.
- * This ensures generated types only include columns/tables visible to that role.
- * Leave empty if not using RLS or connecting as a superuser.
- */
 const makeRolePrompt = () =>
   Prompt.text({
     message: "PostgreSQL role (for RLS - leave empty if not using RLS)",
     default: "",
-  }).pipe(Prompt.map(s => s.trim() || undefined));
+  }).pipe(Prompt.map((s) => s.trim() || undefined));
 
 const makeSchemasPrompt = (introspection: Introspection) => {
-  // Group classes by schema and count tables/views
   const schemaCounts = new Map<string, number>();
   for (const c of introspection.classes) {
     if (c.relkind !== "r" && c.relkind !== "v" && c.relkind !== "m") continue;
@@ -282,7 +218,6 @@ const makeSchemasPrompt = (introspection: Introspection) => {
     schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1);
   }
 
-  // Sort: public first, then by count desc
   const schemas = [...schemaCounts.entries()].sort((a, b) => {
     if (a[0] === "public") return -1;
     if (b[0] === "public") return 1;
@@ -290,21 +225,19 @@ const makeSchemasPrompt = (introspection: Introspection) => {
   });
 
   if (schemas.length === 0) {
-    // Fallback to text prompt if no schemas found
     return Prompt.text({
       message: "Schemas to introspect (comma-separated)",
       default: "public",
     }).pipe(
-      Prompt.map(s =>
+      Prompt.map((s) =>
         s
           .split(",")
-          .map(x => x.trim())
-          .filter(x => x.length > 0),
+          .map((x) => x.trim())
+          .filter((x) => x.length > 0),
       ),
     );
   }
 
-  // Multi-select with table counts
   return Prompt.multiSelect({
     message: "Select schemas to introspect",
     choices: schemas.map(([name, count]) => ({
@@ -318,29 +251,17 @@ const makeSchemasPrompt = (introspection: Introspection) => {
 const makeOutputDirPrompt = () =>
   Prompt.text({
     message: "Output directory",
-    default: "./generated",
+    default: "./src/generated",
   });
 
-/**
- * Plugin selection with Kysely-aware branching.
- *
- * Flow:
- * 1. Kysely? → yes: checkboxes for types + kysely-queries → HTTP plugins → exit
- * 2. No Kysely → raw types or schema-driven?
- * 3. If schema-driven → select schema lib (zod/arktype/effect)
- * 4. Query plugins (optional multiselect, currently just sql-queries)
- * 5. HTTP/RPC framework (optional)
- */
 const makePluginsPrompt = () =>
   Effect.gen(function* () {
-    // Step 1: Kysely gateway
     const usesKysely = yield* Prompt.confirm({
       message: "Do you use Kysely?",
       initial: false,
     });
 
     if (usesKysely) {
-      // Kysely path: checkboxes, both pre-selected
       const kyselyPlugins = yield* Prompt.multiSelect({
         message: "Select Kysely plugins",
         choices: [
@@ -349,15 +270,12 @@ const makePluginsPrompt = () =>
         ],
       });
 
-      // Step 5: HTTP/RPC framework (only show if queries selected)
       const hasQueries = kyselyPlugins.includes("kysely-queries");
       if (hasQueries) {
         const httpPlugins = yield* Prompt.multiSelect({
           message: "HTTP/RPC framework (optional, requires query plugin)",
           choices: [
             { title: "Elysia routes", value: "http-elysia", selected: false },
-            { title: "tRPC routers", value: "http-trpc", selected: false },
-            { title: "oRPC routers", value: "http-orpc", selected: false },
           ],
         });
         return [...kyselyPlugins, ...httpPlugins] as readonly string[];
@@ -365,7 +283,6 @@ const makePluginsPrompt = () =>
       return kyselyPlugins;
     }
 
-    // Step 2: Raw vs schema-driven
     const typeApproach = yield* Prompt.select({
       message: "How do you want your types generated?",
       choices: [
@@ -378,18 +295,16 @@ const makePluginsPrompt = () =>
     if (typeApproach === "raw") {
       typePlugin = "types";
     } else {
-      // Step 3: Schema library selection
       typePlugin = yield* Prompt.select({
         message: "Select schema library",
         choices: [
           { title: "Zod", value: "zod" },
           { title: "ArkType", value: "arktype" },
-          { title: "Effect Schema (@effect/sql)", value: "effect" },
+          { title: "Effect Schema", value: "effect" },
         ],
       });
     }
 
-    // Step 4: Query plugins (optional multiselect, future-proof)
     const queryPlugins = yield* Prompt.multiSelect({
       message: "Query generation (optional)",
       choices: [
@@ -397,14 +312,11 @@ const makePluginsPrompt = () =>
       ],
     });
 
-    // Step 5: HTTP/RPC framework (only show if queries selected)
     if (queryPlugins.length > 0) {
       const httpPlugins = yield* Prompt.multiSelect({
         message: "HTTP/RPC framework (optional)",
         choices: [
           { title: "Elysia routes", value: "http-elysia", selected: false },
-          { title: "tRPC routers", value: "http-trpc", selected: false },
-          { title: "oRPC routers", value: "http-orpc", selected: false },
         ],
       });
       return [typePlugin, ...queryPlugins, ...httpPlugins] as readonly string[];
@@ -419,10 +331,6 @@ const makeFormatterPrompt = () =>
     default: "",
   });
 
-// ============================================================================
-// Connection Test
-// ============================================================================
-
 const testConnection = (connectionString: string) =>
   Effect.tryPromise({
     try: async () => {
@@ -430,20 +338,15 @@ const testConnection = (connectionString: string) =>
       try {
         const result = await sql`SELECT version()`;
         const version = result[0]?.["version"] as string;
-        // Extract just the version number (e.g., "PostgreSQL 15.2")
         const match = version.match(/PostgreSQL [\d.]+/);
         return match?.[0] ?? "PostgreSQL";
       } finally {
         await sql.end();
       }
     },
-    catch: error =>
+    catch: (error) =>
       new Error(`Connection failed: ${error instanceof Error ? error.message : String(error)}`),
   });
-
-// ============================================================================
-// Config Generation (using conjure AST builder)
-// ============================================================================
 
 interface InitAnswers {
   connectionString: string;
@@ -457,80 +360,48 @@ interface InitAnswers {
 }
 
 const generateConfigContent = (answers: InitAnswers): string => {
-  // Look up import names for selected plugins
   const selectedPlugins = pipe(
     answers.plugins,
-    Array.filterMap(value => {
+    Array.filterMap((value) => {
       const info = getPluginInfo(value);
       return info ? Option.some(info) : Option.none();
     }),
   );
 
-  // Build import specifiers
-  const coreImports = ["defineConfig"];
-  const allImports = [...coreImports, ...selectedPlugins.map(p => p.importName)];
+  const allImports = ["defineConfig", ...selectedPlugins.map((p) => p.importName)];
 
-  // Build the import statement
-  const importDecl = conjure.b.importDeclaration(
-    allImports.map(name => conjure.b.importSpecifier(conjure.b.identifier(name))),
-    conjure.str("@danielfgray/pg-sourcerer"),
-  );
+  const importDecl = `import { ${allImports.join(", ")} } from "@danielfgray/pg-sourcerer";`;
 
-  // Build the config object - handle env ref vs literal
-  let configObj = conjure.obj();
+  let configObj = `{\n  connectionString: `;
 
   if (answers.isEnvRef) {
-    // Generate: connectionString: process.env.DATABASE_URL!
     const envKey = answers.connectionConfigValue.replace("process.env.", "");
-    const envAccess = conjure.b.memberExpression(
-      conjure.b.memberExpression(conjure.b.identifier("process"), conjure.b.identifier("env")),
-      conjure.b.identifier(envKey),
-    );
-    // Add non-null assertion (!)
-    const envAccessWithAssertion = conjure.b.tsNonNullExpression(envAccess);
-    configObj = configObj.prop("connectionString", envAccessWithAssertion);
+    configObj += `process.env.${envKey}!,\n`;
   } else {
-    configObj = configObj.prop("connectionString", conjure.str(answers.connectionConfigValue));
+    configObj += `"${answers.connectionConfigValue}",\n`;
   }
 
-  // Role (only if set)
   if (answers.role) {
-    configObj = configObj.prop("role", conjure.str(answers.role));
+    configObj += `  role: "${answers.role}",\n`;
   }
 
-  // Schemas (only if not just ["public"])
   if (answers.schemas.length !== 1 || answers.schemas[0] !== "public") {
-    const schemasArr = conjure.arr(...answers.schemas.map(s => conjure.str(s)));
-    configObj = configObj.prop("schemas", schemasArr.build());
+    configObj += `  schemas: [${answers.schemas.map((s) => `"${s}"`).join(", ")}],\n`;
   }
 
-  // Output directory (only if not default)
   if (answers.outputDir !== "src/generated") {
-    configObj = configObj.prop("outputDir", conjure.str(answers.outputDir));
+    configObj += `  outputDir: "${answers.outputDir}",\n`;
   }
 
-  // Formatter (only if set)
   if (answers.formatter.trim()) {
-    configObj = configObj.prop("formatter", conjure.str(answers.formatter.trim()));
+    configObj += `  formatter: "${answers.formatter.trim()}",\n`;
   }
 
-  // Plugins array - no config needed, all plugins have sensible defaults
-  const pluginCalls = selectedPlugins.map(p => conjure.id(p.importName).call([]).build());
-  const pluginsArr = conjure.arr(...pluginCalls);
-  configObj = configObj.prop("plugins", pluginsArr.build());
+  const pluginCalls = selectedPlugins.map((p) => `  ${p.importName}()`).join(",\n");
+  configObj += `  plugins: [\n${pluginCalls}\n  ]\n}`;
 
-  // Build the export default statement
-  const defineConfigCall = conjure.id("defineConfig").call([configObj.build()]).build();
-  const exportDefault = conjure.export.default(defineConfigCall);
-
-  // Build the program and print with 2-space indentation
-  const program = conjure.program(importDecl, exportDefault);
-  return recast.print(program, { tabWidth: 2 }).code + "\n";
+  return `${importDecl}\n\nexport default defineConfig(${configObj});\n`;
 };
-
-// ============================================================================
-// Main Init Effect
-// ============================================================================
 
 const CONFIG_FILENAME = "pgsourcerer.config.ts";
 
@@ -538,7 +409,6 @@ export const runInit = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const configPath = `${process.cwd()}/${CONFIG_FILENAME}`;
 
-  // Check if config already exists
   const exists = yield* fs.exists(configPath);
   if (exists) {
     yield* Console.error(`\n✗ ${CONFIG_FILENAME} already exists`);
@@ -548,18 +418,15 @@ export const runInit = Effect.gen(function* () {
 
   yield* Console.log("\n🔧 pg-sourcerer config generator\n");
 
-  // Collect answers - connection string may be detected from env
   const { connectionString, configValue, isEnvRef } = yield* getConnectionString;
 
-  // Introspect to discover schemas
   yield* Console.log("Introspecting database...");
   const introspection = yield* introspectDatabase({ connectionString }).pipe(
-    Effect.catchAll(e => {
-      // Log error but continue with empty introspection for fallback text prompt
-      return Console.error(`Warning: ${e.message}`).pipe(
+    Effect.catchAll((e) =>
+      Console.error(`Warning: ${e.message}`).pipe(
         Effect.andThen(Effect.succeed({ classes: [] } as unknown as Introspection)),
-      );
-    }),
+      ),
+    ),
   );
 
   const role = yield* makeRolePrompt();
@@ -568,7 +435,6 @@ export const runInit = Effect.gen(function* () {
   const plugins = yield* makePluginsPrompt();
   const formatter = yield* makeFormatterPrompt();
 
-  // Validate at least one plugin selected
   if (plugins.length === 0) {
     yield* Console.error("✗ At least one plugin must be selected");
     return yield* Effect.fail(new Error("No plugins selected"));
@@ -585,7 +451,6 @@ export const runInit = Effect.gen(function* () {
     formatter,
   };
 
-  // Generate and write config
   const configContent = generateConfigContent(answers);
   yield* fs.writeFileString(configPath, configContent);
 

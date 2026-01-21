@@ -12,7 +12,7 @@
  * - Query providers call ctx.symbols.registerEntityMethods(...)
  * - HTTP providers call ctx.symbols.getEntityMethods(...)
  */
-import { Schema as S } from "effect"
+import { Schema as S } from "effect";
 
 // ============================================================================
 // Parameter Source
@@ -23,13 +23,13 @@ import { Schema as S } from "effect"
  * Used by HTTP providers to map query params to request parts.
  */
 export const ParamSource = S.Union(
-  S.Literal("pk"),         // Primary key - typically from URL path
-  S.Literal("fk"),         // Foreign key - from URL path or query string
-  S.Literal("lookup"),     // Lookup field - from query string
-  S.Literal("body"),       // Request body (for create/update)
+  S.Literal("pk"), // Primary key - typically from URL path
+  S.Literal("fk"), // Foreign key - from URL path or query string
+  S.Literal("lookup"), // Lookup field - from query string
+  S.Literal("body"), // Request body (for create/update)
   S.Literal("pagination"), // Pagination params (limit, offset)
-)
-export type ParamSource = S.Schema.Type<typeof ParamSource>
+);
+export type ParamSource = S.Schema.Type<typeof ParamSource>;
 
 // ============================================================================
 // Query Method
@@ -40,15 +40,15 @@ export type ParamSource = S.Schema.Type<typeof ParamSource>
  * Used by HTTP providers to determine HTTP method and route structure.
  */
 export const QueryMethodKind = S.Union(
-  S.Literal("read"),    // GET single resource by ID
-  S.Literal("list"),    // GET collection with pagination
-  S.Literal("create"),  // POST to create new resource
-  S.Literal("update"),  // PUT/PATCH to modify existing
-  S.Literal("delete"),  // DELETE resource by ID
-  S.Literal("lookup"),  // GET by non-PK field (unique or list)
+  S.Literal("read"), // GET single resource by ID
+  S.Literal("list"), // GET collection with pagination
+  S.Literal("create"), // POST to create new resource
+  S.Literal("update"), // PUT/PATCH to modify existing
+  S.Literal("delete"), // DELETE resource by ID
+  S.Literal("lookup"), // GET by non-PK field (unique or list)
   S.Literal("function"), // Database function call
-)
-export type QueryMethodKind = S.Schema.Type<typeof QueryMethodKind>
+);
+export type QueryMethodKind = S.Schema.Type<typeof QueryMethodKind>;
 
 /**
  * A parameter to a query method.
@@ -64,8 +64,8 @@ export const QueryMethodParam = S.Struct({
   columnName: S.optional(S.String),
   /** Where this param should come from in HTTP request */
   source: S.optional(ParamSource),
-})
-export type QueryMethodParam = S.Schema.Type<typeof QueryMethodParam>
+});
+export type QueryMethodParam = S.Schema.Type<typeof QueryMethodParam>;
 
 /**
  * Return type information for a query method.
@@ -77,8 +77,8 @@ export const QueryMethodReturn = S.Struct({
   nullable: S.Boolean,
   /** Whether the result is an array */
   isArray: S.Boolean,
-})
-export type QueryMethodReturn = S.Schema.Type<typeof QueryMethodReturn>
+});
+export type QueryMethodReturn = S.Schema.Type<typeof QueryMethodReturn>;
 
 /**
  * How to call a query function.
@@ -89,8 +89,8 @@ export const CallSignature = S.Struct({
   style: S.Union(S.Literal("named"), S.Literal("positional")),
   /** For named + body: "property" = { data: body }, "spread" = { field1, field2 } */
   bodyStyle: S.optional(S.Union(S.Literal("property"), S.Literal("spread"))),
-})
-export type CallSignature = S.Schema.Type<typeof CallSignature>
+});
+export type CallSignature = S.Schema.Type<typeof CallSignature>;
 
 /**
  * A query method for an entity.
@@ -113,8 +113,8 @@ export const QueryMethod = S.Struct({
   isUniqueLookup: S.optional(S.Boolean),
   /** How to invoke this method */
   callSignature: S.optional(CallSignature),
-})
-export type QueryMethod = S.Schema.Type<typeof QueryMethod>
+});
+export type QueryMethod = S.Schema.Type<typeof QueryMethod>;
 
 // ============================================================================
 // Entity Queries Extension
@@ -125,18 +125,19 @@ export type QueryMethod = S.Schema.Type<typeof QueryMethod>
  *
  * This is the shape registered via ctx.symbols.registerEntityMethods().
  * HTTP providers read via ctx.symbols.getEntityMethods(entityName).
+ *
+ * NOTE: No importPath here. HTTP providers use registry.import() to reference
+ * query functions by capability, and emit phase resolves to file paths.
  */
 export const EntityQueriesExtension = S.Struct({
   /** Available query methods for this entity */
   methods: S.Array(QueryMethod),
-  /** Import path for the generated query file (relative to output root) */
-  importPath: S.String,
   /** Primary key type (for routing) */
   pkType: S.optional(S.String),
   /** Whether entity has composite primary key */
   hasCompositePk: S.optional(S.Boolean),
-})
-export type EntityQueriesExtension = S.Schema.Type<typeof EntityQueriesExtension>
+});
+export type EntityQueriesExtension = S.Schema.Type<typeof EntityQueriesExtension>;
 
 // ============================================================================
 // Standalone Functions Extension
@@ -144,6 +145,9 @@ export type EntityQueriesExtension = S.Schema.Type<typeof EntityQueriesExtension
 
 /**
  * A standalone database function (not tied to an entity).
+ *
+ * NOTE: No importPath here. HTTP providers use registry.import() to reference
+ * functions by capability, and emit phase resolves to file paths.
  */
 export const StandaloneFunction = S.Struct({
   /** PostgreSQL function name */
@@ -160,10 +164,8 @@ export const StandaloneFunction = S.Struct({
   returns: QueryMethodReturn,
   /** How to invoke */
   callSignature: S.optional(CallSignature),
-  /** Import path */
-  importPath: S.String,
-})
-export type StandaloneFunction = S.Schema.Type<typeof StandaloneFunction>
+});
+export type StandaloneFunction = S.Schema.Type<typeof StandaloneFunction>;
 
 /**
  * Global functions extension.
@@ -174,5 +176,5 @@ export type StandaloneFunction = S.Schema.Type<typeof StandaloneFunction>
 export const FunctionsExtension = S.Struct({
   /** Standalone functions not tied to entities */
   functions: S.Array(StandaloneFunction),
-})
-export type FunctionsExtension = S.Schema.Type<typeof FunctionsExtension>
+});
+export type FunctionsExtension = S.Schema.Type<typeof FunctionsExtension>;

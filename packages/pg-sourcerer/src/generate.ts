@@ -5,8 +5,10 @@
  * 1. Load config
  * 2. Introspect database
  * 3. Build IR
- * 4. Run providers
- * 5. Write files
+ * 4. Run plugins
+ * 5. Validate user module imports
+ * 6. Emit files
+ * 7. Write files
  *
  * Logging:
  * - Effect.log (INFO) - Progress messages shown by default
@@ -14,45 +16,41 @@
  *
  * Configure via Logger.withMinimumLogLevel at the call site.
  */
-import { Effect, Layer } from "effect"
-import { FileSystem, Path, Command, CommandExecutor } from "@effect/platform"
-import type { ResolvedConfig } from "./config.js"
-import type { Plugin } from "./services/plugin.js"
-import { runPlugins, type PluginRunResult, type PluginRunError } from "./services/plugin-runner.js"
-import { ConfigService } from "./services/config.js"
+import path from "node:path";
+import { Effect, Layer, Schema, pipe, Array as Arr } from "effect";
+import { Command, FileSystem } from "@effect/platform";
+import { NodeFileSystem } from "@effect/platform-node";
+import type { ResolvedConfig } from "./config.js";
+import type { Plugin, RenderedSymbol } from "./runtime/types.js";
+import { runPlugins, type OrchestratorResult } from "./runtime/orchestrator.js";
+import { emitFiles, type EmittedFile, type RenderedSymbolWithImports } from "./runtime/emit.js";
+import { ConfigService } from "./services/config.js";
 import {
   DatabaseIntrospectionService,
   DatabaseIntrospectionLive,
-} from "./services/introspection.js"
-import { createIRBuilderService } from "./services/ir-builder.js"
-import { createFileWriter, type WriteResult } from "./services/file-writer.js"
-import { createInflection, makeInflectionLayer } from "./services/inflection.js"
-import { createTypeHintRegistry } from "./services/type-hints.js"
+} from "./services/introspection.js";
+import { createIRBuilderService } from "./services/ir-builder.js";
+import { createFileWriter, type WriteResult } from "./services/file-writer.js";
+import { createInflection, makeInflectionLayer } from "./services/inflection.js";
+import { createTypeHintRegistry } from "./services/type-hints.js";
 import {
   getEnumEntities,
   getTableEntities,
   getDomainEntities,
   getCompositeEntities,
   type SemanticIR,
-} from "./ir/semantic-ir.js"
-import {
-  ConfigNotFound,
-  ConfigInvalid,
-  ConnectionFailed,
-  IntrospectionFailed,
-  TagParseError,
-  WriteError,
-  FormatError,
-} from "./errors.js"
+} from "./ir/semantic-ir.js";
+import { type UserModuleRef } from "./user-module.js";
+import { createUserModuleParser } from "./services/user-module-parser.js";
 
 /**
  * Options for the generate function
  */
 export interface GenerateOptions {
   /** Override output directory from config */
-  readonly outputDir?: string
+  readonly outputDir?: string;
   /** Dry run - don't write files, just return what would be written */
-  readonly dryRun?: boolean
+  readonly dryRun?: boolean;
 }
 
 /**
@@ -60,48 +58,39 @@ export interface GenerateOptions {
  */
 export interface GenerateResult {
   /** The loaded configuration */
-  readonly config: ResolvedConfig
+  readonly config: ResolvedConfig;
   /** The built semantic IR */
-  readonly ir: SemanticIR
+  readonly ir: SemanticIR;
   /** Plugin execution results */
-  readonly pluginResult: PluginRunResult
+  readonly pluginResult: OrchestratorResult;
+  /** Emitted files before writing */
+  readonly emittedFiles: readonly EmittedFile[];
   /** File write results */
-  readonly writeResults: readonly WriteResult[]
+  readonly writeResults: readonly WriteResult[];
 }
 
-/**
- * All possible errors from the generate pipeline
- */
-export type GenerateError =
-  | ConfigNotFound
-  | ConfigInvalid
-  | ConnectionFailed
-  | IntrospectionFailed
-  | TagParseError
-  | PluginRunError
-  | WriteError
-  | FormatError
+export class FormatError extends Schema.TaggedError<FormatError>()("FormatError", {
+  message: Schema.String,
+  path: Schema.String,
+  cause: Schema.optional(Schema.Unknown),
+}) {}
 
 /**
  * Run a formatter command on the output directory.
  * Spawns a subprocess and fails if it exits non-zero.
  * Output is piped to the parent process's stdout/stderr.
  */
-const runFormatter = (
-  command: string,
-  outputDir: string
-): Effect.Effect<void, FormatError, CommandExecutor.CommandExecutor> => {
-  // Parse command string into program and args, append outputDir
-  const parts = command.split(/\s+/).filter(Boolean)
-  const program = parts[0] ?? "echo"
-  const args = parts.slice(1)
+const runFormatter = (command: string, outputDir: string) => {
+  const parts = command.split(/\s+/).filter(Boolean);
+  const program = parts[0] ?? "echo";
+  const args = parts.slice(1);
   const cmd = Command.make(program, ...args, outputDir).pipe(
     Command.stdout("inherit"),
     Command.stderr("inherit"),
-    Command.runInShell(true)
-  )
+    Command.runInShell(true),
+  );
   return Command.exitCode(cmd).pipe(
-    Effect.flatMap((code) =>
+    Effect.flatMap(code =>
       code === 0
         ? Effect.void
         : Effect.fail(
@@ -109,202 +98,208 @@ const runFormatter = (
               message: `Formatter command failed with exit code ${code}: ${command} ${outputDir}`,
               path: outputDir,
               cause: new Error(`Exit code: ${code}`),
-            })
-          )
+            }),
+          ),
     ),
-    Effect.mapError((cause) =>
+    Effect.mapError(cause =>
       cause instanceof FormatError
         ? cause
         : new FormatError({
             message: `Formatter command failed: ${command} ${outputDir}`,
             path: outputDir,
             cause,
-          })
-    )
-  )
+          }),
+    ),
+  );
+};
+
+/**
+ * Collect all unique UserModuleRefs from rendered symbols.
+ */
+function collectUserModuleRefs(rendered: readonly RenderedSymbol[]): readonly UserModuleRef[] {
+  const seen = new Set<string>();
+  const refs: UserModuleRef[] = [];
+
+  for (const symbol of rendered) {
+    const withImports = symbol as RenderedSymbolWithImports;
+    if (!withImports.userImports) continue;
+
+    for (const ref of withImports.userImports) {
+      // Only validate refs that have validate: true (default)
+      if (ref.validate === false) continue;
+
+      // Dedupe by path (we only need to validate each file once)
+      if (!seen.has(ref.path)) {
+        seen.add(ref.path);
+        refs.push(ref);
+      }
+    }
+  }
+
+  return refs;
 }
+
+/**
+ * Validate all user module imports.
+ * Resolves paths relative to configDir and checks that exports exist.
+ */
+const validateUserModules = (
+  refs: readonly UserModuleRef[],
+  configDir: string,
+) =>
+  Effect.gen(function* () {
+    if (refs.length === 0) return;
+
+    const parser = createUserModuleParser();
+
+    for (const ref of refs) {
+      const absolutePath = path.resolve(configDir, ref.path);
+      yield* parser.validateImports(absolutePath, ref);
+    }
+  });
 
 /**
  * The main generate pipeline.
  *
  * Config is provided via ConfigService layer (Effect DI).
- * Use ConfigFromFile or ConfigWithInit layers depending on context.
+ * Use ConfigFromFile or ConfigWithFallback layers depending on context.
  */
-export const generate = (
-  options: GenerateOptions = {}
-): Effect.Effect<
-  GenerateResult,
-  GenerateError,
-  | ConfigService
-  | DatabaseIntrospectionService
-  | FileSystem.FileSystem
-  | Path.Path
-  | CommandExecutor.CommandExecutor
-> =>
+export const generate = (options: GenerateOptions = {}) =>
   Effect.gen(function* () {
-    // 1. Get configuration from Effect context (DI)
-    yield* Effect.logDebug("Loading configuration...")
-    const config = yield* ConfigService
-    yield* Effect.logDebug(`Config schemas: ${config.schemas.join(", ")}`)
-    yield* Effect.logDebug(`Config plugins: ${config.plugins.length}`)
+    yield* Effect.logDebug("Loading configuration...");
+    const config = yield* ConfigService;
+    yield* Effect.logDebug(`Config schemas: ${config.schemas.join(", ")}`);
+    yield* Effect.logDebug(`Config plugins: ${config.plugins.length}`);
 
-    // 2. Introspect database
-    yield* Effect.log("Introspecting database...")
-    const dbService = yield* DatabaseIntrospectionService
+    yield* Effect.log("Introspecting database...");
+    const dbService = yield* DatabaseIntrospectionService;
     const introspection = yield* dbService.introspect({
       connectionString: config.connectionString,
       role: config.role,
-    })
+    });
 
-    const tables = introspection.classes.filter((c) => c.relkind === "r")
-    const views = introspection.classes.filter((c) => c.relkind === "v")
+    const tables = introspection.classes.filter(c => c.relkind === "r");
+    const views = introspection.classes.filter(c => c.relkind === "v");
 
-    yield* Effect.log(`Found ${tables.length} tables, ${views.length} views`)
+    yield* Effect.log(`Found ${tables.length} tables, ${views.length} views`);
 
     if (tables.length > 0) {
-      const tableNames = tables.map((t) => t.relname).sort()
-      yield* Effect.logDebug(`Tables: ${tableNames.join(", ")}`)
+      const tableNames = tables.map(t => t.relname).sort();
+      yield* Effect.logDebug(`Tables: ${tableNames.join(", ")}`);
     }
     if (views.length > 0) {
-      const viewNames = views.map((v) => v.relname).sort()
-      yield* Effect.logDebug(`Views: ${viewNames.join(", ")}`)
+      const viewNames = views.map(v => v.relname).sort();
+      yield* Effect.logDebug(`Views: ${viewNames.join(", ")}`);
     }
 
-    // 3. Build IR with user's inflection config
-    yield* Effect.log("Building semantic IR...")
-    const irBuilder = createIRBuilderService()
-
-    // Create inflection from config (or use defaults)
-    const inflection = createInflection(config.inflection)
-    const inflectionLayer = makeInflectionLayer(config.inflection)
+    yield* Effect.log("Building semantic IR...");
+    const irBuilder = createIRBuilderService();
+    const inflectionLayer = makeInflectionLayer(config.inflection);
 
     const ir = yield* irBuilder
       .build(introspection, {
         schemas: config.schemas as string[],
         role: config.role,
       })
-      .pipe(Effect.provide(inflectionLayer))
+      .pipe(Effect.provide(inflectionLayer));
 
-    const enumEntities = getEnumEntities(ir)
-    const tableEntities = getTableEntities(ir)
-    const domainEntities = getDomainEntities(ir)
-    const compositeEntities = getCompositeEntities(ir)
+    const enumEntities = getEnumEntities(ir);
+    const tableEntities = getTableEntities(ir);
+    const domainEntities = getDomainEntities(ir);
+    const compositeEntities = getCompositeEntities(ir);
 
-    const counts = [
-      `${tableEntities.length} tables/views`,
-      `${enumEntities.length} enums`,
-    ]
-    if (domainEntities.length > 0)
-      counts.push(`${domainEntities.length} domains`)
-    if (compositeEntities.length > 0)
-      counts.push(`${compositeEntities.length} composites`)
-    yield* Effect.log(`Built ${counts.join(", ")}`)
+    const counts = [`${tableEntities.length} tables/views`, `${enumEntities.length} enums`];
+    if (domainEntities.length > 0) counts.push(`${domainEntities.length} domains`);
+    if (compositeEntities.length > 0) counts.push(`${compositeEntities.length} composites`);
+    yield* Effect.log(`Built ${counts.join(", ")}`);
 
     if (ir.entities.size > 0) {
-      const entityNames = [...ir.entities.keys()].sort()
-      yield* Effect.logDebug(`Entities: ${entityNames.join(", ")}`)
+      const entityNames = [...ir.entities.keys()].sort();
+      yield* Effect.logDebug(`Entities: ${entityNames.join(", ")}`);
     }
     if (enumEntities.length > 0) {
-      const enumNames = enumEntities.map((e) => e.name).sort()
-      yield* Effect.logDebug(`Enums: ${enumNames.join(", ")}`)
+      const enumNames = enumEntities.map(e => e.name).sort();
+      yield* Effect.logDebug(`Enums: ${enumNames.join(", ")}`);
     }
 
-    // 4. Run providers
-    yield* Effect.log("Running plugins...")
+    yield* Effect.log("Running plugins...");
+    const plugins = config.plugins;
+    const pluginNames = plugins.map(p => p.name);
+    yield* Effect.log(`Plugins: ${pluginNames.join(", ")}`);
 
-    // Cast plugins from config to Plugin[]
-    const plugins = config.plugins as readonly Plugin[]
+    const typeHints = createTypeHintRegistry(config.typeHints ?? []);
+    const inflection = createInflection(config.inflection);
 
-    yield* Effect.log(`Plugins: ${plugins.map((p) => p.name).join(", ")}`)
-
-    // Create type hints registry from config
-    const typeHints = createTypeHintRegistry(config.typeHints ?? [])
-
-    const pluginResult = yield* runPlugins(plugins, {
+    const pluginResult = yield* runPlugins({
+      plugins,
       ir,
       typeHints,
       inflection,
-    })
+      defaultFile: config.defaultFile,
+      outputDir: config.outputDir,
+    });
 
-    const emissions = pluginResult.emissions.getAll()
-    yield* Effect.log(`Generated ${emissions.length} files`)
-
-    // 5. Write files
-    const outputDir = options.outputDir ?? config.outputDir
-    yield* Effect.log(`Writing to ${outputDir}...`)
-
-    const writer = createFileWriter()
-    const writeResults = yield* writer.writeAll(emissions, {
-      outputDir,
-      dryRun: options.dryRun ?? false,
-    })
-
-    // 6. Format files (if formatter provided and not dry run)
-    if (config.formatter && !options.dryRun) {
-      yield* Effect.log(`Formatting with: ${config.formatter} ${outputDir}`)
-      yield* runFormatter(config.formatter, outputDir)
-      yield* Effect.log("Formatting complete")
+    // Validate user module imports before emitting
+    if (config.configDir) {
+      const userModuleRefs = collectUserModuleRefs(pluginResult.rendered);
+      if (userModuleRefs.length > 0) {
+        yield* Effect.logDebug(`Validating ${userModuleRefs.length} user module import(s)...`);
+        yield* validateUserModules(userModuleRefs, config.configDir).pipe(
+          Effect.provide(NodeFileSystem.layer)
+        );
+      }
     }
 
-    // Log each file at debug level
+    const emittedFiles = emitFiles(pluginResult, {
+      configDir: config.configDir,
+      outputDir: options.outputDir ?? config.outputDir,
+    });
+    yield* Effect.log(`Generated ${emittedFiles.length} files`);
+
+    const outputDir = options.outputDir ?? config.outputDir;
+    yield* Effect.log(`Writing to ${outputDir}...`);
+
+    const writer = createFileWriter();
+    const writeResults = yield* writer.writeAll(emittedFiles, {
+      outputDir,
+      dryRun: options.dryRun ?? false,
+    });
+
+    if (config.formatter && !options.dryRun) {
+      yield* Effect.log(`Formatting with: ${config.formatter} ${outputDir}`);
+      yield* runFormatter(config.formatter, outputDir);
+      yield* Effect.log("Formatting complete");
+    }
+
     yield* Effect.forEach(
       writeResults,
-      (result) => {
-        const status = options.dryRun
-          ? "(dry run)"
-          : result.written
-            ? "✓"
-            : "–"
-        return Effect.logDebug(`${status} ${result.path}`)
+      result => {
+        const status = options.dryRun ? "(dry run)" : result.written ? "✓" : "–";
+        return Effect.logDebug(`${status} ${result.path}`);
       },
-      { discard: true }
-    )
+      { discard: true },
+    );
 
-    const written = writeResults.filter((r) => r.written).length
-    const dryRunSuffix = options.dryRun ? " (dry run)" : ""
-    yield* Effect.log(`Wrote ${written} files${dryRunSuffix}`)
+    const written = writeResults.filter(r => r.written).length;
+    const dryRunSuffix = options.dryRun ? " (dry run)" : "";
+    yield* Effect.log(`Wrote ${written} files${dryRunSuffix}`);
 
     return {
       config,
       ir,
       pluginResult,
+      emittedFiles,
       writeResults,
-    }
-  })
+    };
+  });
 
 /**
  * Layer that provides database introspection for generate().
- *
- * Note: ConfigService is NOT included here - it must be provided separately
- * via ConfigFromFile, ConfigWithInit, or ConfigTest layers.
  */
-export const GenerateLive = Layer.effect(
-  DatabaseIntrospectionService,
-  DatabaseIntrospectionLive
-)
+export const GenerateLive = Layer.effect(DatabaseIntrospectionService, DatabaseIntrospectionLive);
 
 /**
  * Run generate with database introspection provided.
- *
- * ConfigService must still be provided by the caller via one of:
- * - ConfigFromFile (load from disk, fail if not found)
- * - ConfigWithInit (load from disk, or run interactive init)
- * - ConfigTest (provide config directly for testing)
- *
- * @example
- * ```typescript
- * import { ConfigFromFile } from "./services/config.js"
- *
- * runGenerate({ dryRun: true }).pipe(
- *   Effect.provide(ConfigFromFile()),
- *   // ... platform layers
- * )
- * ```
  */
-export const runGenerate = (
-  options: GenerateOptions = {}
-): Effect.Effect<
-  GenerateResult,
-  GenerateError,
-  ConfigService | FileSystem.FileSystem | Path.Path | CommandExecutor.CommandExecutor
-> => generate(options).pipe(Effect.provide(GenerateLive))
+export const runGenerate = (options: GenerateOptions = {}) =>
+  generate(options).pipe(Effect.provide(GenerateLive));

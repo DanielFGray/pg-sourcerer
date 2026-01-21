@@ -11,21 +11,13 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src",
-    "types": [
-      "bun-types"
-    ],
+    "types": ["bun-types"],
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "noPropertyAccessFromIndexSignature": true
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "src/__tests__"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/__tests__"]
 }

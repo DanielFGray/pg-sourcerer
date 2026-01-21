@@ -5,20 +5,20 @@
  * by code generation plugins. Each plugin transforms the resolved types
  * into their specific output format (TypeScript types, Zod schemas, etc.)
  */
-import { Option, pipe } from "effect"
-import type { namedTypes as n } from "ast-types"
-import type { Field, EnumEntity, ExtensionInfo } from "../ir/semantic-ir.js"
+import { Option, pipe } from "effect";
+import type { namedTypes as n } from "ast-types";
+import type { Field, EnumEntity, ExtensionInfo } from "../ir/semantic-ir.js";
 import {
   defaultPgToTs,
   findEnumByPgName,
   getExtensionTypeMapping,
   TsType,
   PgTypeOid,
-} from "../services/pg-types.js"
-import type { EnumLookupResult } from "../services/pg-types.js"
-import { conjure } from "./conjure.js"
+} from "../services/pg-types.js";
+import type { EnumLookupResult } from "../services/pg-types.js";
+import { conjure } from "../conjure/index.js";
 
-const { ts } = conjure
+const { ts } = conjure;
 
 // =============================================================================
 // Field Inspection - Basic type checks
@@ -28,17 +28,17 @@ const { ts } = conjure
  * Get the PostgreSQL type OID from a field's pg attribute
  */
 export function getTypeOid(field: Field): number | undefined {
-  const pgType = field.pgAttribute.getType()
-  if (!pgType?._id) return undefined
-  return Number(pgType._id)
+  const pgType = field.pgAttribute.getType();
+  if (!pgType?._id) return undefined;
+  return Number(pgType._id);
 }
 
 /**
  * Check if a field's type is an enum
  */
 export function isEnumType(field: Field): boolean {
-  const pgType = field.pgAttribute.getType()
-  return pgType?.typtype === "e"
+  const pgType = field.pgAttribute.getType();
+  return pgType?.typtype === "e";
 }
 
 /**
@@ -47,33 +47,33 @@ export function isEnumType(field: Field): boolean {
  */
 export function getPgTypeName(field: Field): string | undefined {
   if (field.isArray && field.elementTypeName) {
-    return field.elementTypeName
+    return field.elementTypeName;
   }
-  return field.pgAttribute.getType()?.typname
+  return field.pgAttribute.getType()?.typname;
 }
 
 /**
  * Check if this field is a UUID type
  */
 export function isUuidType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Uuid
+  const oid = getTypeOid(field);
+  return oid === PgTypeOid.Uuid;
 }
 
 /**
  * Check if this field is a date/timestamp type
  */
 export function isDateType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Date || oid === PgTypeOid.Timestamp || oid === PgTypeOid.TimestampTz
+  const oid = getTypeOid(field);
+  return oid === PgTypeOid.Date || oid === PgTypeOid.Timestamp || oid === PgTypeOid.TimestampTz;
 }
 
 /**
  * Check if this field is a bigint type (int8)
  */
 export function isBigIntType(field: Field): boolean {
-  const oid = getTypeOid(field)
-  return oid === PgTypeOid.Int8
+  const oid = getTypeOid(field);
+  return oid === PgTypeOid.Int8;
 }
 
 // =============================================================================
@@ -87,20 +87,20 @@ export function isBigIntType(field: Field): boolean {
 export function tsTypeToAst(tsType: TsType): n.TSType {
   switch (tsType) {
     case TsType.String:
-      return ts.string()
+      return ts.string();
     case TsType.Number:
-      return ts.number()
+      return ts.number();
     case TsType.Boolean:
-      return ts.boolean()
+      return ts.boolean();
     case TsType.BigInt:
-      return ts.bigint()
+      return ts.bigint();
     case TsType.Date:
-      return ts.ref("Date")
+      return ts.ref("Date");
     case TsType.Buffer:
-      return ts.ref("Buffer")
+      return ts.ref("Buffer");
     case TsType.Unknown:
     default:
-      return ts.unknown()
+      return ts.unknown();
   }
 }
 
@@ -109,9 +109,9 @@ export function tsTypeToAst(tsType: TsType): n.TSType {
  */
 export interface ResolvedType {
   /** The resolved TypeScript type */
-  tsType: TsType
+  tsType: TsType;
   /** If resolved to an enum, the enum lookup result */
-  enumDef?: EnumLookupResult
+  enumDef?: EnumLookupResult;
 }
 
 /**
@@ -133,19 +133,19 @@ export interface ResolvedType {
 export function resolveFieldType(
   field: Field,
   enums: Iterable<EnumEntity>,
-  extensions: readonly ExtensionInfo[]
+  extensions: readonly ExtensionInfo[],
 ): ResolvedType {
-  const pgType = field.pgAttribute.getType()
+  const pgType = field.pgAttribute.getType();
 
   // Helper to wrap TsType in ResolvedType
-  const fromTsType = (tsType: TsType): ResolvedType => ({ tsType })
+  const fromTsType = (tsType: TsType): ResolvedType => ({ tsType });
 
   // Try each resolution strategy in order, return first Some
   return pipe(
     // 1. Check for enum
     Option.liftPredicate(field, isEnumType),
     Option.flatMap(() => Option.fromNullable(getPgTypeName(field))),
-    Option.flatMap((pgTypeName) => findEnumByPgName(enums, pgTypeName)),
+    Option.flatMap(pgTypeName => findEnumByPgName(enums, pgTypeName)),
     Option.map((enumDef): ResolvedType => ({ tsType: TsType.Unknown, enumDef })),
 
     // 2. Try OID-based mapping (built-in PostgreSQL types)
@@ -153,46 +153,42 @@ export function resolveFieldType(
       pipe(
         Option.fromNullable(getTypeOid(field)),
         Option.flatMap(defaultPgToTs),
-        Option.map(fromTsType)
-      )
+        Option.map(fromTsType),
+      ),
     ),
 
     // 3. Try domain base type mapping
     Option.orElse(() =>
       pipe(
         Option.fromNullable(field.domainBaseType),
-        Option.flatMap((d) => defaultPgToTs(d.typeOid)),
-        Option.map(fromTsType)
-      )
+        Option.flatMap(d => defaultPgToTs(d.typeOid)),
+        Option.map(fromTsType),
+      ),
     ),
 
     // 4. Try extension-based mapping for the direct type
     Option.orElse(() =>
       pipe(
         Option.fromNullable(pgType),
-        Option.flatMap((t) =>
-          getExtensionTypeMapping(t.typname, String(t.typnamespace), extensions)
-        ),
-        Option.map(fromTsType)
-      )
+        Option.flatMap(t => getExtensionTypeMapping(t.typname, String(t.typnamespace), extensions)),
+        Option.map(fromTsType),
+      ),
     ),
 
     // 4b. Try extension-based mapping for domain base types
     Option.orElse(() =>
       pipe(
         Option.fromNullable(field.domainBaseType),
-        Option.flatMap((d) =>
-          getExtensionTypeMapping(d.typeName, d.namespaceOid, extensions)
-        ),
-        Option.map(fromTsType)
-      )
+        Option.flatMap(d => getExtensionTypeMapping(d.typeName, d.namespaceOid, extensions)),
+        Option.map(fromTsType),
+      ),
     ),
 
     // 5. For arrays, try to resolve element type (enum first, then extension)
     Option.orElse(() =>
       pipe(
-        Option.liftPredicate(field, (f) => f.isArray && !!f.elementTypeName),
-        Option.flatMap((f) =>
+        Option.liftPredicate(field, f => f.isArray && !!f.elementTypeName),
+        Option.flatMap(f =>
           pipe(
             // Check if element is an enum
             findEnumByPgName(enums, f.elementTypeName!),
@@ -201,18 +197,18 @@ export function resolveFieldType(
             Option.orElse(() =>
               pipe(
                 Option.fromNullable(pgType?.typnamespace),
-                Option.flatMap((ns) =>
-                  getExtensionTypeMapping(f.elementTypeName!, String(ns), extensions)
+                Option.flatMap(ns =>
+                  getExtensionTypeMapping(f.elementTypeName!, String(ns), extensions),
                 ),
-                Option.map(fromTsType)
-              )
-            )
-          )
-        )
-      )
+                Option.map(fromTsType),
+              ),
+            ),
+          ),
+        ),
+      ),
     ),
 
     // 6. Fallback to unknown
-    Option.getOrElse((): ResolvedType => ({ tsType: TsType.Unknown }))
-  )
+    Option.getOrElse((): ResolvedType => ({ tsType: TsType.Unknown })),
+  );
 }

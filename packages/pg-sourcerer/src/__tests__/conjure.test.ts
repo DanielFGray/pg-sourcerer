@@ -4,188 +4,182 @@
  * These tests verify the core functionality of the conjure module,
  * ensuring it generates correct JavaScript/TypeScript AST nodes.
  */
-import { describe, it, expect } from "vitest"
-import type { namedTypes as n } from "ast-types"
-import { conjure, cast } from "../lib/conjure.js"
+import { describe, it, expect } from "vitest";
+import type { namedTypes as n } from "ast-types";
+import { conjure, cast } from "../conjure/index.js";
 
 /** Helper to get printed code from an expression */
-const printExpr = (expr: n.Expression) => conjure.print(conjure.stmt.expr(expr))
+const printExpr = (expr: n.Expression) => conjure.print(conjure.stmt.expr(expr));
 
 /** Helper to get printed code from a statement */
-const printStmt = (stmt: n.Node) => conjure.print(stmt)
+const printStmt = (stmt: n.Node) => conjure.print(stmt);
 
 /** Helper to print a TSType by wrapping in type alias and extracting */
 const printType = (type: n.TSType) => {
-  const alias = conjure.b.tsTypeAliasDeclaration(conjure.b.identifier("_T"), cast.toTSType(type))
-  const code = conjure.print(alias)
+  const alias = conjure.b.tsTypeAliasDeclaration(conjure.b.identifier("_T"), cast.toTSType(type));
+  const code = conjure.print(alias);
   // Extract the type from "type _T = <type>;"
-  return code.replace(/^type _T = /, "").replace(/;$/, "")
-}
+  return code.replace(/^type _T = /, "").replace(/;$/, "");
+};
 
 describe("Conjure", () => {
   describe("chain builder", () => {
     it("creates identifier", () => {
-      const result = conjure.id("foo").build()
-      expect(printExpr(result)).toBe("foo;")
-    })
+      const result = conjure.id("foo").build();
+      expect(printExpr(result)).toBe("foo;");
+    });
 
     it("chains property access", () => {
-      const result = conjure.id("foo").prop("bar").prop("baz").build()
-      expect(printExpr(result)).toBe("foo.bar.baz;")
-    })
+      const result = conjure.id("foo").prop("bar").prop("baz").build();
+      expect(printExpr(result)).toBe("foo.bar.baz;");
+    });
 
     it("chains method calls", () => {
-      const result = conjure.id("foo").method("bar").method("baz").build()
-      expect(printExpr(result)).toBe("foo.bar().baz();")
-    })
+      const result = conjure.id("foo").method("bar").method("baz").build();
+      expect(printExpr(result)).toBe("foo.bar().baz();");
+    });
 
     it("chains method calls with arguments", () => {
       const result = conjure
         .id("foo")
         .method("bar", [conjure.str("hello"), conjure.num(42)])
-        .build()
-      expect(printExpr(result)).toBe('foo.bar("hello", 42);')
-    })
+        .build();
+      expect(printExpr(result)).toBe('foo.bar("hello", 42);');
+    });
 
     it("chains mixed property and method access", () => {
-      const result = conjure
-        .id("z")
-        .prop("coerce")
-        .method("date")
-        .method("nullable")
-        .build()
-      expect(printExpr(result)).toBe("z.coerce.date().nullable();")
-    })
+      const result = conjure.id("z").prop("coerce").method("date").method("nullable").build();
+      expect(printExpr(result)).toBe("z.coerce.date().nullable();");
+    });
 
     it("chains direct calls", () => {
       const result = conjure
         .id("createHandler")
         .call([conjure.str("users")])
         .method("use", [conjure.id("auth").build()])
-        .build()
-      expect(printExpr(result)).toBe('createHandler("users").use(auth);')
-    })
+        .build();
+      expect(printExpr(result)).toBe('createHandler("users").use(auth);');
+    });
 
     it("chains computed property access", () => {
-      const result = conjure
-        .id("arr")
-        .index(conjure.num(0))
-        .prop("value")
-        .build()
-      expect(printExpr(result)).toBe("arr[0].value;")
-    })
+      const result = conjure.id("arr").index(conjure.num(0)).prop("value").build();
+      expect(printExpr(result)).toBe("arr[0].value;");
+    });
 
     it("chains computed property with expression", () => {
-      const result = conjure
-        .id("obj")
-        .index(conjure.id("key").build())
-        .build()
-      expect(printExpr(result)).toBe("obj[key];")
-    })
+      const result = conjure.id("obj").index(conjure.id("key").build()).build();
+      expect(printExpr(result)).toBe("obj[key];");
+    });
 
     it("starts chain from arbitrary expression", () => {
-      const inner = conjure.id("getConfig").method("load").build()
-      const result = conjure.chain(inner).prop("settings").build()
-      expect(printExpr(result)).toBe("getConfig.load().settings;")
-    })
-  })
+      const inner = conjure.id("getConfig").method("load").build();
+      const result = conjure.chain(inner).prop("settings").build();
+      expect(printExpr(result)).toBe("getConfig.load().settings;");
+    });
+  });
 
   describe("object builder", () => {
     it("creates empty object", () => {
-      const result = conjure.obj().build()
-      expect(printExpr(result)).toBe("({});")
-    })
+      const result = conjure.obj().build();
+      expect(printExpr(result)).toBe("({});");
+    });
 
     it("creates object with properties", () => {
       const result = conjure
         .obj()
         .prop("name", conjure.str("test"))
         .prop("count", conjure.num(42))
-        .build()
-      expect(printExpr(result)).toContain('name: "test"')
-      expect(printExpr(result)).toContain("count: 42")
-    })
+        .build();
+      expect(printExpr(result)).toContain('name: "test"');
+      expect(printExpr(result)).toContain("count: 42");
+    });
 
     it("creates object with computed property", () => {
       const result = conjure
         .obj()
         .computed(conjure.id("key").build(), conjure.str("value"))
-        .build()
-      expect(printExpr(result)).toContain('[key]: "value"')
-    })
+        .build();
+      expect(printExpr(result)).toContain('[key]: "value"');
+    });
 
     it("creates object with spread", () => {
       const result = conjure
         .obj()
         .spread(conjure.id("defaults").build())
         .prop("override", conjure.bool(true))
-        .build()
-      expect(printExpr(result)).toContain("...defaults")
-      expect(printExpr(result)).toContain("override: true")
-    })
+        .build();
+      expect(printExpr(result)).toContain("...defaults");
+      expect(printExpr(result)).toContain("override: true");
+    });
 
     it("creates object with shorthand property", () => {
-      const result = conjure.obj().shorthand("name").shorthand("value").build()
+      const result = conjure.obj().shorthand("name").shorthand("value").build();
       // Shorthand properties print as `name` not `name: name`
-      const code = printExpr(result)
-      expect(code).toContain("name")
-      expect(code).toContain("value")
-    })
+      const code = printExpr(result);
+      expect(code).toContain("name");
+      expect(code).toContain("value");
+    });
 
     it("creates nested objects", () => {
       const result = conjure
         .obj()
-        .prop(
-          "nested",
-          conjure.obj().prop("deep", conjure.str("value")).build()
-        )
-        .build()
-      expect(printExpr(result)).toContain("nested:")
-      expect(printExpr(result)).toContain('deep: "value"')
-    })
-  })
+        .prop("nested", conjure.obj().prop("deep", conjure.str("value")).build())
+        .build();
+      expect(printExpr(result)).toContain("nested:");
+      expect(printExpr(result)).toContain('deep: "value"');
+    });
+
+    it("creates object from entries array", () => {
+      const result = conjure.obj()
+        .fromEntries([
+          ["name", conjure.str("Alice")],
+          ["age", conjure.num(30)],
+          ["active", conjure.bool(true)],
+        ])
+        .build();
+      const code = printExpr(result);
+      expect(code).toContain('name: "Alice"');
+      expect(code).toContain("age: 30");
+      expect(code).toContain("active: true");
+    });
+  });
 
   describe("array builder", () => {
     it("creates empty array", () => {
-      const result = conjure.arr().build()
-      expect(printExpr(result)).toBe("[];")
-    })
+      const result = conjure.arr().build();
+      expect(printExpr(result)).toBe("[];");
+    });
 
     it("creates array with initial elements", () => {
-      const result = conjure
-        .arr(conjure.num(1), conjure.num(2), conjure.num(3))
-        .build()
-      expect(printExpr(result)).toBe("[1, 2, 3];")
-    })
+      const result = conjure.arr(conjure.num(1), conjure.num(2), conjure.num(3)).build();
+      expect(printExpr(result)).toBe("[1, 2, 3];");
+    });
 
     it("adds elements to array", () => {
       const result = conjure
         .arr()
         .add(conjure.str("a"))
         .add(conjure.str("b"), conjure.str("c"))
-        .build()
-      expect(printExpr(result)).toBe('["a", "b", "c"];')
-    })
+        .build();
+      expect(printExpr(result)).toBe('["a", "b", "c"];');
+    });
 
     it("creates array with spread", () => {
       const result = conjure
         .arr(conjure.num(1))
         .spread(conjure.id("rest").build())
         .add(conjure.num(99))
-        .build()
-      expect(printExpr(result)).toBe("[1, ...rest, 99];")
-    })
+        .build();
+      expect(printExpr(result)).toBe("[1, ...rest, 99];");
+    });
 
     it("creates array of expressions", () => {
       const result = conjure
-        .arr(
-          conjure.id("a").build(),
-          conjure.id("b").method("get").build()
-        )
-        .build()
-      expect(printExpr(result)).toBe("[a, b.get()];")
-    })
-  })
+        .arr(conjure.id("a").build(), conjure.id("b").method("get").build())
+        .build();
+      expect(printExpr(result)).toBe("[a, b.get()];");
+    });
+  });
 
   describe("function builder", () => {
     it("creates arrow function", () => {
@@ -194,10 +188,10 @@ describe("Conjure", () => {
         .arrow()
         .param("x")
         .body(conjure.stmt.return(conjure.id("x").build()))
-        .build()
-      expect(printExpr(result)).toContain("x =>")
-      expect(printExpr(result)).toContain("return x")
-    })
+        .build();
+      expect(printExpr(result)).toContain("x =>");
+      expect(printExpr(result)).toContain("return x");
+    });
 
     it("creates async arrow function", () => {
       const result = conjure
@@ -207,13 +201,18 @@ describe("Conjure", () => {
         .param("url")
         .body(
           conjure.stmt.return(
-            conjure.await(conjure.id("fetch").call([conjure.id("url").build()]).build())
-          )
+            conjure.await(
+              conjure
+                .id("fetch")
+                .call([conjure.id("url").build()])
+                .build(),
+            ),
+          ),
         )
-        .build()
-      expect(printExpr(result)).toContain("async")
-      expect(printExpr(result)).toContain("await fetch(url)")
-    })
+        .build();
+      expect(printExpr(result)).toContain("async");
+      expect(printExpr(result)).toContain("await fetch(url)");
+    });
 
     it("creates function with typed parameters", () => {
       const result = conjure
@@ -222,10 +221,10 @@ describe("Conjure", () => {
         .param("name", conjure.ts.string())
         .param("age", conjure.ts.number())
         .body(conjure.stmt.return(conjure.bool(true)))
-        .build()
-      expect(printExpr(result)).toContain("name: string")
-      expect(printExpr(result)).toContain("age: number")
-    })
+        .build();
+      expect(printExpr(result)).toContain("name: string");
+      expect(printExpr(result)).toContain("age: number");
+    });
 
     it("creates function with optional parameters", () => {
       const result = conjure
@@ -234,10 +233,10 @@ describe("Conjure", () => {
         .param("required", conjure.ts.string())
         .optionalParam("optional", conjure.ts.number())
         .body(conjure.stmt.return(conjure.bool(true)))
-        .build()
-      expect(printExpr(result)).toContain("required: string")
-      expect(printExpr(result)).toContain("optional?: number")
-    })
+        .build();
+      expect(printExpr(result)).toContain("required: string");
+      expect(printExpr(result)).toContain("optional?: number");
+    });
 
     it("creates function with rest parameters", () => {
       const result = conjure
@@ -246,9 +245,9 @@ describe("Conjure", () => {
         .param("first")
         .restParam("rest", conjure.ts.array(conjure.ts.string()))
         .body(conjure.stmt.return(conjure.id("rest").build()))
-        .build()
-      expect(printExpr(result)).toContain("...rest: string[]")
-    })
+        .build();
+      expect(printExpr(result)).toContain("...rest: string[]");
+    });
 
     it("creates function with default parameters", () => {
       const result = conjure
@@ -256,9 +255,9 @@ describe("Conjure", () => {
         .arrow()
         .defaultParam("count", conjure.num(10), conjure.ts.number())
         .body(conjure.stmt.return(conjure.id("count").build()))
-        .build()
-      expect(printExpr(result)).toContain("count: number = 10")
-    })
+        .build();
+      expect(printExpr(result)).toContain("count: number = 10");
+    });
 
     it("creates function with return type", () => {
       const result = conjure
@@ -266,18 +265,18 @@ describe("Conjure", () => {
         .arrow()
         .returns(conjure.ts.string())
         .body(conjure.stmt.return(conjure.str("hello")))
-        .build()
-      expect(printExpr(result)).toContain("): string =>")
-    })
+        .build();
+      expect(printExpr(result)).toContain("): string =>");
+    });
 
     it("creates function expression (non-arrow)", () => {
       const result = conjure
         .fn()
         .param("x")
         .body(conjure.stmt.return(conjure.id("x").build()))
-        .build()
-      expect(printExpr(result)).toContain("function(x)")
-    })
+        .build();
+      expect(printExpr(result)).toContain("function(x)");
+    });
 
     it("creates generator function", () => {
       const result = conjure
@@ -285,12 +284,15 @@ describe("Conjure", () => {
         .generator()
         .body(
           conjure.stmt.expr(
-            conjure.id("yield").call([conjure.num(1)]).build()
-          )
+            conjure
+              .id("yield")
+              .call([conjure.num(1)])
+              .build(),
+          ),
         )
-        .build()
-      expect(printExpr(result)).toContain("function*()")
-    })
+        .build();
+      expect(printExpr(result)).toContain("function*()");
+    });
 
     it("creates function declaration", () => {
       const result = conjure
@@ -300,261 +302,254 @@ describe("Conjure", () => {
         .returns(conjure.ts.ref("Promise", [conjure.ts.ref("User")]))
         .body(
           conjure.stmt.return(
-            conjure.id("db").method("find", [conjure.id("id").build()]).build()
-          )
+            conjure
+              .id("db")
+              .method("find", [conjure.id("id").build()])
+              .build(),
+          ),
         )
-        .toDeclaration("getUser")
-      expect(printStmt(result)).toContain("async function getUser")
-      expect(printStmt(result)).toContain("id: string")
-      expect(printStmt(result)).toContain("Promise<User>")
-    })
-  })
+        .toDeclaration("getUser");
+      expect(printStmt(result)).toContain("async function getUser");
+      expect(printStmt(result)).toContain("id: string");
+      expect(printStmt(result)).toContain("Promise<User>");
+    });
+  });
 
   describe("literals", () => {
     it("creates string literal", () => {
-      expect(printExpr(conjure.str("hello"))).toBe('"hello";')
-    })
+      expect(printExpr(conjure.str("hello"))).toBe('"hello";');
+    });
 
     it("creates numeric literal", () => {
-      expect(printExpr(conjure.num(42))).toBe("42;")
-      expect(printExpr(conjure.num(3.14))).toBe("3.14;")
-    })
+      expect(printExpr(conjure.num(42))).toBe("42;");
+      expect(printExpr(conjure.num(3.14))).toBe("3.14;");
+    });
 
     it("creates boolean literals", () => {
-      expect(printExpr(conjure.bool(true))).toBe("true;")
-      expect(printExpr(conjure.bool(false))).toBe("false;")
-    })
+      expect(printExpr(conjure.bool(true))).toBe("true;");
+      expect(printExpr(conjure.bool(false))).toBe("false;");
+    });
 
     it("creates null literal", () => {
-      expect(printExpr(conjure.null())).toBe("null;")
-    })
+      expect(printExpr(conjure.null())).toBe("null;");
+    });
 
     it("creates undefined", () => {
-      expect(printExpr(conjure.undefined())).toBe("undefined;")
-    })
+      expect(printExpr(conjure.undefined())).toBe("undefined;");
+    });
 
     it("creates template literal", () => {
-      const result = conjure.template(
-        ["Hello, ", "!"],
-        conjure.id("name").build()
-      )
-      expect(printExpr(result)).toContain("`Hello, ${name}!`")
-    })
-  })
+      const result = conjure.template(["Hello, ", "!"], conjure.id("name").build());
+      expect(printExpr(result)).toContain("`Hello, ${name}!`");
+    });
+
+    it("creates tagged template literal", () => {
+      const result = conjure.taggedTemplate(
+        "sql",
+        ["SELECT * FROM users WHERE id = ", ""],
+        [conjure.id("id").build()],
+      );
+      expect(printExpr(result)).toBe("sql`SELECT * FROM users WHERE id = ${id}`;");
+    });
+
+    it("creates tagged template with type parameters", () => {
+      const result = conjure.taggedTemplate(
+        "sql",
+        ["SELECT * FROM users"],
+        [],
+        [conjure.ts.ref("User")],
+      );
+      expect(printExpr(result)).toBe("sql<User>`SELECT * FROM users`;");
+    });
+
+    it("creates tagged template with expression tag", () => {
+      const result = conjure.taggedTemplate(
+        conjure.id("Effect").prop("sql").build(),
+        ["SELECT 1"],
+        [],
+      );
+      expect(printExpr(result)).toBe("Effect.sql`SELECT 1`;");
+    });
+
+    it("creates tagged template with multiple expressions", () => {
+      const result = conjure.taggedTemplate(
+        "sql",
+        ["SELECT * FROM ", " WHERE id = ", ""],
+        [conjure.id("table").build(), conjure.id("id").build()],
+      );
+      expect(printExpr(result)).toBe("sql`SELECT * FROM ${table} WHERE id = ${id}`;");
+    });
+  });
 
   describe("operators", () => {
     describe("binary operators", () => {
       it("creates strict equality", () => {
-        const result = conjure.op.eq(
-          conjure.id("a").build(),
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a === b;")
-      })
+        const result = conjure.op.eq(conjure.id("a").build(), conjure.id("b").build());
+        expect(printExpr(result)).toBe("a === b;");
+      });
 
       it("creates strict inequality", () => {
-        const result = conjure.op.neq(
-          conjure.id("a").build(),
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a !== b;")
-      })
+        const result = conjure.op.neq(conjure.id("a").build(), conjure.id("b").build());
+        expect(printExpr(result)).toBe("a !== b;");
+      });
 
       it("creates generic binary expression", () => {
-        const result = conjure.op.binary(
-          conjure.id("a").build(),
-          "+",
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a + b;")
-      })
+        const result = conjure.op.binary(conjure.id("a").build(), "+", conjure.id("b").build());
+        expect(printExpr(result)).toBe("a + b;");
+      });
 
       it("creates comparison operators", () => {
-        expect(
-          printExpr(
-            conjure.op.binary(conjure.num(1), "<", conjure.num(2))
-          )
-        ).toBe("1 < 2;")
-        expect(
-          printExpr(
-            conjure.op.binary(conjure.num(1), ">=", conjure.num(2))
-          )
-        ).toBe("1 >= 2;")
-      })
+        expect(printExpr(conjure.op.binary(conjure.num(1), "<", conjure.num(2)))).toBe("1 < 2;");
+        expect(printExpr(conjure.op.binary(conjure.num(1), ">=", conjure.num(2)))).toBe("1 >= 2;");
+      });
 
       it("creates instanceof check", () => {
         const result = conjure.op.binary(
           conjure.id("err").build(),
           "instanceof",
-          conjure.id("Error").build()
-        )
-        expect(printExpr(result)).toBe("err instanceof Error;")
-      })
-    })
+          conjure.id("Error").build(),
+        );
+        expect(printExpr(result)).toBe("err instanceof Error;");
+      });
+    });
 
     describe("logical operators", () => {
       it("creates logical and", () => {
-        const result = conjure.op.and(
-          conjure.id("a").build(),
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a && b;")
-      })
+        const result = conjure.op.and(conjure.id("a").build(), conjure.id("b").build());
+        expect(printExpr(result)).toBe("a && b;");
+      });
 
       it("creates logical or", () => {
-        const result = conjure.op.or(
-          conjure.id("a").build(),
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a || b;")
-      })
+        const result = conjure.op.or(conjure.id("a").build(), conjure.id("b").build());
+        expect(printExpr(result)).toBe("a || b;");
+      });
 
       it("creates nullish coalescing", () => {
-        const result = conjure.op.nullish(
-          conjure.id("a").build(),
-          conjure.str("default")
-        )
-        expect(printExpr(result)).toBe('a ?? "default";')
-      })
+        const result = conjure.op.nullish(conjure.id("a").build(), conjure.str("default"));
+        expect(printExpr(result)).toBe('a ?? "default";');
+      });
 
       it("creates generic logical expression", () => {
-        const result = conjure.op.logical(
-          conjure.id("a").build(),
-          "??",
-          conjure.id("b").build()
-        )
-        expect(printExpr(result)).toBe("a ?? b;")
-      })
-    })
+        const result = conjure.op.logical(conjure.id("a").build(), "??", conjure.id("b").build());
+        expect(printExpr(result)).toBe("a ?? b;");
+      });
+    });
 
     describe("unary operators", () => {
       it("creates logical not", () => {
-        const result = conjure.op.not(conjure.id("flag").build())
-        expect(printExpr(result)).toBe("!flag;")
-      })
+        const result = conjure.op.not(conjure.id("flag").build());
+        expect(printExpr(result)).toBe("!flag;");
+      });
 
       it("creates generic unary expression", () => {
-        const result = conjure.op.unary("typeof", conjure.id("x").build())
-        expect(printExpr(result)).toBe("typeof x;")
-      })
+        const result = conjure.op.unary("typeof", conjure.id("x").build());
+        expect(printExpr(result)).toBe("typeof x;");
+      });
 
       it("creates negation", () => {
-        const result = conjure.op.unary("-", conjure.num(42))
-        expect(printExpr(result)).toBe("-42;")
-      })
-    })
+        const result = conjure.op.unary("-", conjure.num(42));
+        expect(printExpr(result)).toBe("-42;");
+      });
+    });
 
     describe("other operators", () => {
       it("creates ternary expression", () => {
         const result = conjure.op.ternary(
           conjure.id("cond").build(),
           conjure.str("yes"),
-          conjure.str("no")
-        )
-        expect(printExpr(result)).toBe('cond ? "yes" : "no";')
-      })
+          conjure.str("no"),
+        );
+        expect(printExpr(result)).toBe('cond ? "yes" : "no";');
+      });
 
       it("creates new expression", () => {
-        const result = conjure.op.new(
-          conjure.id("Error").build(),
-          [conjure.str("message")]
-        )
-        expect(printExpr(result)).toBe('new Error("message");')
-      })
+        const result = conjure.op.new(conjure.id("Error").build(), [conjure.str("message")]);
+        expect(printExpr(result)).toBe('new Error("message");');
+      });
 
       it("creates new expression without arguments", () => {
-        const result = conjure.op.new(conjure.id("Date").build())
-        expect(printExpr(result)).toBe("new Date();")
-      })
+        const result = conjure.op.new(conjure.id("Date").build());
+        expect(printExpr(result)).toBe("new Date();");
+      });
 
       it("creates assignment expression", () => {
-        const result = conjure.op.assign(
-          conjure.id("x").build(),
-          "=",
-          conjure.num(42)
-        )
-        expect(printExpr(result)).toBe("x = 42;")
-      })
+        const result = conjure.op.assign(conjure.id("x").build(), "=", conjure.num(42));
+        expect(printExpr(result)).toBe("x = 42;");
+      });
 
       it("creates compound assignment", () => {
-        const result = conjure.op.assign(
-          conjure.id("count").build(),
-          "+=",
-          conjure.num(1)
-        )
-        expect(printExpr(result)).toBe("count += 1;")
-      })
-    })
-  })
+        const result = conjure.op.assign(conjure.id("count").build(), "+=", conjure.num(1));
+        expect(printExpr(result)).toBe("count += 1;");
+      });
+    });
+  });
 
   describe("statements", () => {
     it("creates const declaration", () => {
-      const result = conjure.stmt.const("x", conjure.num(42))
-      expect(printStmt(result)).toBe("const x = 42;")
-    })
+      const result = conjure.stmt.const("x", conjure.num(42));
+      expect(printStmt(result)).toBe("const x = 42;");
+    });
 
     it("creates const declaration with type", () => {
-      const result = conjure.stmt.const(
-        "name",
-        conjure.str("test"),
-        conjure.ts.string()
-      )
-      expect(printStmt(result)).toBe('const name: string = "test";')
-    })
+      const result = conjure.stmt.const("name", conjure.str("test"), conjure.ts.string());
+      expect(printStmt(result)).toBe('const name: string = "test";');
+    });
 
     it("creates let declaration", () => {
-      const result = conjure.stmt.let("x", conjure.num(0))
-      expect(printStmt(result)).toBe("let x = 0;")
-    })
+      const result = conjure.stmt.let("x", conjure.num(0));
+      expect(printStmt(result)).toBe("let x = 0;");
+    });
 
     it("creates let declaration without initializer", () => {
-      const result = conjure.stmt.let("x", undefined, conjure.ts.number())
-      expect(printStmt(result)).toBe("let x: number;")
-    })
+      const result = conjure.stmt.let("x", undefined, conjure.ts.number());
+      expect(printStmt(result)).toBe("let x: number;");
+    });
 
     it("creates return statement", () => {
-      const result = conjure.stmt.return(conjure.id("value").build())
-      expect(printStmt(result)).toBe("return value;")
-    })
+      const result = conjure.stmt.return(conjure.id("value").build());
+      expect(printStmt(result)).toBe("return value;");
+    });
 
     it("creates empty return statement", () => {
-      const result = conjure.stmt.return()
-      expect(printStmt(result)).toBe("return;")
-    })
+      const result = conjure.stmt.return();
+      expect(printStmt(result)).toBe("return;");
+    });
 
     it("creates expression statement", () => {
       const result = conjure.stmt.expr(
-        conjure.id("console").method("log", [conjure.str("hello")]).build()
-      )
-      expect(printStmt(result)).toBe('console.log("hello");')
-    })
+        conjure
+          .id("console")
+          .method("log", [conjure.str("hello")])
+          .build(),
+      );
+      expect(printStmt(result)).toBe('console.log("hello");');
+    });
 
     it("creates if statement", () => {
-      const result = conjure.stmt.if(
-        conjure.id("condition").build(),
-        [conjure.stmt.return(conjure.bool(true))]
-      )
-      expect(printStmt(result)).toContain("if (condition)")
-      expect(printStmt(result)).toContain("return true")
-    })
+      const result = conjure.stmt.if(conjure.id("condition").build(), [
+        conjure.stmt.return(conjure.bool(true)),
+      ]);
+      expect(printStmt(result)).toContain("if (condition)");
+      expect(printStmt(result)).toContain("return true");
+    });
 
     it("creates if-else statement", () => {
       const result = conjure.stmt.if(
         conjure.id("condition").build(),
         [conjure.stmt.return(conjure.bool(true))],
-        [conjure.stmt.return(conjure.bool(false))]
-      )
-      expect(printStmt(result)).toContain("if (condition)")
-      expect(printStmt(result)).toContain("else")
-      expect(printStmt(result)).toContain("return false")
-    })
+        [conjure.stmt.return(conjure.bool(false))],
+      );
+      expect(printStmt(result)).toContain("if (condition)");
+      expect(printStmt(result)).toContain("else");
+      expect(printStmt(result)).toContain("return false");
+    });
 
     it("creates throw statement", () => {
       const result = conjure.stmt.throw(
-        conjure.op.new(conjure.id("Error").build(), [conjure.str("oops")])
-      )
-      expect(printStmt(result)).toBe('throw new Error("oops");')
-    })
+        conjure.op.new(conjure.id("Error").build(), [conjure.str("oops")]),
+      );
+      expect(printStmt(result)).toBe('throw new Error("oops");');
+    });
 
     it("creates try-catch statement", () => {
       const result = conjure.stmt.try(
@@ -562,118 +557,126 @@ describe("Conjure", () => {
         "err",
         [
           conjure.stmt.expr(
-            conjure.id("console").method("error", [conjure.id("err").build()]).build()
+            conjure
+              .id("console")
+              .method("error", [conjure.id("err").build()])
+              .build(),
           ),
-        ]
-      )
-      expect(printStmt(result)).toContain("try")
-      expect(printStmt(result)).toContain("catch (err)")
-      expect(printStmt(result)).toContain("console.error(err)")
-    })
+        ],
+      );
+      expect(printStmt(result)).toContain("try");
+      expect(printStmt(result)).toContain("catch (err)");
+      expect(printStmt(result)).toContain("console.error(err)");
+    });
 
     it("creates try-catch-finally statement", () => {
       const result = conjure.stmt.try(
         [conjure.stmt.expr(conjure.id("open").call().build())],
         "err",
-        [conjure.stmt.expr(conjure.id("log").call([conjure.id("err").build()]).build())],
-        [conjure.stmt.expr(conjure.id("close").call().build())]
-      )
-      expect(printStmt(result)).toContain("finally")
-      expect(printStmt(result)).toContain("close()")
-    })
-
-    it("creates for-of statement", () => {
-      const result = conjure.stmt.forOf(
-        "const",
-        "item",
-        conjure.id("items").build(),
         [
           conjure.stmt.expr(
-            conjure.id("process").call([conjure.id("item").build()]).build()
+            conjure
+              .id("log")
+              .call([conjure.id("err").build()])
+              .build(),
           ),
-        ]
-      )
-      expect(printStmt(result)).toContain("for (const item of items)")
-      expect(printStmt(result)).toContain("process(item)")
-    })
+        ],
+        [conjure.stmt.expr(conjure.id("close").call().build())],
+      );
+      expect(printStmt(result)).toContain("finally");
+      expect(printStmt(result)).toContain("close()");
+    });
+
+    it("creates for-of statement", () => {
+      const result = conjure.stmt.forOf("const", "item", conjure.id("items").build(), [
+        conjure.stmt.expr(
+          conjure
+            .id("process")
+            .call([conjure.id("item").build()])
+            .build(),
+        ),
+      ]);
+      expect(printStmt(result)).toContain("for (const item of items)");
+      expect(printStmt(result)).toContain("process(item)");
+    });
 
     it("creates block statement", () => {
       const result = conjure.stmt.block(
         conjure.stmt.const("x", conjure.num(1)),
-        conjure.stmt.const("y", conjure.num(2))
-      )
-      expect(printStmt(result)).toContain("const x = 1")
-      expect(printStmt(result)).toContain("const y = 2")
-    })
-  })
+        conjure.stmt.const("y", conjure.num(2)),
+      );
+      expect(printStmt(result)).toContain("const x = 1");
+      expect(printStmt(result)).toContain("const y = 2");
+    });
+  });
 
   describe("TypeScript types", () => {
     describe("keyword types", () => {
       it("creates string type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.string())
-        expect(printStmt(result)).toBe("let x: string;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.string());
+        expect(printStmt(result)).toBe("let x: string;");
+      });
 
       it("creates number type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.number())
-        expect(printStmt(result)).toBe("let x: number;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.number());
+        expect(printStmt(result)).toBe("let x: number;");
+      });
 
       it("creates boolean type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.boolean())
-        expect(printStmt(result)).toBe("let x: boolean;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.boolean());
+        expect(printStmt(result)).toBe("let x: boolean;");
+      });
 
       it("creates bigint type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.bigint())
-        expect(printStmt(result)).toBe("let x: bigint;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.bigint());
+        expect(printStmt(result)).toBe("let x: bigint;");
+      });
 
       it("creates any type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.any())
-        expect(printStmt(result)).toBe("let x: any;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.any());
+        expect(printStmt(result)).toBe("let x: any;");
+      });
 
       it("creates unknown type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.unknown())
-        expect(printStmt(result)).toBe("let x: unknown;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.unknown());
+        expect(printStmt(result)).toBe("let x: unknown;");
+      });
 
       it("creates never type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.never())
-        expect(printStmt(result)).toBe("let x: never;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.never());
+        expect(printStmt(result)).toBe("let x: never;");
+      });
 
       it("creates void type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.void())
-        expect(printStmt(result)).toBe("let x: void;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.void());
+        expect(printStmt(result)).toBe("let x: void;");
+      });
 
       it("creates null type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.null())
-        expect(printStmt(result)).toBe("let x: null;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.null());
+        expect(printStmt(result)).toBe("let x: null;");
+      });
 
       it("creates undefined type", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.undefined())
-        expect(printStmt(result)).toBe("let x: undefined;")
-      })
-    })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.undefined());
+        expect(printStmt(result)).toBe("let x: undefined;");
+      });
+    });
 
     describe("reference types", () => {
       it("creates simple type reference", () => {
-        const result = conjure.stmt.let("x", undefined, conjure.ts.ref("User"))
-        expect(printStmt(result)).toBe("let x: User;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.ref("User"));
+        expect(printStmt(result)).toBe("let x: User;");
+      });
 
       it("creates generic type reference", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.ref("Promise", [conjure.ts.string()])
-        )
-        expect(printStmt(result)).toBe("let x: Promise<string>;")
-      })
+          conjure.ts.ref("Promise", [conjure.ts.string()]),
+        );
+        expect(printStmt(result)).toBe("let x: Promise<string>;");
+      });
 
       it("creates nested generic type reference", () => {
         const result = conjure.stmt.let(
@@ -682,103 +685,94 @@ describe("Conjure", () => {
           conjure.ts.ref("Map", [
             conjure.ts.string(),
             conjure.ts.ref("Array", [conjure.ts.number()]),
-          ])
-        )
-        expect(printStmt(result)).toBe("let x: Map<string, Array<number>>;")
-      })
+          ]),
+        );
+        expect(printStmt(result)).toBe("let x: Map<string, Array<number>>;");
+      });
 
       it("creates qualified type reference", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.qualifiedRef("React", "FC", [conjure.ts.ref("Props")])
-        )
-        expect(printStmt(result)).toBe("let x: React.FC<Props>;")
-      })
+          conjure.ts.qualifiedRef("React", "FC", [conjure.ts.ref("Props")]),
+        );
+        expect(printStmt(result)).toBe("let x: React.FC<Props>;");
+      });
 
       it("creates nested qualified type reference", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.qualifiedRef("S", "Schema", "Type")
-        )
-        expect(printStmt(result)).toBe("let x: S.Schema.Type;")
-      })
+          conjure.ts.qualifiedRef("S", "Schema", "Type"),
+        );
+        expect(printStmt(result)).toBe("let x: S.Schema.Type;");
+      });
 
       it("creates nested qualified type with params via qualifiedRefWithParams", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.qualifiedRefWithParams(["S", "Schema", "Type"], [conjure.ts.typeof("Foo")])
-        )
-        expect(printStmt(result)).toBe("let x: S.Schema.Type<typeof Foo>;")
-      })
-    })
+          conjure.ts.qualifiedRefWithParams(["S", "Schema", "Type"], [conjure.ts.typeof("Foo")]),
+        );
+        expect(printStmt(result)).toBe("let x: S.Schema.Type<typeof Foo>;");
+      });
+    });
 
     describe("composite types", () => {
       it("creates array type", () => {
-        const result = conjure.stmt.let(
-          "x",
-          undefined,
-          conjure.ts.array(conjure.ts.string())
-        )
-        expect(printStmt(result)).toBe("let x: string[];")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.array(conjure.ts.string()));
+        expect(printStmt(result)).toBe("let x: string[];");
+      });
 
       it("creates union type", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.union(conjure.ts.string(), conjure.ts.number())
-        )
-        expect(printStmt(result)).toBe("let x: string | number;")
-      })
+          conjure.ts.union(conjure.ts.string(), conjure.ts.number()),
+        );
+        expect(printStmt(result)).toBe("let x: string | number;");
+      });
 
       it("creates intersection type", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.intersection(conjure.ts.ref("A"), conjure.ts.ref("B"))
-        )
-        expect(printStmt(result)).toBe("let x: A & B;")
-      })
+          conjure.ts.intersection(conjure.ts.ref("A"), conjure.ts.ref("B")),
+        );
+        expect(printStmt(result)).toBe("let x: A & B;");
+      });
 
       it("creates tuple type", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.tuple(conjure.ts.string(), conjure.ts.number())
-        )
-        expect(printStmt(result)).toBe("let x: [string, number];")
-      })
+          conjure.ts.tuple(conjure.ts.string(), conjure.ts.number()),
+        );
+        expect(printStmt(result)).toBe("let x: [string, number];");
+      });
 
       it("creates literal types", () => {
-        expect(
-          printStmt(
-            conjure.stmt.let("x", undefined, conjure.ts.literal("hello"))
-          )
-        ).toBe('let x: "hello";')
-        expect(
-          printStmt(conjure.stmt.let("x", undefined, conjure.ts.literal(42)))
-        ).toBe("let x: 42;")
-        expect(
-          printStmt(conjure.stmt.let("x", undefined, conjure.ts.literal(true)))
-        ).toBe("let x: true;")
-      })
-    })
+        expect(printStmt(conjure.stmt.let("x", undefined, conjure.ts.literal("hello")))).toBe(
+          'let x: "hello";',
+        );
+        expect(printStmt(conjure.stmt.let("x", undefined, conjure.ts.literal(42)))).toBe(
+          "let x: 42;",
+        );
+        expect(printStmt(conjure.stmt.let("x", undefined, conjure.ts.literal(true)))).toBe(
+          "let x: true;",
+        );
+      });
+    });
 
     describe("function types", () => {
       it("creates simple function type", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.fn(
-            [{ name: "a", type: conjure.ts.string() }],
-            conjure.ts.number()
-          )
-        )
-        expect(printStmt(result)).toBe("let x: (a: string) => number;")
-      })
+          conjure.ts.fn([{ name: "a", type: conjure.ts.string() }], conjure.ts.number()),
+        );
+        expect(printStmt(result)).toBe("let x: (a: string) => number;");
+      });
 
       it("creates function type with optional params", () => {
         const result = conjure.stmt.let(
@@ -789,83 +783,72 @@ describe("Conjure", () => {
               { name: "a", type: conjure.ts.string() },
               { name: "b", type: conjure.ts.number(), optional: true },
             ],
-            conjure.ts.void()
-          )
-        )
-        expect(printStmt(result)).toBe("let x: (a: string, b?: number) => void;")
-      })
-    })
+            conjure.ts.void(),
+          ),
+        );
+        expect(printStmt(result)).toBe("let x: (a: string, b?: number) => void;");
+      });
+    });
 
     describe("type operators", () => {
       it("creates typeof type", () => {
-        const result = conjure.stmt.let(
-          "x",
-          undefined,
-          conjure.ts.typeof("config")
-        )
-        expect(printStmt(result)).toBe("let x: typeof config;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.typeof("config"));
+        expect(printStmt(result)).toBe("let x: typeof config;");
+      });
 
       it("creates keyof type", () => {
-        const result = conjure.stmt.let(
-          "x",
-          undefined,
-          conjure.ts.keyof(conjure.ts.ref("User"))
-        )
-        expect(printStmt(result)).toBe("let x: keyof User;")
-      })
+        const result = conjure.stmt.let("x", undefined, conjure.ts.keyof(conjure.ts.ref("User")));
+        expect(printStmt(result)).toBe("let x: keyof User;");
+      });
 
       it("creates readonly type", () => {
         const result = conjure.stmt.let(
           "x",
           undefined,
-          conjure.ts.readonly(conjure.ts.array(conjure.ts.string()))
-        )
-        expect(printStmt(result)).toBe("let x: readonly string[];")
-      })
-    })
-  })
+          conjure.ts.readonly(conjure.ts.array(conjure.ts.string())),
+        );
+        expect(printStmt(result)).toBe("let x: readonly string[];");
+      });
+    });
+  });
 
   describe("helpers", () => {
     it("creates await expression", () => {
-      const result = conjure.await(conjure.id("promise").build())
-      expect(printExpr(result)).toBe("await promise;")
-    })
+      const result = conjure.await(conjure.id("promise").build());
+      expect(printExpr(result)).toBe("await promise;");
+    });
 
     it("creates spread element", () => {
-      const arr = conjure
-        .arr(conjure.num(1))
-        .spread(conjure.id("rest").build())
-        .build()
-      expect(printExpr(arr)).toBe("[1, ...rest];")
-    })
+      const arr = conjure.arr(conjure.num(1)).spread(conjure.id("rest").build()).build();
+      expect(printExpr(arr)).toBe("[1, ...rest];");
+    });
 
     it("creates program", () => {
       const program = conjure.program(
         conjure.stmt.const("x", conjure.num(1)),
-        conjure.stmt.const("y", conjure.num(2))
-      )
-      const code = conjure.print(program)
-      expect(code).toContain("const x = 1")
-      expect(code).toContain("const y = 2")
-    })
+        conjure.stmt.const("y", conjure.num(2)),
+      );
+      const code = conjure.print(program);
+      expect(code).toContain("const x = 1");
+      expect(code).toContain("const y = 2");
+    });
 
     it("exposes raw builders", () => {
       // Verify we can access raw recast builders
-      expect(conjure.b).toBeDefined()
-      expect(conjure.b.identifier).toBeDefined()
-      expect(conjure.b.stringLiteral).toBeDefined()
-    })
-  })
+      expect(conjure.b).toBeDefined();
+      expect(conjure.b.identifier).toBeDefined();
+      expect(conjure.b.stringLiteral).toBeDefined();
+    });
+  });
 
   describe("cast helpers", () => {
     it("exports cast helpers for raw recast interop", () => {
-      expect(cast.toExpr).toBeDefined()
-      expect(cast.asArrayElem).toBeDefined()
-      expect(cast.toStmt).toBeDefined()
-      expect(cast.toTSType).toBeDefined()
-    })
-  })
+      expect(cast.toExpr).toBeDefined();
+      expect(cast.asArrayElem).toBeDefined();
+      expect(cast.toStmt).toBeDefined();
+      expect(cast.toTSType).toBeDefined();
+    });
+  });
 
   describe("real-world patterns", () => {
     it("generates Zod schema", () => {
@@ -876,17 +859,24 @@ describe("Conjure", () => {
             .obj()
             .prop("id", conjure.id("z").method("string").method("uuid").build())
             .prop("email", conjure.id("z").method("string").method("email").build())
-            .prop("age", conjure.id("z").method("number").method("min", [conjure.num(0)]).build())
+            .prop(
+              "age",
+              conjure
+                .id("z")
+                .method("number")
+                .method("min", [conjure.num(0)])
+                .build(),
+            )
             .build(),
         ])
-        .build()
+        .build();
 
-      const code = printExpr(schema)
-      expect(code).toContain("z.object")
-      expect(code).toContain("id: z.string().uuid()")
-      expect(code).toContain("email: z.string().email()")
-      expect(code).toContain("age: z.number().min(0)")
-    })
+      const code = printExpr(schema);
+      expect(code).toContain("z.object");
+      expect(code).toContain("id: z.string().uuid()");
+      expect(code).toContain("email: z.string().email()");
+      expect(code).toContain("age: z.number().min(0)");
+    });
 
     it("generates Express route handler", () => {
       const handler = conjure
@@ -896,35 +886,35 @@ describe("Conjure", () => {
         .param("req", conjure.ts.ref("Request"))
         .param("res", conjure.ts.ref("Response"))
         .body(
-          conjure.stmt.const(
-            "users",
-            conjure.await(conjure.id("db").method("getUsers").build())
-          ),
+          conjure.stmt.const("users", conjure.await(conjure.id("db").method("getUsers").build())),
           conjure.stmt.return(
-            conjure.id("res").method("json", [conjure.id("users").build()]).build()
-          )
+            conjure
+              .id("res")
+              .method("json", [conjure.id("users").build()])
+              .build(),
+          ),
         )
-        .build()
+        .build();
 
       const route = conjure
         .id("router")
         .method("get", [conjure.str("/users"), handler])
-        .build()
+        .build();
 
-      const code = printExpr(route)
-      expect(code).toContain('router.get("/users"')
-      expect(code).toContain("async (req: Request, res: Response)")
-      expect(code).toContain("await db.getUsers()")
-      expect(code).toContain("res.json(users)")
-    })
+      const code = printExpr(route);
+      expect(code).toContain('router.get("/users"');
+      expect(code).toContain("async (req: Request, res: Response)");
+      expect(code).toContain("await db.getUsers()");
+      expect(code).toContain("res.json(users)");
+    });
 
     it("generates TypeScript interface-like pattern", () => {
       // While we can't directly create interfaces, we can create
       // the equivalent type patterns
-      const userType = conjure.ts.ref("User")
-      const arrayOfUsers = conjure.ts.array(userType)
-      const promiseOfUsers = conjure.ts.ref("Promise", [arrayOfUsers])
-      const _nullableUser = conjure.ts.union(userType, conjure.ts.null())
+      const userType = conjure.ts.ref("User");
+      const arrayOfUsers = conjure.ts.array(userType);
+      const promiseOfUsers = conjure.ts.ref("Promise", [arrayOfUsers]);
+      const _nullableUser = conjure.ts.union(userType, conjure.ts.null());
 
       const fnDecl = conjure
         .fn()
@@ -933,45 +923,45 @@ describe("Conjure", () => {
         .returns(promiseOfUsers)
         .body(
           conjure.stmt.return(
-            conjure.id("api").method("fetchUsers", [conjure.id("id").build()]).build()
-          )
+            conjure
+              .id("api")
+              .method("fetchUsers", [conjure.id("id").build()])
+              .build(),
+          ),
         )
-        .toDeclaration("getUsers")
+        .toDeclaration("getUsers");
 
-      const code = printStmt(fnDecl)
-      expect(code).toContain("async function getUsers(id: string): Promise<User[]>")
-    })
+      const code = printStmt(fnDecl);
+      expect(code).toContain("async function getUsers(id: string): Promise<User[]>");
+    });
 
     it("generates complex conditional logic", () => {
       const validation = conjure.stmt.if(
         conjure.op.and(
           conjure.op.neq(conjure.id("user").build(), conjure.null()),
-          conjure.op.binary(
-            conjure.id("user").prop("age").build(),
-            ">=",
-            conjure.num(18)
-          )
+          conjure.op.binary(conjure.id("user").prop("age").build(), ">=", conjure.num(18)),
         ),
         [
           conjure.stmt.expr(
-            conjure.id("grantAccess").call([conjure.id("user").build()]).build()
+            conjure
+              .id("grantAccess")
+              .call([conjure.id("user").build()])
+              .build(),
           ),
         ],
         [
           conjure.stmt.throw(
-            conjure.op.new(conjure.id("Error").build(), [
-              conjure.str("Access denied"),
-            ])
+            conjure.op.new(conjure.id("Error").build(), [conjure.str("Access denied")]),
           ),
-        ]
-      )
+        ],
+      );
 
-      const code = printStmt(validation)
-      expect(code).toContain("user !== null && user.age >= 18")
-      expect(code).toContain("grantAccess(user)")
-      expect(code).toContain('throw new Error("Access denied")')
-    })
-  })
+      const code = printStmt(validation);
+      expect(code).toContain("user !== null && user.age >= 18");
+      expect(code).toContain("grantAccess(user)");
+      expect(code).toContain('throw new Error("Access denied")');
+    });
+  });
 
   describe("export helpers (exp.*)", () => {
     it("creates exported interface with symbol metadata", () => {
@@ -982,24 +972,24 @@ describe("Conjure", () => {
           { name: "id", type: conjure.ts.string() },
           { name: "email", type: conjure.ts.string() },
           { name: "age", type: conjure.ts.number(), optional: true },
-        ]
-      )
+        ],
+      );
 
-      expect(iface._tag).toBe("SymbolStatement")
+      expect(iface._tag).toBe("SymbolStatement");
       expect(iface.symbol).toEqual({
         name: "User",
         capability: "types",
         entity: "User",
         shape: "row",
         isType: true,
-      })
+      });
 
-      const code = printStmt(iface.node)
-      expect(code).toContain("export interface User")
-      expect(code).toContain("id: string")
-      expect(code).toContain("email: string")
-      expect(code).toContain("age?: number")
-    })
+      const code = printStmt(iface.node);
+      expect(code).toContain("export interface User");
+      expect(code).toContain("id: string");
+      expect(code).toContain("email: string");
+      expect(code).toContain("age?: number");
+    });
 
     it("creates exported type alias with symbol metadata", () => {
       const alias = conjure.exp.typeAlias(
@@ -1008,88 +998,88 @@ describe("Conjure", () => {
         conjure.ts.union(
           conjure.ts.literal("admin"),
           conjure.ts.literal("user"),
-          conjure.ts.literal("guest")
-        )
-      )
+          conjure.ts.literal("guest"),
+        ),
+      );
 
-      expect(alias._tag).toBe("SymbolStatement")
+      expect(alias._tag).toBe("SymbolStatement");
       expect(alias.symbol).toEqual({
         name: "Role",
         capability: "types",
         entity: "Role",
         isType: true,
-      })
+      });
 
-      const code = printStmt(alias.node)
-      expect(code).toContain("export type Role")
-      expect(code).toContain('"admin"')
-      expect(code).toContain('"user"')
-      expect(code).toContain('"guest"')
-    })
+      const code = printStmt(alias.node);
+      expect(code).toContain("export type Role");
+      expect(code).toContain('"admin"');
+      expect(code).toContain('"user"');
+      expect(code).toContain('"guest"');
+    });
 
     it("creates exported const with symbol metadata", () => {
       const schema = conjure.exp.const(
         "UserSchema",
         { capability: "schemas", entity: "User", shape: "row" },
-        conjure.id("z").method("object", [conjure.obj().build()]).build()
-      )
+        conjure.id("z").method("object", [conjure.obj().build()]).build(),
+      );
 
-      expect(schema._tag).toBe("SymbolStatement")
+      expect(schema._tag).toBe("SymbolStatement");
       expect(schema.symbol).toEqual({
         name: "UserSchema",
         capability: "schemas",
         entity: "User",
         shape: "row",
         isType: false,
-      })
+      });
 
-      const code = printStmt(schema.node)
-      expect(code).toContain("export const UserSchema = z.object")
-    })
+      const code = printStmt(schema.node);
+      expect(code).toContain("export const UserSchema = z.object");
+    });
 
     it("creates exported const with type annotation", () => {
       const schema = conjure.exp.const(
         "config",
         { capability: "config", entity: "Config" },
         conjure.obj().prop("debug", conjure.bool(true)).build(),
-        conjure.ts.ref("AppConfig")
-      )
+        conjure.ts.ref("AppConfig"),
+      );
 
-      const code = printStmt(schema.node)
-      expect(code).toContain("export const config: AppConfig")
-    })
+      const code = printStmt(schema.node);
+      expect(code).toContain("export const config: AppConfig");
+    });
 
     it("creates exported type for inferred types", () => {
       const inferredType = conjure.exp.type(
         "User",
         { capability: "schemas", entity: "User", shape: "row" },
-        conjure.ts.typeof("UserSchema")
-      )
+        conjure.ts.typeof("UserSchema"),
+      );
 
-      expect(inferredType._tag).toBe("SymbolStatement")
-      expect(inferredType.symbol.isType).toBe(true)
+      expect(inferredType._tag).toBe("SymbolStatement");
+      expect(inferredType.symbol.isType).toBe(true);
 
-      const code = printStmt(inferredType.node)
-      expect(code).toContain("export type User = typeof UserSchema")
-    })
-  })
+      const code = printStmt(inferredType.node);
+      expect(code).toContain("export type User = typeof UserSchema");
+    });
+  });
 
   describe("export helpers (conjure.export.*)", () => {
     it("creates export const", () => {
-      const result = conjure.export.const("config", conjure.obj().build())
-      const code = printStmt(result)
-      expect(code).toContain("export const config = {}")
-    })
+      const result = conjure.export.const("config", conjure.obj().build());
+      const code = printStmt(result);
+      expect(code).toContain("export const config = {}");
+    });
 
     it("creates export const with type annotation", () => {
       const result = conjure.export.const(
         "config",
         conjure.obj().build(),
-        conjure.ts.ref("AppConfig")
-      )
-      const code = printStmt(result)
-      expect(code).toContain("export const config: AppConfig = {}")
-    })
+        conjure.ts.ref("AppConfig"),
+      );
+      const code = printStmt(result);
+      expect(code).toContain("export const config: AppConfig = {}");
+    });
 
     it("creates export function", () => {
       const fn = conjure
@@ -1097,43 +1087,40 @@ describe("Conjure", () => {
         .async()
         .param("id", conjure.ts.string())
         .body(conjure.stmt.return(conjure.id("id").build()))
-        .toDeclaration("getUser")
-      const result = conjure.export.fn(fn)
-      const code = printStmt(result)
-      expect(code).toContain("export async function getUser(id: string)")
-    })
+        .toDeclaration("getUser");
+      const result = conjure.export.fn(fn);
+      const code = printStmt(result);
+      expect(code).toContain("export async function getUser(id: string)");
+    });
 
     it("creates export default", () => {
       const result = conjure.export.default(
-        conjure.id("defineConfig").call([conjure.obj().build()]).build()
-      )
-      const code = printStmt(result)
-      expect(code).toContain("export default defineConfig({})")
-    })
+        conjure.id("defineConfig").call([conjure.obj().build()]).build(),
+      );
+      const code = printStmt(result);
+      expect(code).toContain("export default defineConfig({})");
+    });
 
     it("creates export named with simple names", () => {
-      const result = conjure.export.named("foo", "bar", "baz")
-      const code = printStmt(result)
-      expect(code).toContain("export { foo, bar, baz }")
-    })
+      const result = conjure.export.named("foo", "bar", "baz");
+      const code = printStmt(result);
+      expect(code).toContain("export { foo, bar, baz }");
+    });
 
     it("creates export named with renames", () => {
-      const result = conjure.export.named(
-        "internalName",
-        { local: "foo", exported: "Foo" }
-      )
-      const code = printStmt(result)
-      expect(code).toContain("export { internalName, foo as Foo }")
-    })
+      const result = conjure.export.named("internalName", { local: "foo", exported: "Foo" });
+      const code = printStmt(result);
+      expect(code).toContain("export { internalName, foo as Foo }");
+    });
 
     it("creates export type", () => {
       const result = conjure.export.type(
         "UserId",
-        conjure.ts.ref("Brand", [conjure.ts.string(), conjure.ts.literal("UserId")])
-      )
-      const code = printStmt(result)
-      expect(code).toContain("export type UserId = Brand<string, \"UserId\">")
-    })
+        conjure.ts.ref("Brand", [conjure.ts.string(), conjure.ts.literal("UserId")]),
+      );
+      const code = printStmt(result);
+      expect(code).toContain('export type UserId = Brand<string, "UserId">');
+    });
 
     it("creates export interface", () => {
       const result = conjure.export.interface("User", [
@@ -1141,243 +1128,235 @@ describe("Conjure", () => {
         { name: "name", type: conjure.ts.string() },
         { name: "age", type: conjure.ts.number(), optional: true },
         { name: "email", type: conjure.ts.string(), readonly: true },
-      ])
-      const code = printStmt(result)
-      expect(code).toContain("export interface User")
-      expect(code).toContain("id: string")
-      expect(code).toContain("name: string")
-      expect(code).toContain("age?: number")
-      expect(code).toContain("readonly email: string")
-    })
-  })
+      ]);
+      const code = printStmt(result);
+      expect(code).toContain("export interface User");
+      expect(code).toContain("id: string");
+      expect(code).toContain("name: string");
+      expect(code).toContain("age?: number");
+      expect(code).toContain("readonly email: string");
+    });
+  });
 
   describe("symbolProgram", () => {
     it("extracts symbols from SymbolStatements", () => {
       const prog = conjure.symbolProgram(
-        conjure.exp.interface(
-          "User",
-          { capability: "types", entity: "User", shape: "row" },
-          [{ name: "id", type: conjure.ts.string() }]
-        ),
+        conjure.exp.interface("User", { capability: "types", entity: "User", shape: "row" }, [
+          { name: "id", type: conjure.ts.string() },
+        ]),
         conjure.exp.typeAlias(
           "Role",
           { capability: "types", entity: "Role" },
-          conjure.ts.literal("admin")
-        )
-      )
+          conjure.ts.literal("admin"),
+        ),
+      );
 
-      expect(prog._tag).toBe("SymbolProgram")
-      expect(prog.symbols).toHaveLength(2)
+      expect(prog._tag).toBe("SymbolProgram");
+      expect(prog.symbols).toHaveLength(2);
       expect(prog.symbols[0]).toEqual({
         name: "User",
         capability: "types",
         entity: "User",
         shape: "row",
         isType: true,
-      })
+      });
       expect(prog.symbols[1]).toEqual({
         name: "Role",
         capability: "types",
         entity: "Role",
         isType: true,
-      })
-    })
+      });
+    });
 
     it("handles mix of regular statements and SymbolStatements", () => {
       const prog = conjure.symbolProgram(
         conjure.stmt.const("x", conjure.num(1)),
-        conjure.exp.interface(
-          "User",
-          { capability: "types", entity: "User" },
-          []
-        ),
-        conjure.stmt.const("y", conjure.num(2))
-      )
+        conjure.exp.interface("User", { capability: "types", entity: "User" }, []),
+        conjure.stmt.const("y", conjure.num(2)),
+      );
 
-      expect(prog._tag).toBe("SymbolProgram")
-      expect(prog.symbols).toHaveLength(1)
-      expect(prog.symbols[0]!.name).toBe("User")
+      expect(prog._tag).toBe("SymbolProgram");
+      expect(prog.symbols).toHaveLength(1);
+      expect(prog.symbols[0]!.name).toBe("User");
 
-      const code = conjure.print(prog.node)
-      expect(code).toContain("const x = 1")
-      expect(code).toContain("export interface User")
-      expect(code).toContain("const y = 2")
-    })
+      const code = conjure.print(prog.node);
+      expect(code).toContain("const x = 1");
+      expect(code).toContain("export interface User");
+      expect(code).toContain("const y = 2");
+    });
 
     it("preserves statement order in generated code", () => {
       const prog = conjure.symbolProgram(
         conjure.exp.typeAlias(
           "First",
           { capability: "types", entity: "First" },
-          conjure.ts.string()
+          conjure.ts.string(),
         ),
         conjure.exp.typeAlias(
           "Second",
           { capability: "types", entity: "Second" },
-          conjure.ts.number()
-        )
-      )
+          conjure.ts.number(),
+        ),
+      );
 
-      const code = conjure.print(prog.node)
-      const firstIdx = code.indexOf("First")
-      const secondIdx = code.indexOf("Second")
-      expect(firstIdx).toBeLessThan(secondIdx)
-    })
-  })
+      const code = conjure.print(prog.node);
+      const firstIdx = code.indexOf("First");
+      const secondIdx = code.indexOf("Second");
+      expect(firstIdx).toBeLessThan(secondIdx);
+    });
+  });
 
   describe("type modifier helpers (ts.*)", () => {
     it("ts.nullable wraps type with null union", () => {
-      const type = conjure.ts.nullable(conjure.ts.string())
-      const code = printType(type)
-      expect(code).toBe("string | null")
-    })
+      const type = conjure.ts.nullable(conjure.ts.string());
+      const code = printType(type);
+      expect(code).toBe("string | null");
+    });
 
     it("ts.asArray wraps type in array", () => {
-      const type = conjure.ts.asArray(conjure.ts.string())
-      const code = printType(type)
-      expect(code).toBe("string[]")
-    })
+      const type = conjure.ts.asArray(conjure.ts.string());
+      const code = printType(type);
+      expect(code).toBe("string[]");
+    });
 
     it("ts.withModifiers applies array then nullable", () => {
       const type = conjure.ts.withModifiers(conjure.ts.string(), {
         array: true,
         nullable: true,
-      })
-      const code = printType(type)
-      expect(code).toBe("string[] | null")
-    })
+      });
+      const code = printType(type);
+      expect(code).toBe("string[] | null");
+    });
 
     it("ts.withModifiers applies only array when nullable is false", () => {
       const type = conjure.ts.withModifiers(conjure.ts.string(), {
         array: true,
         nullable: false,
-      })
-      const code = printType(type)
-      expect(code).toBe("string[]")
-    })
+      });
+      const code = printType(type);
+      expect(code).toBe("string[]");
+    });
 
     it("ts.withModifiers applies only nullable when array is false", () => {
       const type = conjure.ts.withModifiers(conjure.ts.string(), {
         array: false,
         nullable: true,
-      })
-      const code = printType(type)
-      expect(code).toBe("string | null")
-    })
+      });
+      const code = printType(type);
+      expect(code).toBe("string | null");
+    });
 
     it("ts.withModifiers returns unchanged type when both false", () => {
       const type = conjure.ts.withModifiers(conjure.ts.string(), {
         array: false,
         nullable: false,
-      })
-      const code = printType(type)
-      expect(code).toBe("string")
-    })
-  })
+      });
+      const code = printType(type);
+      expect(code).toBe("string");
+    });
+  });
 
   describe("ts.fromString", () => {
     it("parses primitive types", () => {
-      expect(printType(conjure.ts.fromString("string"))).toBe("string")
-      expect(printType(conjure.ts.fromString("number"))).toBe("number")
-      expect(printType(conjure.ts.fromString("boolean"))).toBe("boolean")
-      expect(printType(conjure.ts.fromString("bigint"))).toBe("bigint")
-      expect(printType(conjure.ts.fromString("unknown"))).toBe("unknown")
-      expect(printType(conjure.ts.fromString("void"))).toBe("void")
-      expect(printType(conjure.ts.fromString("null"))).toBe("null")
-      expect(printType(conjure.ts.fromString("undefined"))).toBe("undefined")
-      expect(printType(conjure.ts.fromString("any"))).toBe("any")
-      expect(printType(conjure.ts.fromString("never"))).toBe("never")
-    })
+      expect(printType(conjure.ts.fromString("string"))).toBe("string");
+      expect(printType(conjure.ts.fromString("number"))).toBe("number");
+      expect(printType(conjure.ts.fromString("boolean"))).toBe("boolean");
+      expect(printType(conjure.ts.fromString("bigint"))).toBe("bigint");
+      expect(printType(conjure.ts.fromString("unknown"))).toBe("unknown");
+      expect(printType(conjure.ts.fromString("void"))).toBe("void");
+      expect(printType(conjure.ts.fromString("null"))).toBe("null");
+      expect(printType(conjure.ts.fromString("undefined"))).toBe("undefined");
+      expect(printType(conjure.ts.fromString("any"))).toBe("any");
+      expect(printType(conjure.ts.fromString("never"))).toBe("never");
+    });
 
     it("parses built-in reference types", () => {
-      expect(printType(conjure.ts.fromString("Date"))).toBe("Date")
-      expect(printType(conjure.ts.fromString("Buffer"))).toBe("Buffer")
-    })
+      expect(printType(conjure.ts.fromString("Date"))).toBe("Date");
+      expect(printType(conjure.ts.fromString("Buffer"))).toBe("Buffer");
+    });
 
     it("parses custom type references", () => {
-      expect(printType(conjure.ts.fromString("User"))).toBe("User")
-      expect(printType(conjure.ts.fromString("MyCustomType"))).toBe("MyCustomType")
-    })
+      expect(printType(conjure.ts.fromString("User"))).toBe("User");
+      expect(printType(conjure.ts.fromString("MyCustomType"))).toBe("MyCustomType");
+    });
 
     it("parses array suffix types", () => {
-      expect(printType(conjure.ts.fromString("string[]"))).toBe("string[]")
-      expect(printType(conjure.ts.fromString("number[]"))).toBe("number[]")
-      expect(printType(conjure.ts.fromString("User[]"))).toBe("User[]")
-    })
+      expect(printType(conjure.ts.fromString("string[]"))).toBe("string[]");
+      expect(printType(conjure.ts.fromString("number[]"))).toBe("number[]");
+      expect(printType(conjure.ts.fromString("User[]"))).toBe("User[]");
+    });
 
     it("parses nested array types", () => {
-      expect(printType(conjure.ts.fromString("string[][]"))).toBe("string[][]")
-    })
-  })
+      expect(printType(conjure.ts.fromString("string[][]"))).toBe("string[][]");
+    });
+  });
 
   describe("exp.tsEnum", () => {
     it("generates TS enum with string values", () => {
-      const enumStmt = conjure.exp.tsEnum(
-        "Status",
-        { capability: "types", entity: "Status" },
-        ["active", "pending", "inactive"]
-      )
+      const enumStmt = conjure.exp.tsEnum("Status", { capability: "types", entity: "Status" }, [
+        "active",
+        "pending",
+        "inactive",
+      ]);
 
-      expect(enumStmt._tag).toBe("SymbolStatement")
+      expect(enumStmt._tag).toBe("SymbolStatement");
       expect(enumStmt.symbol).toEqual({
         name: "Status",
         capability: "types",
         entity: "Status",
         isType: true,
-      })
+      });
 
-      const code = printStmt(enumStmt.node)
-      expect(code).toContain("export enum Status")
-      expect(code).toContain('ACTIVE = "active"')
-      expect(code).toContain('PENDING = "pending"')
-      expect(code).toContain('INACTIVE = "inactive"')
-    })
+      const code = printStmt(enumStmt.node);
+      expect(code).toContain("export enum Status");
+      expect(code).toContain('ACTIVE = "active"');
+      expect(code).toContain('PENDING = "pending"');
+      expect(code).toContain('INACTIVE = "inactive"');
+    });
 
     it("normalizes member names with special characters", () => {
-      const enumStmt = conjure.exp.tsEnum(
-        "Priority",
-        { capability: "types", entity: "Priority" },
-        ["high-priority", "low.priority", "medium priority"]
-      )
+      const enumStmt = conjure.exp.tsEnum("Priority", { capability: "types", entity: "Priority" }, [
+        "high-priority",
+        "low.priority",
+        "medium priority",
+      ]);
 
-      const code = printStmt(enumStmt.node)
-      expect(code).toContain('HIGH_PRIORITY = "high-priority"')
-      expect(code).toContain('LOW_PRIORITY = "low.priority"')
-      expect(code).toContain('MEDIUM_PRIORITY = "medium priority"')
-    })
-  })
+      const code = printStmt(enumStmt.node);
+      expect(code).toContain('HIGH_PRIORITY = "high-priority"');
+      expect(code).toContain('LOW_PRIORITY = "low.priority"');
+      expect(code).toContain('MEDIUM_PRIORITY = "medium priority"');
+    });
+  });
 
   describe("conjure.call", () => {
     it("creates method call from string callee", () => {
-      const expr = conjure.call("db", "selectFrom", [conjure.str("users")])
-      const code = printExpr(expr)
-      expect(code).toBe('db.selectFrom("users");')
-    })
+      const expr = conjure.call("db", "selectFrom", [conjure.str("users")]);
+      const code = printExpr(expr);
+      expect(code).toBe('db.selectFrom("users");');
+    });
 
     it("creates method call from expression callee", () => {
-      const expr = conjure.call(
-        conjure.id("this").prop("db").build(),
-        "query",
-        [conjure.str("SELECT * FROM users")]
-      )
-      const code = printExpr(expr)
-      expect(code).toBe('this.db.query("SELECT * FROM users");')
-    })
+      const expr = conjure.call(conjure.id("this").prop("db").build(), "query", [
+        conjure.str("SELECT * FROM users"),
+      ]);
+      const code = printExpr(expr);
+      expect(code).toBe('this.db.query("SELECT * FROM users");');
+    });
 
     it("creates method call with no arguments", () => {
-      const expr = conjure.call("db", "close")
-      const code = printExpr(expr)
-      expect(code).toBe("db.close();")
-    })
+      const expr = conjure.call("db", "close");
+      const code = printExpr(expr);
+      expect(code).toBe("db.close();");
+    });
 
     it("creates method call with multiple arguments", () => {
       const expr = conjure.call("console", "log", [
         conjure.str("Hello"),
         conjure.num(42),
         conjure.bool(true),
-      ])
-      const code = printExpr(expr)
-      expect(code).toBe('console.log("Hello", 42, true);')
-    })
-  })
-})
+      ]);
+      const code = printExpr(expr);
+      expect(code).toBe('console.log("Hello", 42, true);');
+    });
+  });
+});

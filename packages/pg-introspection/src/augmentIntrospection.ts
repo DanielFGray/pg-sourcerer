@@ -97,31 +97,31 @@ export function augmentIntrospection(
   }
 
   const getRole = (id: string | null): PgRoles | undefined =>
-    introspection.roles.find((entity) => entity._id === id);
+    introspection.roles.find(entity => entity._id === id);
   const getNamespace = (id: string | null): PgNamespace | undefined =>
-    introspection.namespaces.find((entity) => entity._id === id);
+    introspection.namespaces.find(entity => entity._id === id);
   const getType = (id: string | null): PgType | undefined =>
-    introspection.types.find((entity) => entity._id === id);
+    introspection.types.find(entity => entity._id === id);
   const getClass = (id: string | null): PgClass | undefined =>
-    introspection.classes.find((entity) => entity._id === id);
+    introspection.classes.find(entity => entity._id === id);
   const getRange = (id: string | null): PgRange | undefined =>
-    introspection.ranges.find((entity) => entity.rngtypid === id);
+    introspection.ranges.find(entity => entity.rngtypid === id);
   const getAttributes = (id: string | null): PgAttribute[] =>
     introspection.attributes
-      .filter((entity) => entity.attrelid === id)
+      .filter(entity => entity.attrelid === id)
       .sort((a, z) => a.attnum - z.attnum);
   const getConstraints = (id: string | null): PgConstraint[] =>
     introspection.constraints
-      .filter((entity) => entity.conrelid === id)
+      .filter(entity => entity.conrelid === id)
       .sort((a, z) => a.conname.localeCompare(z.conname, "en-US"));
   const getForeignConstraints = (id: string | null): PgConstraint[] =>
-    introspection.constraints.filter((entity) => entity.confrelid === id);
+    introspection.constraints.filter(entity => entity.confrelid === id);
   const getEnums = (id: string | null): PgEnum[] =>
     introspection.enums
-      .filter((entity) => entity.enumtypid === id)
+      .filter(entity => entity.enumtypid === id)
       .sort((a, z) => a.enumsortorder - z.enumsortorder);
   const getIndexes = (id: string | null): PgIndex[] =>
-    introspection.indexes.filter((entity) => entity.indrelid === id);
+    introspection.indexes.filter(entity => entity.indrelid === id);
 
   const PG_NAMESPACE = oidByCatalog["pg_namespace"];
   const PG_CLASS = oidByCatalog["pg_class"];
@@ -130,14 +130,7 @@ export function augmentIntrospection(
   const PG_CONSTRAINT = oidByCatalog["pg_constraint"];
   const PG_EXTENSION = oidByCatalog["pg_extension"];
 
-  if (
-    !PG_NAMESPACE ||
-    !PG_CLASS ||
-    !PG_PROC ||
-    !PG_TYPE ||
-    !PG_CONSTRAINT ||
-    !PG_EXTENSION
-  ) {
+  if (!PG_NAMESPACE || !PG_CLASS || !PG_PROC || !PG_TYPE || !PG_CONSTRAINT || !PG_EXTENSION) {
     throw new Error(
       `Invalid introspection results; could not determine the ids of the system catalogs`,
     );
@@ -149,14 +142,10 @@ export function augmentIntrospection(
     objsubid?: number,
   ): string | undefined =>
     objsubid == null
-      ? (introspection.descriptions.find(
-          (d) => d.classoid === classoid && d.objoid === objoid,
-        )?.description ?? undefined)
+      ? (introspection.descriptions.find(d => d.classoid === classoid && d.objoid === objoid)
+          ?.description ?? undefined)
       : (introspection.descriptions.find(
-          (d) =>
-            d.classoid === classoid &&
-            d.objoid === objoid &&
-            d.objsubid === objsubid,
+          d => d.classoid === classoid && d.objoid === objoid && d.objsubid === objsubid,
         )?.description ?? undefined);
 
   const getTagsAndDescription = (
@@ -171,50 +160,34 @@ export function augmentIntrospection(
   ): PgSmartTagsAndDescription => {
     let description = getDescription(classoid, objoid, objsubid);
     if (description == null && fallback) {
-      description = getDescription(
-        fallback.classoid,
-        fallback.objoid,
-        fallback.objsubid,
-      );
+      description = getDescription(fallback.classoid, fallback.objoid, fallback.objsubid);
     }
     return parseSmartComment(description);
   };
 
   introspection.getCurrentUser = memo(() =>
-    introspection.roles.find((r) => r.rolname === introspection.current_user),
+    introspection.roles.find(r => r.rolname === introspection.current_user),
   );
 
-  introspection.getNamespace = (by) => {
+  introspection.getNamespace = by => {
     if ("id" in by && by.id) {
       return getNamespace(by.id);
     } else if ("name" in by && by.name) {
-      return introspection.namespaces.find(
-        (entity) => entity.nspname === by.name,
-      );
+      return introspection.namespaces.find(entity => entity.nspname === by.name);
     }
   };
-  introspection.getClass = (by) => getClass(by.id);
-  introspection.getConstraint = (by) =>
-    introspection.constraints.find((c) => c._id === by.id);
-  introspection.getProc = (by) =>
-    introspection.procs.find((c) => c._id === by.id);
-  introspection.getRoles = (by) =>
-    introspection.roles.find((c) => c._id === by.id);
-  introspection.getType = (by) =>
-    introspection.types.find((c) => c._id === by.id);
-  introspection.getEnum = (by) =>
-    introspection.enums.find((c) => c._id === by.id);
-  introspection.getExtension = (by) =>
-    introspection.extensions.find((c) => c._id === by.id);
-  introspection.getIndex = (by) =>
-    introspection.indexes.find((c) => c.indexrelid === by.id);
-  introspection.getLanguage = (by) =>
-    introspection.languages.find((c) => c._id === by.id);
+  introspection.getClass = by => getClass(by.id);
+  introspection.getConstraint = by => introspection.constraints.find(c => c._id === by.id);
+  introspection.getProc = by => introspection.procs.find(c => c._id === by.id);
+  introspection.getRoles = by => introspection.roles.find(c => c._id === by.id);
+  introspection.getType = by => introspection.types.find(c => c._id === by.id);
+  introspection.getEnum = by => introspection.enums.find(c => c._id === by.id);
+  introspection.getExtension = by => introspection.extensions.find(c => c._id === by.id);
+  introspection.getIndex = by => introspection.indexes.find(c => c.indexrelid === by.id);
+  introspection.getLanguage = by => introspection.languages.find(c => c._id === by.id);
 
   introspection.database._type = "PgDatabase";
-  introspection.database.getOwner = memo(() =>
-    getRole(introspection.database.datdba),
-  );
+  introspection.database.getOwner = memo(() => getRole(introspection.database.datdba));
   introspection.database.getDba = introspection.database.getOwner;
   introspection.database.getACL = memo(() =>
     parseAcls(
@@ -225,39 +198,32 @@ export function augmentIntrospection(
     ),
   );
 
-  introspection.namespaces.forEach((entity) => {
+  introspection.namespaces.forEach(entity => {
     entity._type = "PgNamespace";
     entity.getOwner = memo(() => getRole(entity.nspowner));
-    entity.getDescription = memo(() =>
-      getDescription(PG_NAMESPACE, entity._id),
-    );
-    entity.getTagsAndDescription = memo(() =>
-      getTagsAndDescription(PG_NAMESPACE, entity._id),
-    );
+    entity.getDescription = memo(() => getDescription(PG_NAMESPACE, entity._id));
+    entity.getTagsAndDescription = memo(() => getTagsAndDescription(PG_NAMESPACE, entity._id));
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
     entity.getACL = memo(() =>
       parseAcls(introspection, entity.nspacl, entity.nspowner, OBJECT_SCHEMA),
     );
 
-    entity.getClass = (by) =>
+    entity.getClass = by =>
       introspection.classes.find(
-        (child) =>
-          child.relnamespace === entity._id && child.relname === by.name,
+        child => child.relnamespace === entity._id && child.relname === by.name,
       );
-    entity.getConstraint = (by) =>
+    entity.getConstraint = by =>
       introspection.constraints.find(
-        (child) =>
-          child.connamespace === entity._id && child.conname === by.name,
+        child => child.connamespace === entity._id && child.conname === by.name,
       );
-    entity.getProcs = (by) => {
+    entity.getProcs = by => {
       return introspection.procs.filter(
-        (child) =>
-          child.pronamespace === entity._id && child.proname === by.name,
+        child => child.pronamespace === entity._id && child.proname === by.name,
       );
     };
   });
 
-  introspection.classes.forEach((entity) => {
+  introspection.classes.forEach(entity => {
     entity._type = "PgClass";
     entity.getNamespace = memo(() => getNamespace(entity.relnamespace));
     entity.getType = memo(() => getType(entity.reltype));
@@ -265,9 +231,7 @@ export function augmentIntrospection(
     entity.getOwner = memo(() => getRole(entity.relowner));
     entity.getAttributes = memo(() => getAttributes(entity._id));
     entity.getConstraints = memo(() => getConstraints(entity._id));
-    entity.getForeignConstraints = memo(() =>
-      getForeignConstraints(entity._id),
-    );
+    entity.getForeignConstraints = memo(() => getForeignConstraints(entity._id));
     entity.getIndexes = memo(() => getIndexes(entity._id));
     entity.getDescription = memo(() => getDescription(PG_CLASS, entity._id, 0));
     entity.getTagsAndDescription = memo(() =>
@@ -286,9 +250,9 @@ export function augmentIntrospection(
       ),
     );
 
-    entity.getAttribute = (by) => {
+    entity.getAttribute = by => {
       const attributes = entity.getAttributes();
-      return attributes.find((att) =>
+      return attributes.find(att =>
         "number" in by && by.number
           ? att.attnum === by.number
           : "name" in by && by.name
@@ -297,15 +261,13 @@ export function augmentIntrospection(
       );
     };
     entity.getInherited = memo(() =>
-      introspection.inherits.filter((inh) => inh.inhrelid === entity._id),
+      introspection.inherits.filter(inh => inh.inhrelid === entity._id),
     );
     entity.getAccessMethod = memo(() =>
-      entity.relam != null
-        ? introspection.am.find((am) => am._id === entity.relam)
-        : undefined,
+      entity.relam != null ? introspection.am.find(am => am._id === entity.relam) : undefined,
     );
   });
-  introspection.indexes.forEach((entity) => {
+  introspection.indexes.forEach(entity => {
     entity._type = "PgIndex";
     entity.getIndexClass = memo(() => getClass(entity.indexrelid));
     entity.getClass = memo(() => getClass(entity.indrelid));
@@ -313,32 +275,23 @@ export function augmentIntrospection(
       const owner = getClass(entity.indrelid);
       const attrs = owner!.getAttributes();
       const keys = entity.indkey;
-      return keys.map((key) =>
-        key === 0 ? null : attrs.find((a) => a.attnum === key)!,
-      );
+      return keys.map(key => (key === 0 ? null : attrs.find(a => a.attnum === key)!));
     });
   });
-  introspection.attributes.forEach((entity) => {
+  introspection.attributes.forEach(entity => {
     entity._type = "PgAttribute";
     entity.getClass = memo(() => getClass(entity.attrelid));
     entity.getType = memo(() => getType(entity.atttypid));
-    entity.getDescription = memo(() =>
-      getDescription(PG_CLASS, entity.attrelid, entity.attnum),
-    );
+    entity.getDescription = memo(() => getDescription(PG_CLASS, entity.attrelid, entity.attnum));
     entity.getTagsAndDescription = memo(() =>
       getTagsAndDescription(PG_CLASS, entity.attrelid, entity.attnum),
     );
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
     entity.getACL = memo(() =>
-      parseAcls(
-        introspection,
-        entity.attacl,
-        entity.getClass()!.relowner,
-        OBJECT_COLUMN,
-      ),
+      parseAcls(introspection, entity.attacl, entity.getClass()!.relowner, OBJECT_COLUMN),
     );
   });
-  introspection.constraints.forEach((entity) => {
+  introspection.constraints.forEach(entity => {
     entity._type = "PgConstraint";
     entity.getNamespace = memo(() => getNamespace(entity.connamespace));
     entity.getClass = memo(() => getClass(entity.conrelid));
@@ -361,9 +314,7 @@ export function augmentIntrospection(
         }
       }
       const attrs = klass.getAttributes();
-      return entity.conkey.map(
-        (key) => attrs.find((att) => att.attnum === key)!,
-      );
+      return entity.conkey.map(key => attrs.find(att => att.attnum === key)!);
     });
     entity.getType = memo(() => getType(entity.contypid));
     entity.getForeignClass = memo(() => getClass(entity.confrelid));
@@ -396,27 +347,19 @@ export function augmentIntrospection(
         }
       }
       const attrs = klass.getAttributes();
-      return entity.confkey.map(
-        (key) => attrs.find((att) => att.attnum === key)!,
-      );
+      return entity.confkey.map(key => attrs.find(att => att.attnum === key)!);
     });
-    entity.getDescription = memo(() =>
-      getDescription(PG_CONSTRAINT, entity._id),
-    );
-    entity.getTagsAndDescription = memo(() =>
-      getTagsAndDescription(PG_CONSTRAINT, entity._id),
-    );
+    entity.getDescription = memo(() => getDescription(PG_CONSTRAINT, entity._id));
+    entity.getTagsAndDescription = memo(() => getTagsAndDescription(PG_CONSTRAINT, entity._id));
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
   });
-  introspection.procs.forEach((entity) => {
+  introspection.procs.forEach(entity => {
     entity._type = "PgProc";
     entity.getNamespace = memo(() => getNamespace(entity.pronamespace));
     entity.getOwner = memo(() => getRole(entity.proowner));
     entity.getReturnType = memo(() => getType(entity.prorettype));
     entity.getDescription = memo(() => getDescription(PG_PROC, entity._id));
-    entity.getTagsAndDescription = memo(() =>
-      getTagsAndDescription(PG_PROC, entity._id),
-    );
+    entity.getTagsAndDescription = memo(() => getTagsAndDescription(PG_PROC, entity._id));
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
     entity.getArguments = memo(() => {
       const args: PgProcArgument[] = [];
@@ -439,7 +382,7 @@ export function augmentIntrospection(
       if (proallargtypes) {
         for (let i = 0, l = proallargtypes.length; i < l; i++) {
           const typeId = proallargtypes[i];
-          const type = introspection.types.find((t) => t._id === typeId);
+          const type = introspection.types.find(t => t._id === typeId);
           if (!type) {
             throw new Error("Corrupted introspection data");
           }
@@ -462,7 +405,7 @@ export function augmentIntrospection(
       } else if (proargtypes) {
         for (let i = 0, l = proargtypes.length; i < l; i++) {
           const typeId = proargtypes[i];
-          const type = introspection.types.find((t) => t._id === typeId);
+          const type = introspection.types.find(t => t._id === typeId);
           if (!type) {
             throw new Error("Corrupted introspection data");
           }
@@ -490,7 +433,7 @@ export function augmentIntrospection(
       parseAcls(introspection, entity.proacl, entity.proowner, OBJECT_FUNCTION),
     );
   });
-  introspection.types.forEach((entity) => {
+  introspection.types.forEach(entity => {
     entity._type = "PgType";
     entity.getNamespace = memo(() => getNamespace(entity.typnamespace));
     entity.getOwner = memo(() => getRole(entity.typowner));
@@ -500,12 +443,10 @@ export function augmentIntrospection(
     entity.getEnumValues = memo(() => getEnums(entity._id));
     entity.getRange = memo(() => getRange(entity._id));
     entity.getDescription = memo(() => getDescription(PG_TYPE, entity._id));
-    entity.getTagsAndDescription = memo(() =>
-      getTagsAndDescription(PG_TYPE, entity._id),
-    );
+    entity.getTagsAndDescription = memo(() => getTagsAndDescription(PG_TYPE, entity._id));
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
   });
-  introspection.enums.forEach((entity) => {
+  introspection.enums.forEach(entity => {
     entity._type = "PgEnum";
     entity.getType = memo(() => getType(entity.enumtypid));
     // Postgres doesn't support comments on enum values right now, but we still
@@ -516,17 +457,15 @@ export function augmentIntrospection(
     }));
     entity.getTags = memo(() => entity.getTagsAndDescription().tags);
   });
-  introspection.ranges.forEach((entity) => {
+  introspection.ranges.forEach(entity => {
     entity._type = "PgRange";
     entity.getType = memo(() => getType(entity.rngtypid));
     entity.getSubType = memo(() => getType(entity.rngsubtype));
   });
 
-  introspection.inherits.forEach((entity) => {
-    entity.getParent = () =>
-      introspection.classes.find((child) => child._id === entity.inhparent);
-    entity.getChild = () =>
-      introspection.classes.find((child) => child._id === entity.inhrelid);
+  introspection.inherits.forEach(entity => {
+    entity.getParent = () => introspection.classes.find(child => child._id === entity.inhparent);
+    entity.getChild = () => introspection.classes.find(child => child._id === entity.inhrelid);
   });
 
   return introspection;
