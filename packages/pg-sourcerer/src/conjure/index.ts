@@ -1050,24 +1050,24 @@ const param = {
    * ])
    * // { limit = 50, offset = 0 }: { limit?: number; offset?: number }
    */
-   destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
-     const pattern = b.objectPattern(
-       fields.map(f => {
-         const id = b.identifier(f.name);
-         // Use AssignmentPattern for default values: { limit = 50 }
-         const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
-         const prop = b.objectProperty(b.identifier(f.name), value);
-         prop.shorthand = true;
-         return prop;
-       }),
-     );
-     // Build the type annotation: { name: type; name?: type; }
-     const typeAnnotation = ts.objectType(
-       fields.map(f => ({ name: f.name, type: toTSType(f.type), optional: f.optional })),
-     );
-     pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
-     return pattern;
-   },
+  destructured: (fields: readonly DestructuredField[]): n.ObjectPattern => {
+    const pattern = b.objectPattern(
+      fields.map(f => {
+        const id = b.identifier(f.name);
+        // Use AssignmentPattern for default values: { limit = 50 }
+        const value = f.defaultValue ? b.assignmentPattern(id, toExpr(f.defaultValue)) : id;
+        const prop = b.objectProperty(b.identifier(f.name), value);
+        prop.shorthand = true;
+        return prop;
+      }),
+    );
+    // Build the type annotation: { name: type; name?: type; }
+    const typeAnnotation = ts.objectType(
+      fields.map(f => ({ name: f.name, type: toTSType(f.type), optional: f.optional })),
+    );
+    pattern.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
+    return pattern;
+  },
 
   /**
    * Create a destructured parameter with a rest element and intersection type.
@@ -1370,8 +1370,7 @@ function createSymbolProgram(...statements: (n.Statement | SymbolStatement)[]): 
  *
  * A fluent, immutable API for constructing JavaScript/TypeScript AST nodes.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Type inference breaks due to ast-types, explicit any preserves API
-export const conjure: any = {
+export const conjure = {
   // === Chain builders ===
 
   /** Start a chain from an identifier */
@@ -1412,6 +1411,9 @@ export const conjure: any = {
 
   /** Start an array literal builder */
   arr: (...elements: n.Expression[]) => createArr(elements.map(e => toExpr(e) as ArrayElementLike)),
+
+  /** Create an array expression directly (handles type casting) */
+  arrExpr: (...elements: n.Expression[]) => b.arrayExpression(elements.map(e => toExpr(e) as ArrayElementLike)),
 
   /** Start a function builder */
   fn: () =>

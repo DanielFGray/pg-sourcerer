@@ -10,6 +10,7 @@ import { hex, Query, createQuery, type SelectSpec } from "../hex/index.js";
 import { testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field } from "../ir/semantic-ir.js";
 import { conjure } from "../conjure/index.js";
+import { mockPgAttribute, mockPgClass, mockPgType } from "./mocks/pg-introspection.js";
 
 // =============================================================================
 // Test Helpers
@@ -18,25 +19,25 @@ import { conjure } from "../conjure/index.js";
 function mockField(name: string, pgTypeName: string, opts?: { nullable?: boolean }): Field {
   const nullable = opts?.nullable ?? false;
 
-  const mockPgType = {
+  const pgType = mockPgType({
     typname: pgTypeName,
     typcategory: pgTypeName.startsWith("_") ? "A" : "S",
     typtype: "b",
-  };
+  });
 
-  const mockPgAttribute = {
+  const pgAttribute = mockPgAttribute({
     attname: name,
     attnotnull: !nullable,
     atthasdef: false,
     attgenerated: "",
     attidentity: "",
-    getType: () => mockPgType,
-  };
+    getType: () => pgType,
+  });
 
   return {
     name,
     columnName: name,
-    pgAttribute: mockPgAttribute as any,
+    pgAttribute,
     nullable,
     optional: false,
     hasDefault: false,
@@ -60,7 +61,7 @@ function mockTableEntity(name: string, fields: Field[]): TableEntity {
     name,
     pgName: name.toLowerCase(),
     schemaName: "public",
-    pgClass: {} as any,
+    pgClass: mockPgClass({ relname: name.toLowerCase() }),
     primaryKey: { columns: ["id"], isVirtual: false },
     indexes: [],
     shapes: { row: mockShape(`${name}Row`, fields) },

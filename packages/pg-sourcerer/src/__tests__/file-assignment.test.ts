@@ -15,6 +15,7 @@ import {
 } from "../runtime/file-assignment.js";
 import { createInflection } from "../services/inflection.js";
 import type { SymbolDeclaration } from "../runtime/types.js";
+import { mockFileNamingContext } from "./mocks/file-assignment.js";
 
 describe("parseCapabilityInfo", () => {
   it("parses simple type capability", () => {
@@ -50,18 +51,18 @@ describe("parseCapabilityInfo", () => {
 describe("normalizeFileNaming", () => {
   it("returns default when option is undefined", () => {
     const fn = normalizeFileNaming(undefined, "default.ts");
-    expect(fn({} as any)).toBe("default.ts");
+    expect(fn(mockFileNamingContext())).toBe("default.ts");
   });
 
   it("wraps string in function", () => {
     const fn = normalizeFileNaming("custom.ts", "default.ts");
-    expect(fn({} as any)).toBe("custom.ts");
+    expect(fn(mockFileNamingContext())).toBe("custom.ts");
   });
 
   it("returns function as-is", () => {
     const customFn = ({ name }: { name: string }) => `${name}.ts`;
     const fn = normalizeFileNaming(customFn, "default.ts");
-    expect(fn({ name: "User" } as any)).toBe("User.ts");
+    expect(fn(mockFileNamingContext({ name: "User" }))).toBe("User.ts");
   });
 });
 
@@ -268,10 +269,10 @@ describe("mergeFileRules", () => {
     
     // User override should replace plugin default
     const typeRule = merged.find(r => r.pattern === "type:");
-    expect(typeRule!.fileNaming({} as any)).toBe("my-types.ts");
+    expect(typeRule!.fileNaming(mockFileNamingContext())).toBe("my-types.ts");
     
     // Schema rule should be preserved
     const schemaRule = merged.find(r => r.pattern === "schema:");
-    expect(schemaRule!.fileNaming({} as any)).toBe("schemas.ts");
+    expect(schemaRule!.fileNaming(mockFileNamingContext())).toBe("schemas.ts");
   });
 });

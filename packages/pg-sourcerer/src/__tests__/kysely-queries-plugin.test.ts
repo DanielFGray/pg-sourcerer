@@ -16,6 +16,7 @@ import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
 import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, SemanticIR, IndexDef } from "../ir/semantic-ir.js";
+import { mockPgAttribute, mockPgClass, mockPgType } from "./mocks/pg-introspection.js";
 
 function testConfig(ir: SemanticIR): Omit<OrchestratorConfig, "plugins"> {
   return {
@@ -29,23 +30,23 @@ function testConfig(ir: SemanticIR): Omit<OrchestratorConfig, "plugins"> {
 
 function mockField(name: string, pgTypeName: string, opts?: { nullable?: boolean }): Field {
   const nullable = opts?.nullable ?? false;
-  const mockPgType = {
+  const pgType = mockPgType({
     typname: pgTypeName,
     typcategory: pgTypeName.startsWith("_") ? "A" : "S",
     typtype: "b",
-  };
-  const mockPgAttribute = {
+  });
+  const pgAttribute = mockPgAttribute({
     attname: name,
     attnotnull: !nullable,
     atthasdef: false,
     attgenerated: "",
     attidentity: "",
-    getType: () => mockPgType,
-  };
+    getType: () => pgType,
+  });
   return {
     name,
     columnName: name,
-    pgAttribute: mockPgAttribute as any,
+    pgAttribute,
     nullable,
     optional: false,
     hasDefault: false,
@@ -79,7 +80,6 @@ function mockTableEntity(name: string, fields: Field[], opts?: {
   const insertShape = mockShape(`${name}Insert`, fields.map(f => ({ ...f, optional: true })));
   const updateShape = mockShape(`${name}Update`, fields.map(f => ({ ...f, optional: true })));
   
-  // Build shapes object conditionally
   const includeInsert = opts?.includeInsert !== false;
   const includeUpdate = opts?.includeUpdate !== false;
   
@@ -88,7 +88,7 @@ function mockTableEntity(name: string, fields: Field[], opts?: {
     name,
     pgName: name.toLowerCase(),
     schemaName: "public",
-    pgClass: {} as any,
+    pgClass: mockPgClass({ relname: name.toLowerCase() }),
     primaryKey: opts?.primaryKey ?? { columns: ["id"], isVirtual: false },
     indexes: opts?.indexes ?? [],
     shapes: includeInsert && includeUpdate
@@ -312,23 +312,23 @@ describe("Kysely Plugin - Role Permissions", () => {
   }): Field {
     const nullable = opts?.nullable ?? false;
     const hasDefault = opts?.hasDefault ?? false;
-    const mockPgType = {
+    const pgType = mockPgType({
       typname: pgTypeName,
       typcategory: pgTypeName.startsWith("_") ? "A" : "S",
       typtype: "b",
-    };
-    const mockPgAttribute = {
+    });
+    const pgAttribute = mockPgAttribute({
       attname: name,
       attnotnull: !nullable,
       atthasdef: hasDefault,
       attgenerated: "",
       attidentity: "",
-      getType: () => mockPgType,
-    };
+      getType: () => pgType,
+    });
     return {
       name,
       columnName: name,
-      pgAttribute: mockPgAttribute as any,
+      pgAttribute,
       nullable,
       optional: false,
       hasDefault,

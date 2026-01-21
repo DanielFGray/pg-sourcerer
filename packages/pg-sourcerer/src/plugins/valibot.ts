@@ -10,7 +10,7 @@
  * - `schema:valibot:EntityName:update` for Update shape
  * - `schema:valibot:EnumName` for enum entities
  */
-import { Effect, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
@@ -25,11 +25,7 @@ import {
   type EnumEntity,
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type {
-  SchemaBuilder,
-  SchemaBuilderRequest,
-  SchemaBuilderResult,
-} from "../ir/extensions/schema-builder.js";
+import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
 
 const b = conjure.b;
 
@@ -46,14 +42,6 @@ export interface ValibotConfig {
 
 interface ResolvedValibotConfig extends SchemaConfig {
   schemasFile: FileNaming;
-}
-
-function toExpr(node: n.Expression) {
-  return node;
-}
-
-function toStmt(node: n.Statement) {
-  return node;
 }
 
 const PG_STRING_TYPES = new Set([
@@ -147,7 +135,10 @@ function baseTypeToValibotMapping(
     if (normalized === "uuid") {
       const uuidSchema = conjure
         .id("v")
-        .method("pipe", [conjure.id("v").method("string").build(), conjure.id("v").method("uuid").build()])
+        .method("pipe", [
+          conjure.id("v").method("string").build(),
+          conjure.id("v").method("uuid").build(),
+        ])
         .build();
       return { kind: "schema", schema: uuidSchema };
     }
@@ -207,11 +198,13 @@ function shapeToValibotObject(
       value = mapping.schema;
     }
 
-    return b.objectProperty(b.identifier(field.name), toExpr(value));
+    return b.objectProperty(b.identifier(field.name), cast.toExpr(value));
   });
 
   const objExpr = b.objectExpression(properties);
-  const vObject = b.callExpression(b.memberExpression(b.identifier("v"), b.identifier("object")), [objExpr]);
+  const vObject = b.callExpression(b.memberExpression(b.identifier("v"), b.identifier("object")), [
+    objExpr,
+  ]);
   return vObject;
 }
 
@@ -225,7 +218,7 @@ function createValibotConsumeCallback(schemaName: string): (input: unknown) => n
 }
 
 const valibotSchemaBuilder: SchemaBuilder = {
-  build(request: SchemaBuilderRequest): SchemaBuilderResult | undefined {
+  build(request) {
     if (request.params.length === 0) {
       return undefined;
     }
@@ -245,7 +238,7 @@ const valibotSchemaBuilder: SchemaBuilder = {
   },
 };
 
-function paramToValibotType(param: { type: string; required: boolean }): n.Expression {
+function paramToValibotType(param: { type: string; required: boolean }) {
   const baseType = param.type.replace(/\[\]$/, "").replace(/\?$/, "").toLowerCase();
   let valibotSchema: n.Expression;
 
@@ -261,7 +254,9 @@ function paramToValibotType(param: { type: string; required: boolean }): n.Expre
           conjure.id("v").method("string").build(),
           conjure
             .id("v")
-            .method("transform", [b.arrowFunctionExpression([b.identifier("s")], b.identifier("Number"))])
+            .method("transform", [
+              b.arrowFunctionExpression([b.identifier("s")], b.identifier("Number")),
+            ])
             .build(),
         ])
         .build();
@@ -291,7 +286,9 @@ function paramToValibotType(param: { type: string; required: boolean }): n.Expre
           conjure.id("v").method("string").build(),
           conjure
             .id("v")
-            .method("transform", [b.arrowFunctionExpression([b.identifier("s")], b.identifier("BigInt"))])
+            .method("transform", [
+              b.arrowFunctionExpression([b.identifier("s")], b.identifier("BigInt")),
+            ])
             .build(),
         ])
         .build();
@@ -481,7 +478,9 @@ export function valibot(config?: ValibotConfig): Plugin {
 
           const schemaDecl = conjure.export.const(entity.name, schemaNode);
 
-          const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(entity.name)]);
+          const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [
+            conjure.ts.typeof(entity.name),
+          ]);
           const typeDecl = conjure.export.type(entity.name, inferType);
 
           rendered.push({

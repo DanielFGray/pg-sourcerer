@@ -195,10 +195,13 @@ export {
 export { typesPlugin } from "./plugins/types.js";
 export { zod, type ZodConfig } from "./plugins/zod.js";
 export { arktype, type ArkTypeConfig } from "./plugins/arktype.js";
+export { valibot, type ValibotConfig } from "./plugins/valibot.js";
+export { express, type HttpExpressConfig } from "./plugins/http-express.js";
 export { elysia, type HttpElysiaConfig } from "./plugins/http-elysia.js";
 export { hono, type HttpHonoConfig } from "./plugins/http-hono.js";
 export { kysely, type KyselyConfig } from "./plugins/kysely.js";
 export { sqlQueries, type SqlQueriesConfig } from "./plugins/sql-queries.js";
+export { orpc, type HttpOrpcConfig } from "./plugins/http-orpc.js";
 export { trpc, type HttpTrpcConfig } from "./plugins/http-trpc.js";
 
 // =============================================================================

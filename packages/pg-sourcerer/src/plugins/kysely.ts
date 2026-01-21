@@ -11,6 +11,7 @@
 import { Effect, Array as Arr, Option, pipe } from "effect";
 import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
+import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 
 import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
 import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.js";
@@ -28,11 +29,11 @@ import {
   type CompositeEntity,
   type Field,
 } from "../ir/semantic-ir.js";
-import { conjure } from "../conjure/index.js";
+import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
 
-const { fn, stmt, ts, param, str, exp, b, chain } = conjure;
+const { fn, stmt, ts, param, str, exp, b, chain, arrExpr } = conjure;
 
 // ============================================================================
 // Configuration
@@ -1039,32 +1040,35 @@ export function kysely(config?: KyselyConfig): Plugin {
             const cursorComparisonOp = candidate.desc ? "<" : ">";
             const orderDirection = candidate.desc ? "desc" : "asc";
 
-            const whereClause = b.callExpression(
-              b.memberExpression(b.identifier("eb"), b.identifier("or")),
-              [
-                b.arrayExpression([
-                  b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
-                    str(candidate.cursorColumnName),
-                    str(cursorComparisonOp),
-                    b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
-                  ]),
-                  b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("and")), [
-                    b.arrayExpression([
-                      b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
-                        str(candidate.cursorColumnName),
-                        str("="),
-                        b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
-                      ]),
-                      b.callExpression(b.memberExpression(b.identifier("eb"), b.identifier("call")), [
-                        str(candidate.pkColumnName),
-                        str(cursorComparisonOp),
-                        b.memberExpression(b.identifier("cursor"), b.identifier(candidate.pkColumn)),
-                      ]),
-                    ]),
-                  ]),
-                ]),
-              ] as n.Expression[],
-            );
+            const cursorCondition = b.callExpression(b.identifier("eb"), [
+              str(candidate.cursorColumnName),
+              str(cursorComparisonOp),
+              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+            ]);
+
+            const pkCondition = b.callExpression(b.identifier("eb"), [
+              str(candidate.pkColumnName),
+              str(cursorComparisonOp),
+              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.pkColumn)),
+            ]);
+
+            const equalityCondition = b.callExpression(b.identifier("eb"), [
+              str(candidate.cursorColumnName),
+              str("="),
+              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+            ]);
+
+            const andClause = chain(b.identifier("eb"))
+              .method("and", [
+                arrExpr(equalityCondition, pkCondition),
+              ])
+              .build();
+
+            const whereClause = chain(b.identifier("eb"))
+              .method("or", [
+                arrExpr(cursorCondition, andClause),
+              ])
+              .build();
 
             const queryExpr = chain(b.identifier("db") as n.Expression)
               .method("selectFrom", [str(tableName) as n.Expression])
@@ -1077,7 +1081,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                   .body(
                     stmt.return(
                       chain(b.identifier("qb") as n.Expression)
-                        .method("where", [whereClause as n.Expression])
+                        .method("where", [(b.arrowFunctionExpression([b.identifier("eb")], cast.toExpr(whereClause)) as n.Expression)])
                         .build(),
                     ),
                   )

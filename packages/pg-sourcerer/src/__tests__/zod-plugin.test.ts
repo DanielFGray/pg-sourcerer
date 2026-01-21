@@ -18,6 +18,7 @@ import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
 import { testIRFromFixture, testIRWithEntities } from "../testing.js";
 import type { TableEntity, Shape, Field, EnumEntity, SemanticIR } from "../ir/semantic-ir.js";
+import { mockPgAttribute, mockPgClass, mockPgType } from "./mocks/pg-introspection.js";
 
 // =============================================================================
 // Test Helpers
@@ -39,25 +40,25 @@ function testConfig(ir: SemanticIR): Omit<OrchestratorConfig, "plugins"> {
 function mockField(name: string, pgTypeName: string, opts?: { nullable?: boolean }): Field {
   const nullable = opts?.nullable ?? false;
 
-  const mockPgType = {
+  const pgType = mockPgType({
     typname: pgTypeName,
     typcategory: pgTypeName.startsWith("_") ? "A" : "S",
     typtype: "b",
-  };
+  });
 
-  const mockPgAttribute = {
+  const pgAttribute = mockPgAttribute({
     attname: name,
     attnotnull: !nullable,
     atthasdef: false,
     attgenerated: "",
     attidentity: "",
-    getType: () => mockPgType,
-  };
+    getType: () => pgType,
+  });
 
   return {
     name,
     columnName: name,
-    pgAttribute: mockPgAttribute as any,
+    pgAttribute,
     nullable,
     optional: false,
     hasDefault: false,
@@ -93,7 +94,7 @@ function mockTableEntity(name: string, rowFields: Field[]): TableEntity {
     name,
     pgName: name.toLowerCase(),
     schemaName: "public",
-    pgClass: {} as any,
+    pgClass: mockPgClass({ relname: name.toLowerCase() }),
     primaryKey: { columns: ["id"], isVirtual: false },
     indexes: [],
     shapes: { row: rowShape },
@@ -136,7 +137,7 @@ describe("Zod Plugin - Declare", () => {
           name: "User",
           pgName: "users",
           schemaName: "public",
-          pgClass: {} as any,
+          pgClass: mockPgClass({ relname: "users" }),
           primaryKey: { columns: ["id"], isVirtual: false },
           indexes: [],
           shapes: {
@@ -180,7 +181,7 @@ describe("Zod Plugin - Declare", () => {
         name: "Status",
         pgName: "status",
         schemaName: "public",
-        pgType: { typname: "status", typtype: "e" } as any,
+        pgType: mockPgType({ typname: "status", typtype: "e" }),
         values: ["active", "inactive"],
         tags: {},
       });
@@ -290,7 +291,7 @@ describe("Zod Plugin - Render", () => {
           name: "User",
           pgName: "users",
           schemaName: "public",
-          pgClass: {} as any,
+          pgClass: mockPgClass({ relname: "users" }),
           primaryKey: { columns: ["id"], isVirtual: false },
           indexes: [],
           shapes: {
@@ -322,7 +323,7 @@ describe("Zod Plugin - Render", () => {
         name: "Status",
         pgName: "status",
         schemaName: "public",
-        pgType: { typname: "status", typtype: "e" } as any,
+        pgType: mockPgType({ typname: "status", typtype: "e" }),
         values: ["active", "inactive", "pending"],
         tags: {},
       });
