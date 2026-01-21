@@ -223,7 +223,7 @@ export const generate = (options: GenerateOptions = {}) =>
     }
 
     yield* Effect.log("Running plugins...");
-    const plugins = config.plugins as readonly Plugin[];
+    const plugins = config.plugins;
     const pluginNames = plugins.map(p => p.name);
     yield* Effect.log(`Plugins: ${pluginNames.join(", ")}`);
 

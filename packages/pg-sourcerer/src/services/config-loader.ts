@@ -8,6 +8,7 @@ import { Context, Effect, Layer, Schema as S, ParseResult, pipe } from "effect";
 import { lilconfig } from "lilconfig";
 import path from "node:path";
 import { Config, type ConfigInput, type ResolvedConfig } from "../config.js";
+import type { Plugin } from "../runtime/types.js";
 import { ConfigNotFound, ConfigInvalid } from "../errors.js";
 
 
@@ -127,7 +128,10 @@ export function createConfigLoader(): ConfigLoader {
           ),
         );
 
-        // Return resolved config
+        // Return resolved config with plugins flattened
+        // parseResult.plugins may contain Plugin | Plugin[] entries
+        const flatPlugins = (parseResult.plugins as (Plugin | Plugin[])[]).flat() as Plugin[];
+        
         const resolved: ResolvedConfig = {
           connectionString: parseResult.connectionString,
           schemas: parseResult.schemas,
@@ -136,7 +140,7 @@ export function createConfigLoader(): ConfigLoader {
           typeHints: parseResult.typeHints,
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- inflection is S.Any in schema, validated by plugin system
           inflection: parseResult.inflection,
-          plugins: parseResult.plugins,
+          plugins: flatPlugins,
           formatter: parseResult.formatter,
           defaultFile: parseResult.defaultFile,
           configDir,

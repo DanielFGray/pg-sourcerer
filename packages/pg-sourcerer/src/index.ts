@@ -188,6 +188,16 @@ export {
   type RenderedSymbolWithImports,
 } from "./runtime/emit.js";
 
+// Plugin Types (for custom plugin authors)
+export type {
+  Plugin,
+  Capability,
+  SymbolDeclaration,
+  SymbolRef,
+  RenderedSymbol,
+  SymbolHandle,
+} from "./runtime/types.js";
+
 // =============================================================================
 // Plugins
 // =============================================================================
@@ -196,6 +206,7 @@ export { typesPlugin } from "./plugins/types.js";
 export { zod, type ZodConfig } from "./plugins/zod.js";
 export { arktype, type ArkTypeConfig } from "./plugins/arktype.js";
 export { valibot, type ValibotConfig } from "./plugins/valibot.js";
+export { effect, type EffectConfig } from "./plugins/effect/index.js";
 export { express, type HttpExpressConfig } from "./plugins/http-express.js";
 export { elysia, type HttpElysiaConfig } from "./plugins/http-elysia.js";
 export { hono, type HttpHonoConfig } from "./plugins/http-hono.js";

@@ -115,8 +115,23 @@ export interface ConfigInput {
    */
   readonly inflection?: InflectionConfig;
 
-  /** Plugins to run */
-  readonly plugins: readonly Plugin[];
+  /**
+   * Plugins to run.
+   *
+   * Accepts individual plugins or arrays of plugins (presets).
+   * Arrays are flattened at runtime, allowing plugin functions to return
+   * multiple sub-plugins that work together.
+   *
+   * @example
+   * ```typescript
+   * plugins: [
+   *   types(),           // Single plugin
+   *   effect(),          // Preset returning multiple plugins
+   *   [zod(), kysely()], // Explicit array
+   * ]
+   * ```
+   */
+  readonly plugins: readonly (Plugin | readonly Plugin[])[];
 
   /**
    * Formatter command to run on generated files after writing.
@@ -149,7 +164,8 @@ export interface ResolvedConfig {
   readonly outputDir: string;
   readonly typeHints: readonly TypeHint[];
   readonly inflection?: InflectionConfig;
-  readonly plugins: readonly unknown[];
+  /** Plugins after flattening presets */
+  readonly plugins: readonly Plugin[];
   readonly formatter?: string;
   readonly defaultFile?: string;
   /**
