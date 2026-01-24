@@ -6,6 +6,7 @@
 import { Prompt } from "@effect/cli";
 import { FileSystem, Terminal } from "@effect/platform";
 import { Array, Console, Effect, HashMap, HashSet, Option, pipe } from "effect";
+import path from "node:path";
 import postgres from "postgres";
 import type { Introspection } from "@danielfgray/pg-introspection";
 import { introspectDatabase } from "./services/introspection.js";
@@ -49,7 +50,113 @@ interface EnvMatch {
   readonly source: ".env" | "process.env";
 }
 
+interface PackageJson {
+  readonly dependencies?: Record<string, string>;
+  readonly devDependencies?: Record<string, string>;
+}
+
 const POSTGRES_URL_REGEX = /^postgres(ql)?:\/\//i;
+
+const findNearestPackageJsonPath = (
+  startDir: string,
+): Effect.Effect<Option.Option<string>, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    let currentDir = startDir;
+
+    while (true) {
+      const candidate = path.join(currentDir, "package.json");
+      const exists = yield* fs.exists(candidate).pipe(Effect.catchAll(() => Effect.succeed(false)));
+      if (exists) {
+        return Option.some(candidate);
+      }
+
+      const parent = path.dirname(currentDir);
+      if (parent === currentDir) {
+        return Option.none();
+      }
+
+      currentDir = parent;
+    }
+  });
+
+const readPackageJson = (
+  packageJsonPath: string,
+): Effect.Effect<PackageJson, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.readFileString(packageJsonPath).pipe(
+      Effect.flatMap((content) =>
+        Effect.try({
+          try: () => JSON.parse(content) as PackageJson,
+          catch: (error) =>
+            new Error(
+              `Failed to parse package.json: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        }),
+      ),
+      Effect.catchAll(() => Effect.succeed({} as PackageJson)),
+    );
+  });
+
+const collectDependencySet = (
+  packageJson: PackageJson,
+): HashSet.HashSet<string> =>
+  pipe(
+    [
+      ...Object.keys(packageJson.dependencies ?? {}),
+      ...Object.keys(packageJson.devDependencies ?? {}),
+    ],
+    HashSet.fromIterable,
+  );
+
+interface DetectedPluginDefaults {
+  readonly hasKysely: boolean;
+  readonly schemaPlugins: readonly string[];
+  readonly httpPlugins: readonly string[];
+}
+
+const detectPluginDefaults: Effect.Effect<
+  DetectedPluginDefaults,
+  never,
+  FileSystem.FileSystem
+> = Effect.gen(function* () {
+  const packageJsonPath = yield* findNearestPackageJsonPath(process.cwd());
+  if (Option.isNone(packageJsonPath)) {
+    return { hasKysely: false, schemaPlugins: [], httpPlugins: [] };
+  }
+
+  const packageJson = yield* readPackageJson(packageJsonPath.value);
+  const dependencies = collectDependencySet(packageJson);
+
+  const hasKysely =
+    HashSet.has(dependencies, "kysely") || HashSet.has(dependencies, "kysely-codegen");
+
+  const schemaPlugins = pipe(
+    [
+      { dependency: "zod", plugin: "zod" },
+      { dependency: "arktype", plugin: "arktype" },
+      { dependency: "effect", plugin: "effect" },
+      { dependency: "valibot", plugin: "valibot" },
+    ],
+    Array.filter((entry) => HashSet.has(dependencies, entry.dependency)),
+    Array.map((entry) => entry.plugin),
+  );
+
+  const httpPlugins = pipe(
+    [
+      { dependency: "elysia", plugin: "http-elysia" },
+      { dependency: "express", plugin: "http-express" },
+      { dependency: "hono", plugin: "http-hono" },
+      { dependency: "@trpc/server", plugin: "http-trpc" },
+      { dependency: "@orpc/server", plugin: "http-orpc" },
+    ],
+    Array.filter((entry) => HashSet.has(dependencies, entry.dependency)),
+    Array.map((entry) => entry.plugin),
+  );
+
+  return { hasKysely, schemaPlugins, httpPlugins };
+});
 
 const parseDotEnv = (content: string): HashMap.HashMap<string, string> =>
   pipe(
@@ -225,8 +332,14 @@ const makeRolePrompt = () =>
 
 const makeSchemasPrompt = (introspection: Introspection) => {
   const schemaCounts = new Map<string, number>();
+
+  for (const schema of introspection.namespaces) {
+    if (schema.nspname.startsWith("pg_") || schema.nspname === "information_schema") continue;
+    schemaCounts.set(schema.nspname, 0);
+  }
+
   for (const c of introspection.classes) {
-    if (c.relkind !== "r" && c.relkind !== "v" && c.relkind !== "m") continue;
+    if (c.relkind !== "r" && c.relkind !== "v" && c.relkind !== "m" && c.relkind !== "p") continue;
     const schema = c.getNamespace()?.nspname;
     if (!schema || schema.startsWith("pg_") || schema === "information_schema") continue;
     schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1);
@@ -235,7 +348,8 @@ const makeSchemasPrompt = (introspection: Introspection) => {
   const schemas = [...schemaCounts.entries()].sort((a, b) => {
     if (a[0] === "public") return -1;
     if (b[0] === "public") return 1;
-    return b[1] - a[1];
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
   });
 
   if (schemas.length === 0) {
@@ -255,7 +369,10 @@ const makeSchemasPrompt = (introspection: Introspection) => {
   return Prompt.multiSelect({
     message: "Select schemas to introspect",
     choices: schemas.map(([name, count]) => ({
-      title: `${name} (${count} table${count === 1 ? "" : "s"})`,
+      title:
+        count > 0
+          ? `${name} (${count} table${count === 1 ? "" : "s"})`
+          : `${name} (no tables)`,
       value: name,
       selected: name === "public" || schemas.length === 1,
     })),
@@ -265,92 +382,118 @@ const makeSchemasPrompt = (introspection: Introspection) => {
 const makeOutputDirPrompt = () =>
   Prompt.text({
     message: "Output directory",
-    default: "./src/generated",
+    default: "./generated",
   });
+
+const formatDetectedTitle = (title: string, detected: boolean) =>
+  detected ? `${title} (detected)` : title;
+
+const buildSchemaChoices = (detectedPlugins: readonly string[]) => {
+  const detectedSet = new Set(detectedPlugins);
+  const entries = [
+    { title: "Zod", value: "zod" },
+    { title: "ArkType", value: "arktype" },
+    { title: "Effect Schema", value: "effect" },
+    { title: "Valibot", value: "valibot" },
+  ];
+
+  const detectedEntries = entries.filter((entry) => detectedSet.has(entry.value));
+  const remainingEntries = entries.filter((entry) => !detectedSet.has(entry.value));
+  const orderedEntries = [...detectedEntries, ...remainingEntries];
+
+  return orderedEntries.map((entry) => ({
+    title: formatDetectedTitle(entry.title, detectedSet.has(entry.value)),
+    value: entry.value,
+  }));
+};
+
+const buildQueryChoices = (hasKysely: boolean) => {
+  const kyselyChoice = {
+    title: formatDetectedTitle("kysely-queries - Query builders", hasKysely),
+    value: "kysely-queries",
+  };
+  const sqlChoice = {
+    title: "sql-queries - Raw SQL query functions",
+    value: "sql-queries",
+  };
+
+  return hasKysely ? [kyselyChoice, sqlChoice] : [sqlChoice, kyselyChoice];
+};
+
+const buildHttpChoices = (detectedPlugins: readonly string[]) => {
+  const detectedSet = new Set(detectedPlugins);
+  const entries = [
+    { title: "Elysia routes", value: "http-elysia" },
+    { title: "Express routes", value: "http-express" },
+    { title: "Hono routes", value: "http-hono" },
+    { title: "tRPC router", value: "http-trpc" },
+    { title: "oRPC router", value: "http-orpc" },
+  ];
+
+  const detectedEntries = entries.filter((entry) => detectedSet.has(entry.value));
+  const remainingEntries = entries.filter((entry) => !detectedSet.has(entry.value));
+  const orderedEntries = [...detectedEntries, ...remainingEntries];
+
+  const choices = orderedEntries.map((entry) => ({
+    title: formatDetectedTitle(entry.title, detectedSet.has(entry.value)),
+    value: entry.value,
+  }));
+
+  return detectedEntries.length > 0
+    ? [...choices, { title: "None", value: "" }]
+    : [{ title: "None", value: "" }, ...choices];
+};
 
 const makePluginsPrompt = () =>
   Effect.gen(function* () {
-    const usesKysely = yield* Prompt.confirm({
-      message: "Do you use Kysely?",
-      initial: false,
+    const detected = yield* detectPluginDefaults;
+
+    const wantsSchema = yield* Prompt.confirm({
+      message: "Generate schema validators?",
+      initial: detected.schemaPlugins.length > 0,
     });
 
-    if (usesKysely) {
-      const kyselyPlugins = yield* Prompt.multiSelect({
-        message: "Select Kysely plugins",
-        choices: [
-          { title: "kysely-types - Kysely-compatible types", value: "kysely-types", selected: true },
-          { title: "kysely-queries - Query builders", value: "kysely-queries", selected: true },
-        ],
-      });
+    const typePlugin = wantsSchema
+      ? yield* Prompt.select({
+          message: "Select schema library",
+          choices: buildSchemaChoices(detected.schemaPlugins),
+        })
+      : "types";
 
-      const hasQueries = kyselyPlugins.includes("kysely-queries");
-      if (hasQueries) {
-        const httpPlugin = yield* Prompt.select({
-          message: "HTTP/RPC framework (optional, requires query plugin)",
-          choices: [
-            { title: "None", value: "" },
-            { title: "Elysia routes", value: "http-elysia" },
-            { title: "Express routes", value: "http-express" },
-            { title: "Hono routes", value: "http-hono" },
-            { title: "tRPC router", value: "http-trpc" },
-            { title: "oRPC router", value: "http-orpc" },
-          ],
-        });
-        return httpPlugin
-          ? ([...kyselyPlugins, httpPlugin] as readonly string[])
-          : kyselyPlugins;
-      }
-      return kyselyPlugins;
-    }
-
-    const typeApproach = yield* Prompt.select({
-      message: "How do you want your types generated?",
-      choices: [
-        { title: "Raw TypeScript types", value: "raw" },
-        { title: "Schema-driven (with validation library)", value: "schema" },
-      ],
+    const wantsKyselyTypes = yield* Prompt.confirm({
+      message: "Generate Kysely types?",
+      initial: detected.hasKysely,
     });
 
-    let typePlugin: string;
-    if (typeApproach === "raw") {
-      typePlugin = "types";
-    } else {
-      typePlugin = yield* Prompt.select({
-        message: "Select schema library",
-        choices: [
-          { title: "Zod", value: "zod" },
-          { title: "ArkType", value: "arktype" },
-          { title: "Effect Schema", value: "effect" },
-        ],
-      });
-    }
-
-    const queryPlugins = yield* Prompt.multiSelect({
-      message: "Query generation (optional)",
-      choices: [
-        { title: "sql-queries - Raw SQL query functions", value: "sql-queries", selected: false },
-      ],
+    const wantsQueries = yield* Prompt.confirm({
+      message: "Generate query helpers?",
+      initial: detected.hasKysely,
     });
 
-    if (queryPlugins.length > 0) {
-      const httpPlugin = yield* Prompt.select({
-        message: "HTTP/RPC framework (optional)",
-        choices: [
-          { title: "None", value: "" },
-          { title: "Elysia routes", value: "http-elysia" },
-          { title: "Express routes", value: "http-express" },
-          { title: "Hono routes", value: "http-hono" },
-          { title: "tRPC router", value: "http-trpc" },
-          { title: "oRPC router", value: "http-orpc" },
-        ],
-      });
-      return httpPlugin
-        ? ([typePlugin, ...queryPlugins, httpPlugin] as readonly string[])
-        : ([typePlugin, ...queryPlugins] as readonly string[]);
-    }
+    const queryPlugin = wantsQueries
+      ? yield* Prompt.select({
+          message: "Select query style",
+          choices: buildQueryChoices(detected.hasKysely),
+        })
+      : undefined;
 
-    return [typePlugin, ...queryPlugins] as readonly string[];
+    const httpPlugin = queryPlugin
+      ? yield* Prompt.select({
+          message: "HTTP/RPC framework (optional)",
+          choices: buildHttpChoices(detected.httpPlugins),
+        })
+      : "";
+
+    const shouldIncludeKyselyTypes = wantsKyselyTypes || queryPlugin === "kysely-queries";
+
+    const selectedPlugins = [
+      typePlugin,
+      ...(shouldIncludeKyselyTypes ? ["kysely-types"] : []),
+      ...(queryPlugin ? [queryPlugin] : []),
+      ...(httpPlugin ? [httpPlugin] : []),
+    ];
+
+    return selectedPlugins as readonly string[];
   });
 
 const makeFormatterPrompt = () =>
@@ -437,7 +580,7 @@ const generateConfigContent = (answers: InitAnswers): string => {
   }
 
   // outputDir (only if not default)
-  if (answers.outputDir !== "src/generated") {
+  if (answers.outputDir !== "./generated") {
     configObj = configObj.prop("outputDir", conjure.str(answers.outputDir));
   }
 
@@ -504,7 +647,7 @@ export const runInit = Effect.gen(function* () {
     isEnvRef,
     role,
     schemas: schemas.length > 0 ? schemas : ["public"],
-    outputDir: outputDir.trim() || "src/generated",
+    outputDir: outputDir.trim() || "generated",
     plugins,
     formatter,
   };
