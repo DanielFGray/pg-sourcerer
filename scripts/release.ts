@@ -113,29 +113,6 @@ const pushDevelop = async () => {
   await run(["git", "push", "origin", "develop"]);
 };
 
-const mergeToMain = async () => {
-  await run(["git", "checkout", "main"]);
-  await run(["git", "pull", "origin", "main"]);
-  await run([
-    "git",
-    "merge",
-    "develop",
-    "-m",
-    `Release v${version} - prepare release`,
-  ]);
-  await run(["git", "tag", `v${version}`]);
-  await run(["git", "push", "origin", "main"]);
-  await run(["git", "push", "origin", `v${version}`]);
-};
-
-const triggerReleasePlease = async () => {
-  await run(["gh", "workflow", "run", "release-please.yml", "--ref", "main"]);
-};
-
-const returnToDevelop = async () => {
-  await run(["git", "checkout", "develop"]);
-};
-
 const main = async () => {
   await ensureClean();
   await ensureBranch("develop");
@@ -144,10 +121,12 @@ const main = async () => {
   await runTests();
   await commitVersion();
   await pushDevelop();
-  await mergeToMain();
-  await triggerReleasePlease();
-  await returnToDevelop();
-  console.log(`Release ${version} prepared and pushed.`);
+  console.log(
+    [
+      `Version bump ${version} committed and pushed to develop.`,
+      "Next: merge develop into main and let release-please open the PR.",
+    ].join("\n"),
+  );
 };
 
 await main();
