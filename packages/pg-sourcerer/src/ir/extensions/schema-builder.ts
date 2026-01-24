@@ -41,6 +41,11 @@ export interface SchemaBuilderResult {
   readonly ast: n.Expression;
   /** Import needed for the schema library */
   readonly importSpec: SchemaImportSpec;
+  /**
+   * Build a validation expression for input using this schema.
+   * e.g., schema.parse(input), schema.assert(input), v.parse(schema, input)
+   */
+  readonly consume: (input: n.Expression) => n.Expression;
 }
 
 /**

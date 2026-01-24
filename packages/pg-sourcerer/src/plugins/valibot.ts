@@ -230,10 +230,16 @@ const valibotSchemaBuilder: SchemaBuilder = {
     }
 
     const ast = conjure.id("v").method("object", [objBuilder.build()]).build();
+    const consume = (input: n.Expression) =>
+      b.callExpression(b.memberExpression(b.identifier("v"), b.identifier("parse")), [
+        cast.toExpr(ast),
+        cast.toExpr(input),
+      ]);
 
     return {
       ast,
       importSpec: { from: "valibot", names: ["v"] },
+      consume,
     };
   },
 };
