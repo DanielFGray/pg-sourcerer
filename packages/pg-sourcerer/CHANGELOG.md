@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.5.0...v0.5.1) (2026-01-24)
+
+
+### Features
+
+* **cli:** expand init guidance ([2297765](https://github.com/DanielFGray/pg-sourcerer/commit/2297765a2ef30d62d8be19c5f1e4d916ec849f91))
+
+
+### Bug Fixes
+
+* **effect:** scope cross-references with forSymbol and add sqlClientLayer config ([4d6ebce](https://github.com/DanielFGray/pg-sourcerer/commit/4d6ebce204f757ad00067588afc8c1138a49eec3))
+* **generator:** stabilize cursor pagination params ([f65cc5d](https://github.com/DanielFGray/pg-sourcerer/commit/f65cc5db1110c2eba21abb5bd4a52218faa5fc88))
+* **plugins:** align schema consumption ([d85ab59](https://github.com/DanielFGray/pg-sourcerer/commit/d85ab59054c5779962ba0721809a1ab53b264c6f))
+
 ## [0.5.0](https://github.com/DanielFGray/pg-sourcerer/compare/v0.4.0...v0.5.0) (2026-01-21)
 
 
