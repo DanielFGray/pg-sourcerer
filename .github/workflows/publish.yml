@@ -40,6 +40,10 @@ jobs:
 
       - name: Publish pg-sourcerer to npm
         working-directory: packages/pg-sourcerer
-        run: bun publish --access public --tolerate-republish
+        run: |
+          cp ../../README.md ./README.md
+          cp ../../LICENSE ./LICENSE
+          bun publish --access public --tolerate-republish
+          rm ./README.md ./LICENSE
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
