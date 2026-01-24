@@ -22,11 +22,16 @@ import {
   type EnumEntity,
   type Field,
 } from "../ir/semantic-ir.js";
-import { conjure } from "../conjure/index.js";
+import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import { type UserModuleRef } from "../user-module.js";
 
 const { fn, ts, param, str, b, exp } = conjure;
+
+const createQueryConsume = (method: QueryMethod) => (input: unknown): n.Expression => {
+  const args = input == null ? [] : [cast.toExpr(input as n.Expression)];
+  return b.callExpression(b.identifier(method.name), args);
+};
 
 // ============================================================================
 // Name Building Helpers
@@ -449,6 +454,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               name: method.name,
               capability: `queries:sql:${entityName}:findById`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               userImports: queryUserImports,
             });
@@ -493,6 +499,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               name: method.name,
               capability: `queries:sql:${entityName}:create`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: [
                 {
@@ -553,6 +560,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               name: method.name,
               capability: `queries:sql:${entityName}:update`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: [
                 {
@@ -597,6 +605,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               name: method.name,
               capability: `queries:sql:${entityName}:delete`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               userImports: queryUserImports,
             });
@@ -646,6 +655,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
                 name: method.name,
                 capability: `queries:sql:${entityName}:findBy${pascalColumn}`,
                 node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+                metadata: { consume: createQueryConsume(method) },
                 exports: "named",
                 userImports: queryUserImports,
               });
@@ -673,9 +683,17 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             };
 
             const cursorParam = {
-              name: "cursor",
-              type: `{ ${candidate.cursorColumn}: Date; ${candidate.pkColumn}: ${pkParam.type} }`,
+              name: inflection.camelCase(`cursor_${candidate.cursorColumnName}`),
+              type: "Date",
               required: false,
+              source: "pagination" as const,
+            };
+
+            const cursorPkParam = {
+              name: inflection.camelCase(`cursor_${candidate.pkColumnName}`),
+              type: pkParam.type,
+              required: false,
+              source: "pagination" as const,
             };
 
             const operator = candidate.desc ? "<" : ">";
@@ -684,7 +702,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const method: QueryMethod = {
               name: buildListByName(inflection, entityName, candidate.cursorColumnName),
               kind: "list",
-              params: [cursorParam, limitParam],
+              params: [cursorParam, cursorPkParam, limitParam],
               returns: buildReturnType(entityName, true, false),
               callSignature: { style: "named" },
             };
@@ -698,14 +716,18 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             ];
 
             const paramExprs: n.Expression[] = [
-              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
-              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.pkColumn)),
+              b.identifier(cursorParam.name),
+              b.identifier(cursorPkParam.name),
               b.identifier("limit"),
             ];
 
             const templateLiteral = buildTemplateLiteralWithParams(templateParts, paramExprs);
 
-            const destructuredParam = buildDestructuredParam([cursorParam, limitParam]);
+            const destructuredParam = buildDestructuredParam([
+              cursorParam,
+              cursorPkParam,
+              limitParam,
+            ]);
             const fnExpr = fn().rawParam(destructuredParam).arrow().body(
               conjure.stmt.return(templateLiteral),
             ).build();
