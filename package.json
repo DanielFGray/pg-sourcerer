@@ -1,6 +1,7 @@
 {
   "name": "pg-sourcerer-monorepo",
   "private": true,
+  "type": "module",
   "scripts": {
     "prestart": "cd packages/pg-sourcerer && bun run build",
     "db:ensure": " cd packages/example && bun run db:ensure",
