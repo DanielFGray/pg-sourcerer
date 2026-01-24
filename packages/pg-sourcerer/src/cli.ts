@@ -7,6 +7,7 @@ import { Console, Effect, Option } from "effect";
 import { runGenerate } from "./generate.js";
 import { runInit } from "./init.js";
 import { ConfigWithFallback, FileConfigProvider } from "./services/config.js";
+import { schemaCommand } from "./commands/schema.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const configPath = Options.file("config").pipe(
@@ -54,14 +55,25 @@ const runGenerateCommand = (args: GenerateArgs) => {
     FileConfigProvider(configOpts),
   );
 
-  return runGenerate(opts).pipe(
+  const runGenerateOnce = runGenerate(opts).pipe(
     Effect.provide(configLayer),
     Effect.tap(logSuccess),
+  );
+
+  return runGenerateOnce.pipe(
     Effect.catchTags({
       ConfigNotFound: () =>
         Console.log("No config file found. Running init...").pipe(
           Effect.zipRight(runInit),
-          Effect.tap(() => Console.log("\nRun 'pgsourcerer' again to generate code.")),
+          Effect.zipRight(
+            runGenerateOnce.pipe(
+              Effect.catchTags({
+                ConfigNotFound: () => Console.error("No config file found after init."),
+                ConfigInvalid: error =>
+                  Effect.forEach(error.errors, e => Console.error(`  - ${e}`)),
+              }),
+            ),
+          ),
         ),
       ConfigInvalid: error =>
         Effect.forEach(error.errors, e => Console.error(`  - ${e}`)),
@@ -85,7 +97,7 @@ const rootCommand = Command.make(
   "pgsourcerer",
   { configPath, outputDir, dryRun },
   runGenerateCommand,
-).pipe(Command.withSubcommands([generateCommand, initCommand]));
+).pipe(Command.withSubcommands([generateCommand, initCommand, schemaCommand]));
 
 const cli = Command.run(rootCommand, {
   name: "pgsourcerer",

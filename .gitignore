@@ -4,6 +4,7 @@ generated
 .idea
 dist
 packages/pg-sourcerer/coverage
+*.tsbuildinfo
 
 # Local/temp files
 .worktrees/
