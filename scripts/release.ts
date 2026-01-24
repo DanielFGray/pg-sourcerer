@@ -1,4 +1,4 @@
-import { $ } from "bun";
+/// <reference types="bun" />
 
 const version = process.argv[2];
 if (!version) {
@@ -40,7 +40,41 @@ const runCapture = async (command: string[], cwd?: string) => {
   return stdout;
 };
 
+const runCaptureOptional = async (command: string[], cwd?: string) => {
+  const proc = Bun.spawn(command, {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+  return { exitCode, stdout, stderr };
+};
+
+const runCheck = async (command: string[], cwd?: string) => {
+  const proc = Bun.spawn(command, {
+    cwd,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return (await proc.exited) === 0;
+};
+
 const readText = async (path: string) => Bun.file(path).text();
+
+const parseVersion = (input: string) => {
+  const [major = 0, minor = 0, patch = 0] = input.split(".").map(Number);
+  return [major, minor, patch] as const;
+};
+
+const compareSemver = (left: string, right: string) => {
+  const [lMajor, lMinor, lPatch] = parseVersion(left);
+  const [rMajor, rMinor, rPatch] = parseVersion(right);
+  if (lMajor !== rMajor) return lMajor - rMajor;
+  if (lMinor !== rMinor) return lMinor - rMinor;
+  return lPatch - rPatch;
+};
 
 const ensureClean = async () => {
   const status = (await runCapture(["git", "status", "--porcelain"])).trim();
@@ -68,6 +102,83 @@ const ensureTagAvailable = async (tag: string) => {
   const remote = (await runCapture(["git", "ls-remote", "--tags", "origin", tag])).trim();
   if (remote.length > 0) {
     console.error(`Tag ${tag} already exists on origin.`);
+    process.exit(1);
+  }
+};
+
+const ensureReleasePleasePrClosed = async () => {
+  const result = await runCaptureOptional([
+    "gh",
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--search",
+    "release-please",
+    "--json",
+    "number,title",
+  ]);
+  if (result.exitCode !== 0) {
+    console.warn("Warning: unable to check release-please PR status.");
+    return;
+  }
+
+  const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string }>;
+  if (prs.length > 0) {
+    console.error(
+      [
+        "Release-please PR already open:",
+        ...prs.map(pr => `#${pr.number} ${pr.title}`),
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+};
+
+const ensureDevelopContainsMain = async () => {
+  await run(["git", "fetch", "origin"]);
+  const hasMain = await runCheck(["git", "merge-base", "--is-ancestor", "origin/main", "develop"]);
+  if (!hasMain) {
+    console.error("Develop is missing commits from main. Merge main into develop first.");
+    process.exit(1);
+  }
+};
+
+const ensureDevelopUpToDate = async () => {
+  const output = await runCapture([
+    "git",
+    "rev-list",
+    "--left-right",
+    "--count",
+    "origin/develop...develop",
+  ]);
+  const [behind = 0] = output.trim().split("\t").map(Number);
+  if (behind > 0) {
+    console.error("Develop is behind origin/develop. Pull first.");
+    process.exit(1);
+  }
+};
+
+const ensureVersionAdvances = async () => {
+  const manifest = JSON.parse(
+    await readText(".release-please-manifest.json"),
+  ) as Record<string, string>;
+  const current = manifest["packages/pg-sourcerer"];
+  if (!current) {
+    console.error("Release-please manifest missing packages/pg-sourcerer version.");
+    process.exit(1);
+  }
+
+  if (compareSemver(version, current) <= 0) {
+    console.error(`Version must be greater than ${current}.`);
+    process.exit(1);
+  }
+
+  const pkg = JSON.parse(
+    await readText("packages/pg-sourcerer/package.json"),
+  ) as { version: string };
+  if (pkg.version !== current) {
+    console.error("Package version and release-please manifest are out of sync.");
     process.exit(1);
   }
 };
@@ -116,6 +227,10 @@ const pushDevelop = async () => {
 const main = async () => {
   await ensureClean();
   await ensureBranch("develop");
+  await ensureDevelopContainsMain();
+  await ensureDevelopUpToDate();
+  await ensureReleasePleasePrClosed();
+  await ensureVersionAdvances();
   await ensureTagAvailable(`v${version}`);
   await bumpVersion();
   await runTests();
