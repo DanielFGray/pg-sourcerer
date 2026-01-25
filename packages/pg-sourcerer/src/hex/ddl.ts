@@ -4,7 +4,6 @@
  * Declarative query builder for DDL statements (CREATE TABLE, ALTER TABLE, etc.).
  * Integrates with SemanticIR for type-aware schema generation.
  */
-import type { SemanticIR } from "../ir/semantic-ir.js";
 import type {
   CreateTableSpec,
   AlterTableSpec,
@@ -15,7 +14,10 @@ import type {
   TableConstraintSpec,
 } from "./types.js";
 
-export { IndexMethod } from "./types.js";
+export type { IndexMethod } from "./types.js";
+
+// Note: SemanticIR was originally a parameter but is not used by DDL functions.
+// The API is kept simple - just pass the spec directly.
 
 function quoteIdent(name: string): string {
   if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) && !name.match(/^(true|false|null)$/i)) {
@@ -130,7 +132,7 @@ function buildConstraint(constraint: TableConstraintSpec): string {
   }
 }
 
-export function createTable(_ir: SemanticIR, spec: CreateTableSpec): string {
+export function createTable(spec: CreateTableSpec): string {
   const ifNotExists = spec.ifNotExists ? "IF NOT EXISTS " : "";
   const tableName = spec.schema
     ? `${quoteIdent(spec.schema)}.${quoteIdent(spec.table)}`
@@ -143,9 +145,9 @@ export function createTable(_ir: SemanticIR, spec: CreateTableSpec): string {
 
   const allDefs = [...columnDefs];
   if (spec.primaryKey) {
-    const pkName = spec.primaryKey.name ? `CONSTRAINT ${quoteIdent(spec.primaryKey.name)}` : "";
+    const pkName = spec.primaryKey.name ? `CONSTRAINT ${quoteIdent(spec.primaryKey.name)} ` : "";
     const pkCols = spec.primaryKey.columns.map(quoteIdent).join(", ");
-    allDefs.push(`${pkName} PRIMARY KEY (${pkCols})`);
+    allDefs.push(`${pkName}PRIMARY KEY (${pkCols})`);
   }
   allDefs.push(...constraintDefs);
 
@@ -180,7 +182,6 @@ export function createTable(_ir: SemanticIR, spec: CreateTableSpec): string {
 }
 
 export function createIndex(
-  _ir: SemanticIR,
   tableName: string,
   index: IndexSpec,
   options: { concurrently?: boolean; ifNotExists?: boolean; schema?: string } = {},
@@ -195,7 +196,6 @@ export function createIndex(
 }
 
 export function createPrimaryKeyIndex(
-  _ir: SemanticIR,
   tableName: string,
   columns: string[],
   indexName: string,
@@ -210,7 +210,7 @@ export function createPrimaryKeyIndex(
   return `CREATE UNIQUE INDEX ${concurrently}${quoteIdent(indexName)} ON ${table} USING btree (${indexCols})`;
 }
 
-export function addForeignKey(_ir: SemanticIR, tableName: string, foreignKey: ForeignKeySpec, options: { schema?: string } = {}): string {
+export function addForeignKey(tableName: string, foreignKey: ForeignKeySpec, options: { schema?: string } = {}): string {
   const table = options.schema
     ? `${quoteIdent(options.schema)}.${quoteIdent(tableName)}`
     : quoteIdent(tableName);
@@ -218,7 +218,7 @@ export function addForeignKey(_ir: SemanticIR, tableName: string, foreignKey: Fo
   return `ALTER TABLE ${table} ADD ${buildForeignKey(foreignKey)}`;
 }
 
-export function dropForeignKey(_ir: SemanticIR, tableName: string, constraintName: string, options: { schema?: string; ifExists?: boolean; cascade?: boolean } = {}): string {
+export function dropForeignKey(tableName: string, constraintName: string, options: { schema?: string; ifExists?: boolean; cascade?: boolean } = {}): string {
   const table = options.schema
     ? `${quoteIdent(options.schema)}.${quoteIdent(tableName)}`
     : quoteIdent(tableName);
@@ -246,7 +246,7 @@ export function dropTable(tableName: string, options: { schema?: string; ifExist
   return `DROP TABLE ${ifExists}${table}${cascade}`;
 }
 
-export function alterTable(_ir: SemanticIR, spec: AlterTableSpec): string {
+export function alterTable(spec: AlterTableSpec): string {
   const table = spec.schema
     ? `${quoteIdent(spec.schema)}.${quoteIdent(spec.table)}`
     : quoteIdent(spec.table);

@@ -52,6 +52,7 @@ export function effect(config?: EffectConfig): Plugin[] {
       : {
           ...schemaValidated.http,
           serverFile: normalizeFileNaming(config?.http !== false ? config?.http?.serverFile : undefined, DEFAULT_SERVER_FILE),
+          sqlClientLayer: config?.http !== false ? config?.http?.sqlClientLayer : undefined,
         },
   };
 

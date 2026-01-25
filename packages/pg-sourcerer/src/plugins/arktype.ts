@@ -32,6 +32,8 @@ import type {
   SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
 
+const b = conjure.b;
+
 /**
  * Creates a consume callback for ArkType schemas.
  * Generates: `SchemaName.assert(input)` (throws on validation error)
@@ -103,10 +105,16 @@ const arkTypeSchemaBuilder: SchemaBuilder = {
     }
 
     const ast = conjure.id("type").call([objBuilder.build()]).build();
+    const consume = (input: n.Expression) =>
+      b.callExpression(
+        b.memberExpression(cast.toExpr(ast), b.identifier("assert")),
+        [cast.toExpr(input)],
+      );
 
     return {
       ast,
       importSpec: { from: "arktype", names: ["type"] },
+      consume,
     };
   },
 };

@@ -240,7 +240,7 @@ describe("Zod Plugin - Render", () => {
     }),
   );
 
-  it.effect("handles date types with z.coerce().date()", () =>
+  it.effect("handles date types with z.coerce.date()", () =>
     Effect.gen(function* () {
       const fields = [mockField("createdAt", "timestamp")];
 
@@ -248,7 +248,7 @@ describe("Zod Plugin - Render", () => {
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [zod()] });
 
       const code = recast.print(result.rendered[0]!.node as recast.types.ASTNode).code;
-      expect(code).toContain("z.coerce().date()");
+      expect(code).toContain("z.coerce.date()");
     }),
   );
 
@@ -365,7 +365,7 @@ describe("Zod Plugin - Emit", () => {
       expect(content).toContain("z.object");
       expect(content).toContain("z.uuid()");
       expect(content).toContain("z.string()");
-      expect(content).toContain("z.coerce().date()");
+      expect(content).toContain("z.coerce.date()");
     }),
   );
 });

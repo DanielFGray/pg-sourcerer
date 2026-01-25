@@ -35,6 +35,18 @@ import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
 
 const { fn, stmt, ts, param, str, exp, b, chain, arrExpr } = conjure;
 
+const createQueryConsume = (method: QueryMethod) => (input: unknown): n.Expression => {
+  const args = input == null ? [] : [cast.toExpr(input as n.Expression)];
+  const callExpr = b.callExpression(b.identifier(method.name), args);
+  const executeMethod =
+    method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)
+      ? "executeTakeFirst"
+      : method.kind === "create" || method.kind === "update"
+        ? "executeTakeFirstOrThrow"
+        : "execute";
+  return b.callExpression(b.memberExpression(callExpr, b.identifier(executeMethod)), []);
+};
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1005,6 +1017,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               name: method.name,
               capability: `queries:kysely:${entityName}:findById`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
@@ -1018,44 +1031,71 @@ export function kysely(config?: KyselyConfig): Plugin {
             const pkField = entity.shapes.row.fields.find(f => f.name === candidate.pkColumn);
             if (!pkField) continue;
 
-            const cursorType = ts.objectType([
-              { name: candidate.cursorColumn, type: ts.ref("Date") },
-              { name: candidate.pkColumn, type: ts.ref(pgTypeToTsType(getPgType(pkField))) },
-            ]);
+            const pkParamType = pgTypeToTsType(getPgType(pkField));
+
+            const cursorColumnParamName = inflection.camelCase(
+              `cursor_${candidate.cursorColumnName}`,
+            );
+            const cursorPkParamName = inflection.camelCase(`cursor_${candidate.pkColumnName}`);
+
+            const cursorParamMeta = {
+              name: cursorColumnParamName,
+              type: "Date",
+              required: false,
+              source: "pagination" as const,
+            };
+
+            const cursorPkParamMeta = {
+              name: cursorPkParamName,
+              type: pkParamType,
+              required: false,
+              source: "pagination" as const,
+            };
+
+            const limitParamMeta = {
+              name: "limit",
+              type: "number",
+              required: false,
+              source: "pagination" as const,
+            };
 
             const method: QueryMethod = {
               name: buildListByName(inflection, entityName, candidate.cursorColumnName),
               kind: "list",
-              params: [],
+              params: [cursorParamMeta, cursorPkParamMeta, limitParamMeta],
               returns: buildReturnType(entityName, true, false),
               callSignature: { style: "named" },
             };
             entityMethods.push(method);
 
             const cursorParam = param.destructured([
-              { name: "cursor", type: ts.union(cursorType, ts.undefined()), optional: true },
+              { name: cursorColumnParamName, type: ts.ref("Date"), optional: true },
+              { name: cursorPkParamName, type: ts.ref(pkParamType), optional: true },
               { name: "limit", type: ts.number(), optional: true, defaultValue: conjure.num(resolvedConfig.defaultLimit) },
             ]);
 
             const cursorComparisonOp = candidate.desc ? "<" : ">";
             const orderDirection = candidate.desc ? "desc" : "asc";
 
+            const cursorColumnExpr = b.tsNonNullExpression(b.identifier(cursorColumnParamName));
+            const cursorPkExpr = b.tsNonNullExpression(b.identifier(cursorPkParamName));
+
             const cursorCondition = b.callExpression(b.identifier("eb"), [
               str(candidate.cursorColumnName),
               str(cursorComparisonOp),
-              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+              cursorColumnExpr,
             ]);
 
             const pkCondition = b.callExpression(b.identifier("eb"), [
               str(candidate.pkColumnName),
               str(cursorComparisonOp),
-              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.pkColumn)),
+              cursorPkExpr,
             ]);
 
             const equalityCondition = b.callExpression(b.identifier("eb"), [
               str(candidate.cursorColumnName),
               str("="),
-              b.memberExpression(b.identifier("cursor"), b.identifier(candidate.cursorColumn)),
+              cursorColumnExpr,
             ]);
 
             const andClause = chain(b.identifier("eb"))
@@ -1074,7 +1114,19 @@ export function kysely(config?: KyselyConfig): Plugin {
               .method("selectFrom", [str(tableName) as n.Expression])
               .method("select", [buildColumnArray(entity.shapes.row.fields)])
               .method("$if", [
-                b.binaryExpression("!==", b.identifier("cursor"), b.identifier("undefined")),
+                b.logicalExpression(
+                  "&&",
+                  b.binaryExpression(
+                    "!==",
+                    b.identifier(cursorColumnParamName),
+                    b.identifier("undefined"),
+                  ),
+                  b.binaryExpression(
+                    "!==",
+                    b.identifier(cursorPkParamName),
+                    b.identifier("undefined"),
+                  ),
+                ),
                 fn()
                   .param("qb")
                   .arrow()
@@ -1102,6 +1154,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               name: method.name,
               capability: `queries:kysely:${entityName}:listBy${pascalColumn}`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
@@ -1141,6 +1194,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               name: method.name,
               capability: `queries:kysely:${entityName}:create`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: [
                 {
@@ -1210,6 +1264,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               name: method.name,
               capability: `queries:kysely:${entityName}:update`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: [
                 {
@@ -1266,6 +1321,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               name: method.name,
               capability: `queries:kysely:${entityName}:delete`,
               node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              metadata: { consume: createQueryConsume(method) },
               exports: "named",
               externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
@@ -1324,6 +1380,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 name: method.name,
                 capability: `queries:kysely:${entityName}:findBy${pascalColumn}`,
                 node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+                metadata: { consume: createQueryConsume(method) },
                 exports: "named",
                 externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
                 userImports: queryUserImports,

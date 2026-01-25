@@ -73,20 +73,20 @@ export const hex = {
   rawMutate: mutate,
   rawCall: call,
 
-  // DDL builders
-  createTable: (ir: SemanticIR, spec: CreateTableSpec) => createTable(ir, spec),
-  createIndex: (ir: SemanticIR, tableName: string, index: IndexSpec, options?: { concurrently?: boolean; ifNotExists?: boolean; schema?: string }) => createIndex(ir, tableName, index, options),
-  createPrimaryKeyIndex: (ir: SemanticIR, tableName: string, columns: string[], indexName: string, options?: { concurrently?: boolean; schema?: string }) => createPrimaryKeyIndex(ir, tableName, columns, indexName, options),
-  addForeignKey: (ir: SemanticIR, tableName: string, foreignKey: ForeignKeySpec, options?: { schema?: string }) => addForeignKey(ir, tableName, foreignKey, options),
-  dropForeignKey: (ir: SemanticIR, tableName: string, constraintName: string, options?: { schema?: string; ifExists?: boolean; cascade?: boolean }) => dropForeignKey(ir, tableName, constraintName, options),
-  dropIndex: (indexName: string, options?: { ifExists?: boolean; cascade?: boolean; concurrently?: boolean }) => dropIndex(indexName, options),
-  dropTable: (tableName: string, options?: { schema?: string; ifExists?: boolean; cascade?: boolean }) => dropTable(tableName, options),
-  alterTable: (ir: SemanticIR, spec: AlterTableSpec) => alterTable(ir, spec),
-  drop: (spec: DropSpec) => drop(spec),
-  renameTable: (oldName: string, newName: string, options?: { schema?: string }) => renameTable(oldName, newName, options),
-  renameColumn: (tableName: string, oldColumn: string, newColumn: string, options?: { schema?: string }) => renameColumn(tableName, oldColumn, newColumn, options),
-  renameConstraint: (tableName: string, oldConstraint: string, newConstraint: string, options?: { schema?: string }) => renameConstraint(tableName, oldConstraint, newConstraint, options),
-  setSchema: (objectName: string, newSchema: string, options?: { schema?: string; cascade?: boolean }) => setSchema(objectName, newSchema, options),
+  // DDL builders (IR-free - work standalone)
+  createTable,
+  createIndex,
+  createPrimaryKeyIndex,
+  addForeignKey,
+  dropForeignKey,
+  dropIndex,
+  dropTable,
+  alterTable,
+  drop,
+  renameTable,
+  renameColumn,
+  renameConstraint,
+  setSchema,
 } as const;
 
 export default hex;

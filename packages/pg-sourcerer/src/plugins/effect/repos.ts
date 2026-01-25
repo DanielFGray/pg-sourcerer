@@ -1,6 +1,6 @@
 /**
  * Effect Repos Plugin
- * 
+ *
  * Generates Effect.Service wrappers around Model.makeRepository for table entities with single-column PKs
  */
 import { Effect } from "effect";
@@ -17,7 +17,7 @@ const b = conjure.b;
 
 /**
  * Effect Repos plugin - generates Effect.Service wrappers around Model.makeRepository
- * 
+ *
  * Output:
  * ```typescript
  * export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
@@ -75,93 +75,89 @@ export function effectRepos(): Plugin {
       for (const entity of ir.entities.values()) {
         if (isTableEntity(entity) && hasSingleColumnPrimaryKey(entity)) {
           const repoName = `${entity.name}Repo`;
+          const capability = `effect:repo:${entity.name}`;
           const qualifiedTableName = `${entity.schemaName}.${entity.pgName}`;
           const idColumn = getPrimaryKeyColumn(entity)!;
 
-          // Get reference to the model class
-          const modelHandle = registry.import(`effect:model:${entity.name}`);
-          const modelRef = modelHandle.ref() as n.Expression;
+          // Scope cross-references (model import) to this specific capability
+          const exportedClass = registry.forSymbol(capability, () => {
+            // Get reference to the model class
+            const modelHandle = registry.import(`effect:model:${entity.name}`);
+            const modelRef = modelHandle.ref() as n.Expression;
 
-          // Build: Model.makeRepository(Entity, { tableName, spanPrefix, idColumn })
-          const makeRepoCall = conjure.id("Model")
-            .method("makeRepository", [
-              modelRef,
-              conjure.obj()
-                .prop("tableName", conjure.str(qualifiedTableName))
-                .prop("spanPrefix", conjure.str(repoName))
-                .prop("idColumn", conjure.str(idColumn))
-                .build(),
-            ])
-            .build();
+            // Build: Model.makeRepository(Entity, { tableName, spanPrefix, idColumn })
+            const makeRepoCall = conjure
+              .id("Model")
+              .method("makeRepository", [
+                modelRef,
+                conjure
+                  .obj()
+                  .prop("tableName", conjure.str(qualifiedTableName))
+                  .prop("spanPrefix", conjure.str(repoName))
+                  .prop("idColumn", conjure.str(idColumn))
+                  .build(),
+              ])
+              .build();
 
-          // Build: const repo = yield* Model.makeRepository(...)
-          const repoVarDecl = b.variableDeclaration("const", [
-            b.variableDeclarator(
-              b.identifier("repo"),
-              b.yieldExpression(cast.toExpr(makeRepoCall), true) // true = delegate (yield*)
-            ),
-          ]);
-
-          // Build: return { ...repo }
-          const returnStmt = b.returnStatement(
-            b.objectExpression([b.spreadElement(b.identifier("repo"))])
-          );
-
-          // Build: function*() { const repo = yield* ...; return { ...repo } }
-          const generatorFn = b.functionExpression(
-            null,
-            [],
-            b.blockStatement([cast.toStmt(repoVarDecl), returnStmt]),
-            true // generator
-          );
-
-          // Build: Effect.gen(function*() { ... })
-          const effectGenCall = conjure.id("Effect")
-            .method("gen", [generatorFn])
-            .build();
-
-          // Build: { effect: Effect.gen(...), dependencies: [SqlClient.SqlClient] }
-          const serviceConfig = conjure.obj()
-            .prop("effect", effectGenCall)
-            .prop("dependencies", b.arrayExpression([
-              cast.toExpr(conjure.id("SqlClient").prop("SqlClient").build()),
-            ]))
-            .build();
-
-          // Build: Effect.Service<RepoName>()
-          const serviceRef = b.memberExpression(
-            b.identifier("Effect"),
-            b.identifier("Service")
-          );
-          const serviceWithType = b.callExpression(serviceRef, []);
-          (serviceWithType as { typeParameters?: unknown }).typeParameters =
-            b.tsTypeParameterInstantiation([
-              b.tsTypeReference(b.identifier(repoName)),
+            // Build: const repo = yield* Model.makeRepository(...)
+            const repoVarDecl = b.variableDeclaration("const", [
+              b.variableDeclarator(
+                b.identifier("repo"),
+                b.yieldExpression(cast.toExpr(makeRepoCall), true), // true = delegate (yield*)
+              ),
             ]);
 
-          // Build: Effect.Service<RepoName>()("RepoName", { ... })
-          const serviceCall = b.callExpression(serviceWithType, [
-            conjure.str(repoName),
-            cast.toExpr(serviceConfig),
-          ]);
+            // Build: return { ...repo }
+            const returnStmt = b.returnStatement(
+              b.objectExpression([b.spreadElement(b.identifier("repo"))]),
+            );
 
-          // Build: class RepoName extends Effect.Service<RepoName>()(...) {}
-          const classDecl = b.classDeclaration(
-            b.identifier(repoName),
-            b.classBody([]),
-            cast.toExpr(serviceCall)
-          );
+            // Build: function*() { const repo = yield* ...; return { ...repo } }
+            const generatorFn = b.functionExpression(
+              null,
+              [],
+              b.blockStatement([cast.toStmt(repoVarDecl), returnStmt]),
+              true, // generator
+            );
 
-          const exportedClass = b.exportNamedDeclaration(classDecl, []);
+            // Build: Effect.gen(function*() { ... })
+            const effectGenCall = conjure.id("Effect").method("gen", [generatorFn]).build();
+
+            // Build: { effect: Effect.gen(...) }
+            // Note: SqlClient dependency is not specified here since it doesn't have a Default layer.
+            // Users provide SqlClient via Layer.provide when using the repo.
+            const serviceConfig = conjure.obj().prop("effect", effectGenCall).build();
+
+            // Build: Effect.Service<RepoName>()
+            const serviceRef = b.memberExpression(b.identifier("Effect"), b.identifier("Service"));
+            const serviceWithType = b.callExpression(serviceRef, []);
+            (serviceWithType as { typeParameters?: unknown }).typeParameters =
+              b.tsTypeParameterInstantiation([b.tsTypeReference(b.identifier(repoName))]);
+
+            // Build: Effect.Service<RepoName>()("RepoName", { ... })
+            const serviceCall = b.callExpression(serviceWithType, [
+              conjure.str(repoName),
+              cast.toExpr(serviceConfig),
+            ]);
+
+            // Build: class RepoName extends Effect.Service<RepoName>()(...) {}
+            const classDecl = b.classDeclaration(
+              b.identifier(repoName),
+              b.classBody([]),
+              cast.toExpr(serviceCall),
+            );
+
+            return b.exportNamedDeclaration(classDecl, []);
+          });
 
           rendered.push({
             name: repoName,
-            capability: `effect:repo:${entity.name}`,
+            capability,
             node: exportedClass,
             exports: "named",
             externalImports: [
               { from: "effect", names: ["Effect"] },
-              { from: "@effect/sql", names: ["Model", "SqlClient"] },
+              { from: "@effect/sql", names: ["Model"] },
             ],
           });
         }

@@ -64,10 +64,16 @@ const zodSchemaBuilder: SchemaBuilder = {
     }
 
     const ast = conjure.id("z").method("object", [objBuilder.build()]).build();
+    const consume = (input: n.Expression) =>
+      b.callExpression(
+        b.memberExpression(cast.toExpr(ast), b.identifier("parse")),
+        [cast.toExpr(input)],
+      );
 
     return {
       ast,
       importSpec: { from: "zod", names: ["z"] },
+      consume,
     };
   },
 };
@@ -166,6 +172,8 @@ const PG_STRING_TYPES = new Set([
   "name",
   "bpchar",
   "citext",
+  "tsvector",
+  "tsquery",
 ]);
 
 const PG_NUMBER_TYPES = new Set([
@@ -275,11 +283,11 @@ function baseTypeToZodMapping(
   }
 
   if (PG_DATE_TYPES.has(normalized)) {
-    return { kind: "schema", schema: conjure.id("z").method("coerce").method("date").build() };
+    return { kind: "schema", schema: conjure.id("z").prop("coerce").method("date").build() };
   }
 
   if (PG_JSON_TYPES.has(normalized)) {
-    return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
+    return { kind: "schema", schema: conjure.id("z").method("any").build() };
   }
 
   if (pgType.typtype === "e" || pgType.typcategory === "E") {
@@ -409,22 +417,24 @@ export function zod(config?: ZodConfig): Plugin {
 
       const declarations: SymbolDeclaration[] = [];
 
+      const enumEntities = [...ir.entities.values()].filter(isEnumEntity);
+      for (const entity of enumEntities) {
+        declarations.push({
+          name: entity.name,
+          capability: `schema:zod:${entity.name}`,
+          baseEntityName: entity.name,
+        });
+        declarations.push({
+          name: entity.name,
+          capability: `schema:zod:${entity.name}:type`,
+          baseEntityName: entity.name,
+        });
+      }
+
       for (const entity of ir.entities.values()) {
-        if (isTableEntity(entity)) {
-          // Push declarations directly - they already include baseEntityName
-          declarations.push(...getShapeDeclarations(entity));
-        } else if (isEnumEntity(entity)) {
-          declarations.push({
-            name: entity.name,
-            capability: `schema:zod:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-          declarations.push({
-            name: entity.name,
-            capability: `schema:zod:${entity.name}:type`,
-            baseEntityName: entity.name,
-          });
-        }
+        if (!isTableEntity(entity)) continue;
+        // Push declarations directly - they already include baseEntityName
+        declarations.push(...getShapeDeclarations(entity));
       }
 
       // Declare the schema builder capability
@@ -444,77 +454,79 @@ export function zod(config?: ZodConfig): Plugin {
 
       const rendered: RenderedSymbol[] = [];
 
-      for (const entity of ir.entities.values()) {
-        if (isTableEntity(entity)) {
-          const shapes: NonNullable<TableEntity["shapes"]["row" | "insert" | "update"]>[] = [
-            entity.shapes.row,
-          ];
-          if (entity.shapes.insert) shapes.push(entity.shapes.insert);
-          if (entity.shapes.update) shapes.push(entity.shapes.update);
+      for (const entity of enums) {
+        const schemaNode = conjure
+          .id("z")
+          .method("enum", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
+          .build();
 
-          for (const shape of shapes) {
-            const isRow = shape.kind === "row";
-            const capability = `schema:zod:${shape.name}`;
+        const schemaDecl = conjure.export.const(entity.name, schemaNode);
 
-            // Scope cross-references to this specific capability
-            const schemaNode = registry.forSymbol(capability, () =>
-              shapeToZodObject(shape, enums, registry),
-            );
+        const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(entity.name)]);
+        const typeDecl = conjure.export.type(entity.name, inferType);
 
-            const schemaDecl = conjure.export.const(shape.name, schemaNode);
+        rendered.push({
+          name: entity.name,
+          capability: `schema:zod:${entity.name}`,
+          node: schemaDecl,
+          exports: "named",
+          externalImports: [{ from: "zod", names: ["z"] }],
+          metadata: {
+            consume: createZodConsumeCallback(entity.name),
+          },
+        });
 
-            rendered.push({
-              name: shape.name,
-              capability,
-              node: schemaDecl,
-              exports: "named",
-              externalImports: [{ from: "zod", names: ["z"] }],
-              metadata: {
-                consume: createZodConsumeCallback(shape.name),
-              },
-            });
-
-            if (resolvedConfig.exportTypes && !isRow) {
-              const inferType = conjure.ts.qualifiedRef("z", "infer", [
-                conjure.ts.typeof(shape.name),
-              ]);
-              const typeDecl = conjure.export.type(shape.name, inferType);
-
-              rendered.push({
-                name: shape.name,
-                capability: `schema:zod:${shape.name}:type`,
-                node: typeDecl,
-                exports: "named",
-                externalImports: [{ from: "zod", names: ["z"] }],
-              });
-            }
-          }
-        } else if (isEnumEntity(entity)) {
-          const schemaNode = conjure
-            .id("z")
-            .method("enum", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
-            .build();
-
-          const schemaDecl = conjure.export.const(entity.name, schemaNode);
-
-          const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(entity.name)]);
-          const typeDecl = conjure.export.type(entity.name, inferType);
-
+        if (resolvedConfig.exportTypes) {
           rendered.push({
             name: entity.name,
-            capability: `schema:zod:${entity.name}`,
+            capability: `schema:zod:${entity.name}:type`,
+            node: typeDecl,
+            exports: "named",
+            externalImports: [{ from: "zod", names: ["z"] }],
+          });
+        }
+      }
+
+      for (const entity of ir.entities.values()) {
+        if (!isTableEntity(entity)) continue;
+
+        const shapes: NonNullable<TableEntity["shapes"]["row" | "insert" | "update"]>[] = [
+          entity.shapes.row,
+        ];
+        if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+        if (entity.shapes.update) shapes.push(entity.shapes.update);
+
+        for (const shape of shapes) {
+          const isRow = shape.kind === "row";
+          const capability = `schema:zod:${shape.name}`;
+
+          // Scope cross-references to this specific capability
+          const schemaNode = registry.forSymbol(capability, () =>
+            shapeToZodObject(shape, enums, registry),
+          );
+
+          const schemaDecl = conjure.export.const(shape.name, schemaNode);
+
+          rendered.push({
+            name: shape.name,
+            capability,
             node: schemaDecl,
             exports: "named",
             externalImports: [{ from: "zod", names: ["z"] }],
             metadata: {
-              consume: createZodConsumeCallback(entity.name),
+              consume: createZodConsumeCallback(shape.name),
             },
           });
 
-          if (resolvedConfig.exportTypes) {
+          if (resolvedConfig.exportTypes && !isRow) {
+            const inferType = conjure.ts.qualifiedRef("z", "infer", [
+              conjure.ts.typeof(shape.name),
+            ]);
+            const typeDecl = conjure.export.type(shape.name, inferType);
+
             rendered.push({
-              name: entity.name,
-              capability: `schema:zod:${entity.name}:type`,
+              name: shape.name,
+              capability: `schema:zod:${shape.name}:type`,
               node: typeDecl,
               exports: "named",
               externalImports: [{ from: "zod", names: ["z"] }],

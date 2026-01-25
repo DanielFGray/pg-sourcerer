@@ -16,7 +16,7 @@
 import { Effect, Array as Arr, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
@@ -28,6 +28,7 @@ import type {
   SchemaBuilder,
   SchemaBuilderRequest,
   SchemaBuilderResult,
+  SchemaImportSpec,
 } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, type FileNamingContext, normalizeFileNaming } from "../runtime/file-assignment.js";
@@ -154,32 +155,114 @@ const getRoutePath = (method: QueryMethod, entityName: string, inflection: CoreI
   }
 };
 
-function buildHandlerBody(method: QueryMethod): n.Statement[] {
+interface HandlerValidationState {
+  readonly hasParamValidation: boolean;
+  readonly hasQueryValidation: boolean;
+  readonly hasBodyValidation: boolean;
+}
+
+function buildHandlerBody(
+  method: QueryMethod,
+  validation: HandlerValidationState,
+  queryHandle: SymbolHandle,
+): n.Statement[] {
   const callSig = method.callSignature ?? { style: "named" };
   const statements: n.Statement[] = [];
+  const pathParams = method.params.filter(
+    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+  );
+  const queryParams = method.params.filter((p) => p.source === "pagination");
+  const needsBody =
+    method.params.some((p) => p.source === "body") ||
+    method.kind === "create" ||
+    method.kind === "update" ||
+    (method.kind === "function" && method.params.some((p) => !p.source));
+
+  if (pathParams.length > 0) {
+    const paramSource = validation.hasParamValidation
+      ? b.callExpression(
+          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          [b.stringLiteral("param")],
+        )
+      : b.callExpression(
+          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("param")),
+          [],
+        );
+    statements.push(stmt.const("params", paramSource));
+  }
+
+  if (queryParams.length > 0) {
+    const querySource = validation.hasQueryValidation
+      ? b.callExpression(
+          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          [b.stringLiteral("query")],
+        )
+      : b.callExpression(
+          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("query")),
+          [],
+        );
+    statements.push(stmt.const("query", querySource));
+  }
+
+  if (needsBody) {
+    const bodySource = validation.hasBodyValidation
+      ? b.callExpression(
+          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          [b.stringLiteral("json")],
+        )
+      : b.awaitExpression(
+          b.callExpression(
+            b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("json")),
+            [],
+          ),
+        );
+    statements.push(stmt.const("body", bodySource));
+  }
 
   const args: n.Expression[] = [];
 
+  const paramExpr = (param: QueryMethodParam): n.Expression => {
+    if (param.source === "body") {
+      return b.identifier("body");
+    }
+
+    if (param.source === "pagination") {
+      const sourceExpr = b.memberExpression(b.identifier("query"), b.identifier(param.name));
+      return validation.hasQueryValidation ? sourceExpr : coerceParam(param.name, param.type);
+    }
+
+    if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
+      const sourceExpr = b.memberExpression(b.identifier("params"), b.identifier(param.name));
+      return validation.hasParamValidation ? sourceExpr : coerceParam(param.name, param.type);
+    }
+
+    return b.memberExpression(b.identifier("body"), b.identifier(param.name));
+  };
+
   if (callSig.style === "positional") {
     for (const param of method.params) {
-      if (needsCoercion(param)) {
-        args.push(coerceParam(param.name, param.type));
-      } else if (param.source === "body") {
-        args.push(b.identifier("body"));
-      } else {
-        args.push(b.memberExpression(b.identifier("body"), b.identifier(param.name)));
-      }
+      args.push(paramExpr(param));
     }
   } else {
     const bodyParam = method.params.find((p) => p.source === "body");
+    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
-      args.push(b.identifier("body"));
+      if (nonBodyParams.length > 0) {
+        let objBuilder = conjure.obj();
+        for (const param of nonBodyParams) {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
+        }
+        objBuilder = objBuilder.spread(b.identifier("body"));
+        args.push(objBuilder.build());
+      } else {
+        args.push(b.identifier("body"));
+      }
     } else if (bodyParam && callSig.bodyStyle === "property") {
       let objBuilder = conjure.obj();
       for (const param of method.params) {
-        if (needsCoercion(param)) {
-          objBuilder = objBuilder.prop(param.name, coerceParam(param.name, param.type));
+        if (param.source && param.source !== "body") {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
       }
       objBuilder = objBuilder.prop(bodyParam.name, b.identifier("body"));
@@ -187,8 +270,8 @@ function buildHandlerBody(method: QueryMethod): n.Statement[] {
     } else {
       let objBuilder = conjure.obj();
       for (const param of method.params) {
-        if (needsCoercion(param)) {
-          objBuilder = objBuilder.prop(param.name, coerceParam(param.name, param.type));
+        if (param.source && param.source !== "body") {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
       }
       if (method.params.length > 0) {
@@ -197,12 +280,8 @@ function buildHandlerBody(method: QueryMethod): n.Statement[] {
     }
   }
 
-  const queryCall = b.callExpression(
-    b.identifier(method.name),
-    args.map(cast.toExpr),
-  );
-
-  const awaitExpr = b.awaitExpression(queryCall);
+  const queryCall = buildQueryInvocation(queryHandle, args);
+  const awaitExpr = b.awaitExpression(cast.toExpr(queryCall));
   statements.push(conjure.stmt.const("result", awaitExpr));
 
   if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
@@ -257,12 +336,31 @@ function buildSValidator(target: string, schema: n.Expression): n.Expression {
   );
 }
 
+function toExternalImport(spec: SchemaImportSpec): ExternalImport {
+  return {
+    from: spec.from,
+    names: spec.names,
+    namespace: spec.namespace,
+  };
+}
+
+function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
+  if (handle.consume && args.length <= 1) {
+    const input = args.length === 0 ? undefined : args[0];
+    return handle.consume(input as unknown) as n.Expression;
+  }
+  return handle.call(...args) as n.Expression;
+}
+
 interface RouteCallResult {
   httpMethod: string;
   path: string;
   handler: n.ArrowFunctionExpression;
   validators: n.Expression[];
   bodySchemaName: string | null;
+  schemaImports: ExternalImport[];
+  hasParamValidation: boolean;
+  hasQueryValidation: boolean;
 }
 
 /**
@@ -272,29 +370,37 @@ function buildRouteCall(
   method: QueryMethod,
   entityName: string,
   inflection: CoreInflection,
+  queryHandle: SymbolHandle,
   schemaBuilder: SchemaBuilder | undefined,
 ): RouteCallResult {
   const httpMethod = kindToHttpMethod(method.kind);
   const path = getRoutePath(method, entityName, inflection);
   const validators: n.Expression[] = [];
+  const schemaImports: ExternalImport[] = [];
 
   const pathParams = method.params.filter(
     (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
+  let hasParamValidation = false;
   if (pathParams.length > 0 && schemaBuilder) {
     const request: SchemaBuilderRequest = { variant: "params", params: pathParams };
     const result = schemaBuilder.build(request);
     if (result) {
       validators.push(buildSValidator("param", result.ast));
+      schemaImports.push(toExternalImport(result.importSpec));
+      hasParamValidation = true;
     }
   }
 
   const queryParams = method.params.filter((p) => p.source === "pagination");
+  let hasQueryValidation = false;
   if (queryParams.length > 0 && schemaBuilder) {
     const request: SchemaBuilderRequest = { variant: "query", params: queryParams };
     const result = schemaBuilder.build(request);
     if (result) {
       validators.push(buildSValidator("query", result.ast));
+      schemaImports.push(toExternalImport(result.importSpec));
+      hasQueryValidation = true;
     }
   }
 
@@ -303,14 +409,27 @@ function buildRouteCall(
     validators.push(buildSValidator("json", b.identifier(bodySchemaName)));
   }
 
-  const handlerBody = buildHandlerBody(method);
+  const handlerBody = buildHandlerBody(method, {
+    hasParamValidation,
+    hasQueryValidation,
+    hasBodyValidation: bodySchemaName != null,
+  }, queryHandle);
   const handler = b.arrowFunctionExpression(
     [b.identifier("c")],
     b.blockStatement(handlerBody.map(cast.toStmt)),
   );
   handler.async = true;
 
-  return { httpMethod, path, handler, validators, bodySchemaName };
+  return {
+    httpMethod,
+    path,
+    handler,
+    validators,
+    bodySchemaName,
+    schemaImports,
+    hasParamValidation,
+    hasQueryValidation,
+  };
 }
 
 /**
@@ -327,24 +446,26 @@ function generateHonoRoutes(
   externalImports: ExternalImport[];
   needsSValidator: boolean;
 } {
-    const routesVarName = inflection.variableName(entityName, "HonoRoutes");
+  const routesVarName = inflection.variableName(entityName, "HonoRoutes");
 
   let chainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
   const schemaCapabilities: string[] = [];
+  const schemaImports: ExternalImport[] = [];
+  const schemaBuilder = getSchemaBuilder(registry);
 
   for (const method of queries.methods) {
-    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, inflection)}`;
-    if (registry.has(methodCapability)) {
-      registry.import(methodCapability).ref();
-    }
+    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
+    const queryHandle = registry.import(methodCapability);
 
-    const schemaBuilder = getSchemaBuilder(registry);
-    const { httpMethod, path, handler, validators, bodySchemaName } = buildRouteCall(
-      method,
-      entityName,
-      inflection,
-      schemaBuilder,
-    );
+    const { httpMethod, path, handler, validators, bodySchemaName, schemaImports: routeImports } =
+      buildRouteCall(
+        method,
+        entityName,
+        inflection,
+        queryHandle,
+        schemaBuilder,
+      );
+    schemaImports.push(...routeImports);
 
     if (bodySchemaName) {
       const schemaCapability = `schema:${bodySchemaName}`;
@@ -368,9 +489,17 @@ function generateHonoRoutes(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }];
-  const needsSValidator = schemaCapabilities.length > 0 ||
-    queries.methods.some(m => m.params.some(p => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination"));
+  const externalImports: ExternalImport[] = [
+    { from: "hono", names: ["Hono"] },
+    ...schemaImports,
+  ];
+  const needsSValidator =
+    schemaCapabilities.length > 0 ||
+    queries.methods.some(m =>
+      m.params.some(
+        p => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination",
+      ),
+    );
 
   return {
     statements: [variableDeclaration as n.Statement],
@@ -382,11 +511,25 @@ function generateHonoRoutes(
 /**
  * Get the capability suffix for a query method.
  */
-function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflection): string {
+function getMethodCapabilitySuffix(
+  method: QueryMethod,
+  entityName: string,
+  inflection: CoreInflection,
+): string {
   switch (method.kind) {
     case "read":
       return "findById";
     case "list":
+      const prefix = inflection.variableName(entityName, "");
+      if (method.name.startsWith(prefix)) {
+        const remainder = method.name.slice(prefix.length);
+        if (remainder.startsWith("ListBy")) {
+          const suffix = remainder.slice("ListBy".length);
+          if (suffix.length > 0) {
+            return `listBy${suffix}`;
+          }
+        }
+      }
       return "list";
     case "create":
       return "create";

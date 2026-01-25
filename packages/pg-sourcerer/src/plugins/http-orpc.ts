@@ -15,7 +15,7 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import type { RenderedSymbolWithImports } from "../runtime/emit.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
@@ -24,6 +24,11 @@ import { isTableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
+import type {
+  SchemaBuilder,
+  SchemaBuilderResult,
+  SchemaImportSpec,
+} from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
@@ -97,77 +102,85 @@ interface ResolvedHttpOrpcConfig {
 // Procedure Builders
 // ============================================================================
 
-/**
- * Build Zod type expression for a param.
- */
-function buildZodParamType(param: QueryMethodParam): n.Expression {
-  const baseType = param.type.toLowerCase();
+type ConsumeFn = (input: n.Expression) => n.Expression;
 
-  let zodCall: n.Expression;
-  switch (baseType) {
-    case "number":
-      zodCall = b.callExpression(
-        b.memberExpression(
-          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
-          b.identifier("number"),
-        ),
-        [],
-      );
-      break;
-    case "boolean":
-      zodCall = b.callExpression(
-        b.memberExpression(b.identifier("z"), b.identifier("boolean")),
-        [],
-      );
-      break;
-    case "date":
-      zodCall = b.callExpression(
-        b.memberExpression(
-          b.memberExpression(b.identifier("z"), b.identifier("coerce")),
-          b.identifier("date"),
-        ),
-        [],
-      );
-      break;
-    case "string":
-    default:
-      zodCall = b.callExpression(
-        b.memberExpression(b.identifier("z"), b.identifier("string")),
-        [],
-      );
-      break;
+interface ProcedureSchemas {
+  readonly paramSchema?: SchemaBuilderResult;
+  readonly bodyConsume?: ConsumeFn;
+  readonly bodySource?: n.Expression;
+  readonly queryHandle: SymbolHandle;
+}
+
+function toExternalImport(spec: SchemaImportSpec): ExternalImport {
+  return {
+    from: spec.from,
+    names: spec.names,
+    namespace: spec.namespace,
+  };
+}
+
+function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
+  if (handle.consume && args.length <= 1) {
+    const input = args.length === 0 ? undefined : args[0];
+    return handle.consume(input as unknown) as n.Expression;
   }
-
-  if (!param.required) {
-    zodCall = b.callExpression(
-      b.memberExpression(cast.toExpr(zodCall), b.identifier("optional")),
-      [],
-    );
-  }
-
-  return zodCall;
+  return handle.call(...args) as n.Expression;
 }
 
 /**
  * Build the handler function body for an oRPC procedure.
  * oRPC handlers receive { input } and return data directly.
  */
-function buildProcedureBody(method: QueryMethod): n.Statement[] {
+function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.Statement[] {
   const callSig = method.callSignature ?? { style: "named" as const };
   const args: n.Expression[] = [];
+  const statements: n.Statement[] = [];
+  const paramConsume = schemas.paramSchema?.consume;
+  const bodyConsume = schemas.bodyConsume;
+  const bodySource = schemas.bodySource ?? b.identifier("input");
+
+  if (paramConsume) {
+    statements.push(stmt.const("params", paramConsume(b.identifier("input"))));
+  }
+
+  if (bodyConsume) {
+    statements.push(stmt.const("body", bodyConsume(bodySource)));
+  }
+
+  const paramExpr = (param: QueryMethodParam): n.Expression => {
+    if (param.source === "body") {
+      return bodyConsume ? b.identifier("body") : bodySource;
+    }
+
+    if (paramConsume) {
+      return b.memberExpression(b.identifier("params"), b.identifier(param.name));
+    }
+
+    return b.memberExpression(b.identifier("input"), b.identifier(param.name));
+  };
 
   if (callSig.style === "positional") {
     // Positional: fn(a, b, c)
     for (const param of method.params) {
-      args.push(b.memberExpression(b.identifier("input"), b.identifier(param.name)));
+      args.push(paramExpr(param));
     }
   } else {
     // Named style
     const bodyParam = method.params.find((p) => p.source === "body");
+    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       // Body fields spread directly: fn(input)
-      args.push(b.identifier("input"));
+      if (nonBodyParams.length > 0) {
+        let objBuilder = conjure.obj();
+        for (const param of nonBodyParams) {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
+        }
+        objBuilder = objBuilder.spread(bodyConsume ? b.identifier("body") : bodySource);
+        args.push(objBuilder.build());
+      } else {
+        args.push(bodyConsume ? b.identifier("body") : bodySource);
+      }
     } else if (bodyParam && callSig.bodyStyle === "property") {
       // Body wrapped in property: fn({ id, data })
       const nonBodyParams = method.params.filter(
@@ -180,17 +193,17 @@ function buildProcedureBody(method: QueryMethod): n.Statement[] {
         for (const param of nonBodyParams) {
           objBuilder = objBuilder.prop(
             param.name,
-            b.memberExpression(b.identifier("input"), b.identifier(param.name)),
+            paramExpr(param),
           );
         }
         objBuilder = objBuilder.prop(
           bodyParam.name,
-          b.memberExpression(b.identifier("input"), b.identifier(bodyParam.name)),
+          bodyConsume ? b.identifier("body") : bodySource,
         );
         args.push(objBuilder.build());
       } else {
         // No non-body params, just pass input
-        args.push(b.identifier("input"));
+        args.push(bodyConsume ? b.identifier("body") : bodySource);
       }
     } else if (method.params.length > 0) {
       // Simple named params: fn(input) since input matches the shape
@@ -198,32 +211,19 @@ function buildProcedureBody(method: QueryMethod): n.Statement[] {
     }
   }
 
-  // Build: queryFn(args)
-  const queryCall = b.callExpression(b.identifier(method.name), args.map(cast.toExpr));
-
-  // Add the appropriate .execute*() method based on query kind
-  const executeMethod =
-    method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)
-      ? "executeTakeFirst"
-      : method.kind === "create" || method.kind === "update"
-        ? "executeTakeFirstOrThrow"
-        : "execute";
-
-  const queryWithExecute = b.callExpression(
-    b.memberExpression(queryCall, b.identifier(executeMethod)),
-    [],
-  );
-  const awaitExpr = b.awaitExpression(queryWithExecute);
+  const queryCall = buildQueryInvocation(schemas.queryHandle, args);
+  const awaitExpr = b.awaitExpression(cast.toExpr(queryCall));
 
   // For delete, return success object
   if (method.kind === "delete") {
     return [
+      ...statements,
       b.expressionStatement(awaitExpr),
       b.returnStatement(conjure.obj().prop("success", b.booleanLiteral(true)).build()),
     ];
   }
 
-  return [b.returnStatement(awaitExpr)];
+  return [...statements, b.returnStatement(awaitExpr)];
 }
 
 /**
@@ -243,71 +243,27 @@ function getBodySchemaName(method: QueryMethod, entityName: string): string | nu
  * Build input schema expression for a procedure.
  * Returns the schema expression and whether we need z import.
  */
-function buildInputSchema(
-  method: QueryMethod,
-  entityName: string,
-): {
-  inputExpr: n.Expression | null;
-  bodySchemaName: string | null;
-  needsZodImport: boolean;
-  needsTypeImport: boolean;
-} {
-  const bodySchemaName = getBodySchemaName(method, entityName);
-  const nonBodyParams = method.params.filter((p) => p.source !== "body");
+function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
+  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
+  if (schemaBuilders.length === 0) return undefined;
+
+  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
+  if (metadata && typeof metadata === "object" && "builder" in metadata) {
+    return (metadata as { builder: SchemaBuilder }).builder;
+  }
+  return undefined;
+}
+
+function getBodySource(method: QueryMethod): n.Expression {
+  const bodyParam = method.params.find((p) => p.source === "body");
+  if (!bodyParam) return b.identifier("input");
+
   const callSig = method.callSignature ?? { style: "named" as const };
-
-  // For update with bodyStyle: "property", merge PK params with body schema
-  if (bodySchemaName && nonBodyParams.length > 0 && callSig.bodyStyle === "property") {
-    let objBuilder = conjure.obj();
-    for (const p of nonBodyParams) {
-      objBuilder = objBuilder.prop(p.name, buildZodParamType(p));
-    }
-    const zodObject = b.callExpression(
-      b.memberExpression(b.identifier("z"), b.identifier("object")),
-      [cast.toExpr(objBuilder.build())],
-    );
-    const mergedSchema = b.callExpression(
-      b.memberExpression(zodObject, b.identifier("merge")),
-      [b.identifier(bodySchemaName)],
-    );
-    return {
-      inputExpr: mergedSchema,
-      bodySchemaName,
-      needsZodImport: true,
-      needsTypeImport: false,
-    };
+  if (callSig.bodyStyle === "property") {
+    return b.memberExpression(b.identifier("input"), b.identifier(bodyParam.name));
   }
 
-  // Body params only use imported entity schemas
-  if (bodySchemaName) {
-    return {
-      inputExpr: b.identifier(bodySchemaName),
-      bodySchemaName,
-      needsZodImport: false,
-      needsTypeImport: false,
-    };
-  }
-
-  // Non-body params: build inline z.object
-  if (nonBodyParams.length === 0) {
-    return { inputExpr: null, bodySchemaName: null, needsZodImport: false, needsTypeImport: false };
-  }
-
-  let objBuilder = conjure.obj();
-  for (const param of nonBodyParams) {
-    const zodType = buildZodParamType(param);
-    objBuilder = objBuilder.prop(param.name, zodType);
-  }
-
-  return {
-    inputExpr: b.callExpression(
-      b.memberExpression(b.identifier("z"), b.identifier("object")),
-      [cast.toExpr(objBuilder.build())],
-    ),
-    bodySchemaName: null,
-    needsZodImport: true,
-    needsTypeImport: false,
-  };
+  return b.identifier("input");
 }
 
 /**
@@ -316,23 +272,44 @@ function buildInputSchema(
 function buildProcedure(
   method: QueryMethod,
   entityName: string,
+  registry: SymbolRegistryService,
+  schemaBuilder: SchemaBuilder | undefined,
+  queryHandle: SymbolHandle,
 ): {
   procedureExpr: n.Expression;
   bodySchemaName: string | null;
-  needsZodImport: boolean;
-  needsTypeImport: boolean;
+  externalImports: ExternalImport[];
 } {
   // Start with os
   let chainExpr: n.Expression = b.identifier("os");
 
-  // Build input schema
-  const { inputExpr, bodySchemaName, needsZodImport, needsTypeImport } = buildInputSchema(method, entityName);
+  const externalImports: ExternalImport[] = [];
+  const bodySchemaName = getBodySchemaName(method, entityName);
+  const bodySchema =
+    bodySchemaName && registry.has(`schema:${bodySchemaName}`)
+      ? registry.import(`schema:${bodySchemaName}`)
+      : undefined;
+  const bodyConsume = bodySchema?.consume
+    ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
+    : undefined;
 
-  // Add .input(schema) if there are params
-  if (inputExpr) {
+  const nonBodyParams = method.params.filter((p) => p.source !== "body");
+  const paramSchema =
+    schemaBuilder && nonBodyParams.length > 0
+      ? schemaBuilder.build({ variant: "params", params: nonBodyParams })
+      : undefined;
+
+  if (paramSchema) {
+    externalImports.push(toExternalImport(paramSchema.importSpec));
+  }
+
+  const hasBody = method.params.some((p) => p.source === "body");
+  const shouldUseInputSchema = !hasBody && paramSchema;
+
+  if (shouldUseInputSchema) {
     chainExpr = b.callExpression(
       b.memberExpression(cast.toExpr(chainExpr), b.identifier("input")),
-      [cast.toExpr(inputExpr)],
+      [cast.toExpr(paramSchema!.ast)],
     );
   }
 
@@ -344,7 +321,12 @@ function buildProcedure(
     handlerParams.push(inputProp);
   }
 
-  const handlerBody = buildProcedureBody(method);
+  const handlerBody = buildProcedureBody(method, {
+    paramSchema: hasBody ? paramSchema : undefined,
+    bodyConsume,
+    bodySource: getBodySource(method),
+    queryHandle,
+  });
   const handler = b.arrowFunctionExpression(
     [b.objectPattern(handlerParams)],
     b.blockStatement(handlerBody.map(cast.toStmt)),
@@ -357,17 +339,31 @@ function buildProcedure(
     [handler],
   );
 
-  return { procedureExpr: chainExpr, bodySchemaName, needsZodImport, needsTypeImport };
+  return { procedureExpr: chainExpr, bodySchemaName, externalImports };
 }
 
 /**
  * Get the capability suffix for a query method.
  */
-function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflection): string {
+function getMethodCapabilitySuffix(
+  method: QueryMethod,
+  entityName: string,
+  inflection: CoreInflection,
+): string {
   switch (method.kind) {
     case "read":
       return "findById";
     case "list":
+      const prefix = inflection.variableName(entityName, "");
+      if (method.name.startsWith(prefix)) {
+        const remainder = method.name.slice(prefix.length);
+        if (remainder.startsWith("ListBy")) {
+          const suffix = remainder.slice("ListBy".length);
+          if (suffix.length > 0) {
+            return `listBy${suffix}`;
+          }
+        }
+      }
       return "list";
     case "create":
       return "create";
@@ -400,8 +396,8 @@ function generateOrpcRouter(
   externalImports: ExternalImport[];
 } {
   const routerName = inflection.variableName(entityName, "Router");
-  let needsZodImport = false;
-  let needsTypeImport = false;
+  const schemaImports: ExternalImport[] = [];
+  const schemaBuilder = getSchemaBuilder(registry);
   const bodySchemaNames: string[] = [];
 
   // Build router object
@@ -409,14 +405,19 @@ function generateOrpcRouter(
 
   for (const method of queries.methods) {
     // Record cross-reference for this query method
-    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, inflection)}`;
-    if (registry.has(methodCapability)) {
-      registry.import(methodCapability).ref();
-    }
-
-    const { procedureExpr, bodySchemaName, needsZodImport: methodNeedsZod, needsTypeImport: methodNeedsType } = buildProcedure(
+    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(
       method,
       entityName,
+      inflection,
+    )}`;
+    const queryHandle = registry.import(methodCapability);
+
+    const { procedureExpr, bodySchemaName, externalImports } = buildProcedure(
+      method,
+      entityName,
+      registry,
+      schemaBuilder,
+      queryHandle,
     );
 
     if (bodySchemaName && !bodySchemaNames.includes(bodySchemaName)) {
@@ -428,8 +429,7 @@ function generateOrpcRouter(
       }
     }
 
-    if (methodNeedsZod) needsZodImport = true;
-    if (methodNeedsType) needsTypeImport = true;
+    schemaImports.push(...externalImports);
 
     routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
   }
@@ -441,15 +441,7 @@ function generateOrpcRouter(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = [];
-
-  if (needsZodImport) {
-    externalImports.push({ from: "zod", names: ["z"] });
-  }
-
-  if (needsTypeImport) {
-    externalImports.push({ from: "@orpc/server", names: ["type"] });
-  }
+  const externalImports: ExternalImport[] = schemaImports;
 
   return {
     statements: [variableDeclaration as n.Statement],
