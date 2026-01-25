@@ -15,7 +15,7 @@
 import { Effect, Array as Arr, pipe, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
@@ -23,6 +23,11 @@ import { isTableEntity, type TableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
+import type {
+  SchemaBuilder,
+  SchemaBuilderResult,
+  SchemaImportSpec,
+} from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, type FileNamingContext, normalizeFileNaming } from "../runtime/file-assignment.js";
 
@@ -68,6 +73,22 @@ function needsCoercion(param: QueryMethodParam): boolean {
     param.source === "lookup" ||
     param.source === "pagination"
   );
+}
+
+function toExternalImport(spec: SchemaImportSpec): ExternalImport {
+  return {
+    from: spec.from,
+    names: spec.names,
+    namespace: spec.namespace,
+  };
+}
+
+function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
+  if (handle.consume && args.length <= 1) {
+    const input = args.length === 0 ? undefined : args[0];
+    return handle.consume(input as unknown) as n.Expression;
+  }
+  return handle.call(...args) as n.Expression;
 }
 
 const DEFAULT_OUTPUT_DIR = "";
@@ -174,48 +195,107 @@ const getRoutePath = (method: QueryMethod, entityName: string, inflection: CoreI
   }
 };
 
-function buildHandlerBody(method: QueryMethod): n.Statement[] {
+function buildHandlerBody(
+  method: QueryMethod,
+  schemas: ValidationSchemas,
+  queryHandle: SymbolHandle,
+): n.Statement[] {
   const callSig = method.callSignature ?? { style: "named" };
-
+  const statements: n.Statement[] = [];
   const args: n.Expression[] = [];
+  const paramConsume = schemas.paramSchema?.consume;
+  const queryConsume = schemas.querySchema?.consume;
+  const bodyConsume = schemas.bodyConsume;
+
+  const pathParams = method.params.filter(
+    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+  );
+  const queryParams = method.params.filter((p) => p.source === "pagination");
+
+  if (pathParams.length > 0 && paramConsume) {
+    statements.push(stmt.const("parsedParams", paramConsume(b.identifier("params"))));
+  }
+
+  if (queryParams.length > 0 && queryConsume) {
+    statements.push(stmt.const("parsedQuery", queryConsume(b.identifier("query"))));
+  }
+
+  const needsBody =
+    method.params.some((p) => p.source === "body") ||
+    method.kind === "create" ||
+    method.kind === "update" ||
+    (method.kind === "function" && method.params.some((p) => !p.source));
+
+  if (needsBody && bodyConsume) {
+    statements.push(stmt.const("parsedBody", bodyConsume(b.identifier("body"))));
+  }
+
+  const paramExpr = (param: QueryMethodParam): n.Expression => {
+    if (param.source === "body") {
+      return bodyConsume ? b.identifier("parsedBody") : b.identifier("body");
+    }
+
+    if (param.source === "pagination") {
+      if (queryConsume) {
+        return b.memberExpression(b.identifier("parsedQuery"), b.identifier(param.name));
+      }
+      return needsCoercion(param)
+        ? coerceParam(param.name, param.type)
+        : b.memberExpression(b.identifier("query"), b.identifier(param.name));
+    }
+
+    if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
+      if (paramConsume) {
+        return b.memberExpression(b.identifier("parsedParams"), b.identifier(param.name));
+      }
+      return needsCoercion(param)
+        ? coerceParam(param.name, param.type)
+        : b.memberExpression(b.identifier("params"), b.identifier(param.name));
+    }
+
+    return b.memberExpression(b.identifier("body"), b.identifier(param.name));
+  };
 
   if (callSig.style === "positional") {
     for (const param of method.params) {
-      if (needsCoercion(param)) {
-        // URL params need coercion to their expected type
-        args.push(coerceParam(param.name, param.type));
-      } else if (param.source === "body") {
-        args.push(b.identifier("body"));
-      } else {
-        args.push(
-          b.memberExpression(b.identifier("body"), b.identifier(param.name)),
-        );
-      }
+      args.push(paramExpr(param));
     }
   } else {
     const bodyParam = method.params.find((p) => p.source === "body");
+    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyExpr = bodyConsume ? b.identifier("parsedBody") : b.identifier("body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
-      args.push(b.identifier("body"));
+      if (nonBodyParams.length > 0) {
+        let objBuilder = conjure.obj();
+        for (const param of nonBodyParams) {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
+        }
+        objBuilder = objBuilder.spread(bodyExpr);
+        args.push(objBuilder.build());
+      } else {
+        args.push(bodyExpr);
+      }
     } else if (bodyParam && callSig.bodyStyle === "property") {
       let objBuilder = conjure.obj();
 
       for (const param of method.params) {
-        if (needsCoercion(param)) {
-          // URL params need coercion - use prop() instead of shorthand()
-          objBuilder = objBuilder.prop(param.name, coerceParam(param.name, param.type));
+        if (param.source && param.source !== "body") {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
       }
 
-      objBuilder = objBuilder.prop(bodyParam.name, b.identifier("body"));
+      objBuilder = objBuilder.prop(
+        bodyParam.name,
+        bodyConsume ? b.identifier("parsedBody") : b.identifier("body"),
+      );
       args.push(objBuilder.build());
     } else {
       let objBuilder = conjure.obj();
 
       for (const param of method.params) {
-        if (needsCoercion(param)) {
-          // URL params need coercion - use prop() instead of shorthand()
-          objBuilder = objBuilder.prop(param.name, coerceParam(param.name, param.type));
+        if (param.source && param.source !== "body") {
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
       }
 
@@ -225,29 +305,8 @@ function buildHandlerBody(method: QueryMethod): n.Statement[] {
     }
   }
 
-  // Call the query function directly since we use named imports
-  const queryCall = b.callExpression(
-    b.identifier(method.name),
-    args.map(cast.toExpr),
-  );
-
-  // Add the appropriate .execute*() method based on query kind
-  // - read/lookup(unique): .executeTakeFirst() - returns single row or undefined
-  // - list/lookup(non-unique): .execute() - returns array
-  // - create/update: .executeTakeFirstOrThrow() - returns single row, throws if not found
-  // - delete: .execute() - just executes
-  const executeMethod =
-    method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)
-      ? "executeTakeFirst"
-      : method.kind === "create" || method.kind === "update"
-        ? "executeTakeFirstOrThrow"
-        : "execute";
-
-  const queryWithExecute = b.callExpression(
-    b.memberExpression(queryCall, b.identifier(executeMethod)),
-    [],
-  );
-  const awaitExpr = b.awaitExpression(queryWithExecute);
+  const queryCall = buildQueryInvocation(queryHandle, args);
+  const awaitExpr = b.awaitExpression(cast.toExpr(queryCall));
   const resultDecl = stmt.const("result", awaitExpr);
 
   if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
@@ -259,10 +318,19 @@ function buildHandlerBody(method: QueryMethod): n.Statement[] {
       b.unaryExpression("!", b.identifier("result")),
       b.returnStatement(statusCall),
     );
-    return [resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
+    return [
+      ...statements,
+      resultDecl,
+      notFoundCheck,
+      b.returnStatement(b.identifier("result")),
+    ];
   }
 
-  return [resultDecl, b.returnStatement(b.identifier("result"))];
+  return [
+    ...statements,
+    resultDecl,
+    b.returnStatement(b.identifier("result")),
+  ];
 }
 
 const stmt = conjure.stmt;
@@ -280,10 +348,31 @@ function getBodySchemaName(method: QueryMethod, entityName: string): string | nu
   return null;
 }
 
+type ConsumeFn = (input: n.Expression) => n.Expression;
+
+interface ValidationSchemas {
+  readonly paramSchema?: SchemaBuilderResult;
+  readonly querySchema?: SchemaBuilderResult;
+  readonly bodyConsume?: ConsumeFn;
+}
+
+function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
+  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
+  if (schemaBuilders.length === 0) return undefined;
+
+  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
+  if (metadata && typeof metadata === "object" && "builder" in metadata) {
+    return (metadata as { builder: SchemaBuilder }).builder;
+  }
+  return undefined;
+}
+
 function buildRouteCall(
   method: QueryMethod,
   entityName: string,
   inflection: CoreInflection,
+  queryHandle: SymbolHandle,
+  schemas: ValidationSchemas,
 ): {
   httpMethod: string;
   path: string;
@@ -298,18 +387,12 @@ function buildRouteCall(
   const handlerProps: n.Property[] = [];
 
   const pathParams = method.params.filter(
-    (p) =>
-      p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
   if (pathParams.length > 0) {
-    const paramsPattern = b.objectPattern(
-      pathParams.map((p) => {
-        const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
-        prop.shorthand = true;
-        return prop;
-      }),
-    );
-    handlerProps.push(b.property("init", b.identifier("params"), paramsPattern));
+    const paramsProp = b.property("init", b.identifier("params"), b.identifier("params"));
+    paramsProp.shorthand = true;
+    handlerProps.push(paramsProp);
   }
 
   const needsBody =
@@ -323,18 +406,11 @@ function buildRouteCall(
     handlerProps.push(prop);
   }
 
-  const paginationParams = method.params.filter(
-    (p) => p.source === "pagination",
-  );
+  const paginationParams = method.params.filter((p) => p.source === "pagination");
   if (paginationParams.length > 0) {
-    const queryPattern = b.objectPattern(
-      paginationParams.map((p) => {
-        const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
-        prop.shorthand = true;
-        return prop;
-      }),
-    );
-    handlerProps.push(b.property("init", b.identifier("query"), queryPattern));
+    const queryProp = b.property("init", b.identifier("query"), b.identifier("query"));
+    queryProp.shorthand = true;
+    handlerProps.push(queryProp);
   }
 
   if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
@@ -345,7 +421,7 @@ function buildRouteCall(
 
   const handlerParamPattern = b.objectPattern(handlerProps);
 
-  const handlerBody = buildHandlerBody(method);
+  const handlerBody = buildHandlerBody(method, schemas, queryHandle);
   const handler = b.arrowFunctionExpression(
     [handlerParamPattern],
     b.blockStatement(handlerBody.map(cast.toStmt)),
@@ -399,26 +475,65 @@ function generateElysiaRoutes(
       .prop("prefix", b.stringLiteral(fullPrefix))
       .build(),
   ]);
+  const schemaBuilder = getSchemaBuilder(registry);
+  const schemaImports: ExternalImport[] = [];
 
   for (const method of queries.methods) {
     // Record cross-reference for this query method via registry
     // This allows emit phase to generate the import automatically
     // Use generic prefix - registry resolves to implementation (e.g., queries:kysely:...)
-    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, inflection)}`;
+    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
     if (registry.has(methodCapability)) {
       registry.import(methodCapability).ref();
     }
 
-    const { httpMethod, path, handler, bodySchemaName, options } = buildRouteCall(
+    const pathParams = method.params.filter(
+      (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    );
+    const queryParams = method.params.filter((p) => p.source === "pagination");
+
+    const paramSchema =
+      schemaBuilder && pathParams.length > 0
+        ? schemaBuilder.build({ variant: "params", params: pathParams })
+        : undefined;
+    if (paramSchema) {
+      schemaImports.push(toExternalImport(paramSchema.importSpec));
+    }
+
+    const querySchema =
+      schemaBuilder && queryParams.length > 0
+        ? schemaBuilder.build({ variant: "query", params: queryParams })
+        : undefined;
+    if (querySchema) {
+      schemaImports.push(toExternalImport(querySchema.importSpec));
+    }
+
+    const bodySchemaName = getBodySchemaName(method, entityName);
+    const bodySchema =
+      bodySchemaName && registry.has(`schema:${bodySchemaName}`)
+        ? registry.import(`schema:${bodySchemaName}`)
+        : undefined;
+    const bodyConsume = bodySchema?.consume
+      ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
+      : undefined;
+
+    const queryHandle = registry.import(methodCapability);
+    const { httpMethod, path, handler, bodySchemaName: routeBodySchema, options } = buildRouteCall(
       method,
       entityName,
       inflection,
+      queryHandle,
+      {
+        paramSchema,
+        querySchema,
+        bodyConsume,
+      },
     );
 
-    if (bodySchemaName) {
+    if (routeBodySchema) {
       // Use registry to import schema - this ensures correct relative path resolution
       // Use generic prefix - registry resolves to implementation (e.g., schema:zod:...)
-      const schemaCapability = `schema:${bodySchemaName}`;
+      const schemaCapability = `schema:${routeBodySchema}`;
       if (registry.has(schemaCapability)) {
         registry.import(schemaCapability).ref();
       }
@@ -445,6 +560,7 @@ function generateElysiaRoutes(
   // Only external package imports go here; query and schema imports are handled via cross-references
   const externalImports: ExternalImport[] = [
     { from: "elysia", names: ["Elysia"] },
+    ...schemaImports,
   ];
 
   return {
@@ -457,7 +573,11 @@ function generateElysiaRoutes(
  * Get the capability suffix for a query method.
  * E.g., "findById", "list", "create", "update", "delete", "findByEmail"
  */
-function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflection): string {
+function getMethodCapabilitySuffix(
+  method: QueryMethod,
+  entityName: string,
+  inflection: CoreInflection,
+): string {
   // The capability suffix is derived from the method name
   // e.g., "userFindById" -> "findById", "userList" -> "list"
   // We use generic capabilities that the registry resolves to the implementation.
@@ -478,6 +598,16 @@ function getMethodCapabilitySuffix(method: QueryMethod, inflection: CoreInflecti
     case "read":
       return "findById";
     case "list":
+      const prefix = inflection.variableName(entityName, "");
+      if (method.name.startsWith(prefix)) {
+        const remainder = method.name.slice(prefix.length);
+        if (remainder.startsWith("ListBy")) {
+          const suffix = remainder.slice("ListBy".length);
+          if (suffix.length > 0) {
+            return `listBy${suffix}`;
+          }
+        }
+      }
       return "list";
     case "create":
       return "create";

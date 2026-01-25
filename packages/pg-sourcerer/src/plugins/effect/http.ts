@@ -22,7 +22,8 @@ import { IR } from "../../services/ir.js";
 import { Inflection, type CoreInflection } from "../../services/inflection.js";
 import { isTableEntity, type TableEntity } from "../../ir/semantic-ir.js";
 import { conjure, cast } from "../../conjure/index.js";
-import type { ExternalImport } from "../../runtime/emit.js";
+import type { ExternalImport, RenderedSymbolWithImports } from "../../runtime/emit.js";
+import type { UserModuleRef } from "../../user-module.js";
 import {
   type ParsedEffectConfig,
   type ParsedHttpConfig,
@@ -180,7 +181,9 @@ function buildEndpoint(
   if (options.success) {
     const successArgs: ExpressionKind[] = [cast.toExpr(options.success)];
     if (options.successStatus) {
-      successArgs.push(cast.toExpr(conjure.obj().prop("status", b.numericLiteral(options.successStatus)).build()));
+      successArgs.push(
+        cast.toExpr(conjure.obj().prop("status", b.numericLiteral(options.successStatus)).build()),
+      );
     }
     endpoint = b.callExpression(
       b.memberExpression(cast.toExpr(endpoint), b.identifier("addSuccess")),
@@ -253,17 +256,15 @@ function buildApiGroup(
     [conjure.str(routePath.replace(/^\//, ""))], // Remove leading slash for group name
   );
 
-  groupExpr = b.callExpression(
-    b.memberExpression(cast.toExpr(groupExpr), b.identifier("prefix")),
-    [conjure.str(fullPath)],
-  );
+  groupExpr = b.callExpression(b.memberExpression(cast.toExpr(groupExpr), b.identifier("prefix")), [
+    conjure.str(fullPath),
+  ]);
 
   // Add endpoints
   for (const endpoint of [findByIdEndpoint, insertEndpoint, updateEndpoint, deleteEndpoint]) {
-    groupExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(groupExpr), b.identifier("add")),
-      [cast.toExpr(endpoint)],
-    );
+    groupExpr = b.callExpression(b.memberExpression(cast.toExpr(groupExpr), b.identifier("add")), [
+      cast.toExpr(endpoint),
+    ]);
   }
 
   const varDecl = b.variableDeclaration("const", [
@@ -286,10 +287,9 @@ function buildApi(entityName: string): n.Statement {
     [conjure.str(apiName)],
   );
 
-  apiExpr = b.callExpression(
-    b.memberExpression(cast.toExpr(apiExpr), b.identifier("add")),
-    [b.identifier(groupName)],
-  );
+  apiExpr = b.callExpression(b.memberExpression(cast.toExpr(apiExpr), b.identifier("add")), [
+    b.identifier(groupName),
+  ]);
 
   const varDecl = b.variableDeclaration("const", [
     b.variableDeclarator(b.identifier(apiName), cast.toExpr(apiExpr)),
@@ -319,10 +319,7 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
 
   // Build repo declaration: const repo = yield* EntityRepo;
   const repoDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(
-      b.identifier("repo"),
-      b.yieldExpression(b.identifier(repoName), true),
-    ),
+    b.variableDeclarator(b.identifier("repo"), b.yieldExpression(b.identifier(repoName), true)),
   ]);
 
   // Build handlers chain
@@ -337,41 +334,34 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
     ],
     b.callExpression(
       b.memberExpression(
-        b.callExpression(
-          b.memberExpression(b.identifier("repo"), b.identifier("findById")),
-          [b.identifier("id")],
-        ),
+        b.callExpression(b.memberExpression(b.identifier("repo"), b.identifier("findById")), [
+          b.identifier("id"),
+        ]),
         b.identifier("pipe"),
       ),
       [
-        b.callExpression(
-          b.memberExpression(b.identifier("Effect"), b.identifier("flatMap")),
-          [
-            b.callExpression(
-              b.memberExpression(b.identifier("Option"), b.identifier("match")),
-              [
-                conjure
-                  .obj()
-                  .prop(
-                    "onNone",
-                    b.arrowFunctionExpression(
-                      [],
-                      b.callExpression(
-                        b.memberExpression(b.identifier("Effect"), b.identifier("fail")),
-                        [
-                          b.newExpression(b.identifier(errorName), [
-                            conjure.obj().prop("id", b.identifier("id")).build(),
-                          ]),
-                        ],
-                      ),
-                    ),
-                  )
-                  .prop("onSome", b.memberExpression(b.identifier("Effect"), b.identifier("succeed")))
-                  .build(),
-              ],
-            ),
-          ],
-        ),
+        b.callExpression(b.memberExpression(b.identifier("Effect"), b.identifier("flatMap")), [
+          b.callExpression(b.memberExpression(b.identifier("Option"), b.identifier("match")), [
+            conjure
+              .obj()
+              .prop(
+                "onNone",
+                b.arrowFunctionExpression(
+                  [],
+                  b.callExpression(
+                    b.memberExpression(b.identifier("Effect"), b.identifier("fail")),
+                    [
+                      b.newExpression(b.identifier(errorName), [
+                        conjure.obj().prop("id", b.identifier("id")).build(),
+                      ]),
+                    ],
+                  ),
+                ),
+              )
+              .prop("onSome", b.memberExpression(b.identifier("Effect"), b.identifier("succeed")))
+              .build(),
+          ]),
+        ]),
       ],
     ),
   );
@@ -384,10 +374,9 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
   // .handle("insert", ({ payload }) => repo.insert(payload))
   const insertHandler = b.arrowFunctionExpression(
     [b.objectPattern([shorthandProp("payload")])],
-    b.callExpression(
-      b.memberExpression(b.identifier("repo"), b.identifier("insert")),
-      [b.identifier("payload")],
-    ),
+    b.callExpression(b.memberExpression(b.identifier("repo"), b.identifier("insert")), [
+      b.identifier("payload"),
+    ]),
   );
 
   handlersChain = b.callExpression(
@@ -403,15 +392,9 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
         shorthandProp("payload"),
       ]),
     ],
-    b.callExpression(
-      b.memberExpression(b.identifier("repo"), b.identifier("update")),
-      [
-        b.objectExpression([
-          b.spreadElement(b.identifier("payload")),
-          shorthandProp("id"),
-        ]),
-      ],
-    ),
+    b.callExpression(b.memberExpression(b.identifier("repo"), b.identifier("update")), [
+      b.objectExpression([b.spreadElement(b.identifier("payload")), shorthandProp("id")]),
+    ]),
   );
 
   handlersChain = b.callExpression(
@@ -426,10 +409,9 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
         b.property("init", b.identifier("path"), b.objectPattern([shorthandProp("id")])),
       ]),
     ],
-    b.callExpression(
-      b.memberExpression(b.identifier("repo"), b.identifier("delete")),
-      [b.identifier("id")],
-    ),
+    b.callExpression(b.memberExpression(b.identifier("repo"), b.identifier("delete")), [
+      b.identifier("id"),
+    ]),
   );
 
   handlersChain = b.callExpression(
@@ -531,20 +513,39 @@ function generateEntityHttpStatements(
   const basePath = config.basePath;
 
   return [
-    { name: `${entity.name}NotFound`, capSuffix: "NotFound", node: buildNotFoundError(entity.name, pkSchemaType) },
-    { name: `${entity.name}ApiGroup`, capSuffix: "ApiGroup", node: buildApiGroup(entity.name, pkSchemaType, basePath, inflection) },
+    {
+      name: `${entity.name}NotFound`,
+      capSuffix: "NotFound",
+      node: buildNotFoundError(entity.name, pkSchemaType),
+    },
+    {
+      name: `${entity.name}ApiGroup`,
+      capSuffix: "ApiGroup",
+      node: buildApiGroup(entity.name, pkSchemaType, basePath, inflection),
+    },
     { name: `${entity.name}Api`, capSuffix: "Api", node: buildApi(entity.name) },
-    { name: `${entity.name}ApiGroupLive`, capSuffix: "ApiGroupLive", node: buildHandlers(entity.name, inflection) },
+    {
+      name: `${entity.name}ApiGroupLive`,
+      capSuffix: "ApiGroupLive",
+      node: buildHandlers(entity.name, inflection),
+    },
     { name: `${entity.name}ApiLive`, capSuffix: "ApiLive", node: buildApiLive(entity.name) },
   ];
 }
 
 /**
  * Generate Server.ts aggregator file.
+ *
+ * @param entityNames - Names of entities with HTTP APIs
+ * @param sqlLayerName - Optional name of the SqlClient layer to provide
  */
-function generateServerStatements(entityNames: readonly string[]): n.Statement[] {
+function generateServerStatements(
+  entityNames: readonly string[],
+  sqlLayerName?: string,
+): n.Statement[] {
   // Build: HttpApiBuilder.serve().pipe(
   //   Layer.provide([UserApiLive, PostApiLive, ...]),
+  //   Layer.provide(SqlLive),  // if sqlClientLayer configured
   //   HttpServer.withLogAddress,
   // )
   const serveCall = b.callExpression(
@@ -552,9 +553,7 @@ function generateServerStatements(entityNames: readonly string[]): n.Statement[]
     [],
   );
 
-  const apiLiveArray = b.arrayExpression(
-    entityNames.map(name => b.identifier(`${name}ApiLive`)),
-  );
+  const apiLiveArray = b.arrayExpression(entityNames.map(name => b.identifier(`${name}ApiLive`)));
 
   const layerProvideApis = b.callExpression(
     b.memberExpression(b.identifier("Layer"), b.identifier("provide")),
@@ -566,9 +565,22 @@ function generateServerStatements(entityNames: readonly string[]): n.Statement[]
     b.identifier("withLogAddress"),
   );
 
+  // Build pipe args: [Layer.provide([...ApiLive]), Layer.provide(SqlLive)?, HttpServer.withLogAddress]
+  const pipeArgs: n.Expression[] = [layerProvideApis];
+
+  if (sqlLayerName) {
+    const layerProvideSql = b.callExpression(
+      b.memberExpression(b.identifier("Layer"), b.identifier("provide")),
+      [b.identifier(sqlLayerName)],
+    );
+    pipeArgs.push(cast.toExpr(layerProvideSql));
+  }
+
+  pipeArgs.push(withLogAddress);
+
   const serverLiveExpr = b.callExpression(
     b.memberExpression(cast.toExpr(serveCall), b.identifier("pipe")),
-    [layerProvideApis, withLogAddress],
+    pipeArgs.map(cast.toExpr),
   );
 
   const varDecl = b.variableDeclaration("const", [
@@ -668,7 +680,14 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
 
       const platformImports: ExternalImport = {
         from: "@effect/platform",
-        names: ["HttpApi", "HttpApiBuilder", "HttpApiEndpoint", "HttpApiGroup", "HttpApiSchema", "HttpServer"],
+        names: [
+          "HttpApi",
+          "HttpApiBuilder",
+          "HttpApiEndpoint",
+          "HttpApiGroup",
+          "HttpApiSchema",
+          "HttpServer",
+        ],
       };
 
       const effectImports: ExternalImport = {
@@ -683,18 +702,34 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
 
         entityNames.push(entity.name);
 
-        // Import model and repo from entity file
-        registry.import(`effect:model:${entity.name}`).ref();
-        registry.import(`effect:repo:${entity.name}`).ref();
-
         const namedStatements = generateEntityHttpStatements(entity, httpConfig, inflection);
 
         // Render all statements - each gets its own capability so they can be matched
-        // to their declarations
+        // to their declarations. Use forSymbol() to scope imports to each specific capability.
         for (const { name, capSuffix, node } of namedStatements) {
+          const capability = `effect:http:${entity.name}:${capSuffix}`;
+
+          // Scope import tracking to this specific capability
+          registry.forSymbol(capability, () => {
+            // Import model and repo - only ApiGroupLive handlers actually need them
+            if (capSuffix === "ApiGroupLive") {
+              registry.import(`effect:model:${entity.name}`).ref();
+              registry.import(`effect:repo:${entity.name}`).ref();
+            }
+            // ApiGroup references the Model for schema types
+            if (capSuffix === "ApiGroup") {
+              registry.import(`effect:model:${entity.name}`).ref();
+            }
+            // ApiLive needs handlers and repo
+            if (capSuffix === "ApiLive") {
+              registry.import(`effect:http:${entity.name}:ApiGroupLive`).ref();
+              registry.import(`effect:repo:${entity.name}`).ref();
+            }
+          });
+
           rendered.push({
             name,
-            capability: `effect:http:${entity.name}:${capSuffix}`,
+            capability,
             node,
             exports: "named", // Node already has export, wrapWithExport will detect and skip
             externalImports: [platformImports, effectImports],
@@ -704,23 +739,36 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
 
       // Generate server aggregator
       if (entityNames.length > 0) {
-        const serverStatements = generateServerStatements(entityNames);
+        // Get the first named import from sqlClientLayer config (if any)
+        const sqlLayerName = httpConfig.sqlClientLayer?.named?.[0];
+        const serverStatements = generateServerStatements(entityNames, sqlLayerName);
 
-        // Import all ApiLive layers (need the ApiLive specifically)
-        for (const name of entityNames) {
-          registry.import(`effect:http:${name}:ApiLive`).ref();
-        }
+        // Scope import tracking to the server capability
+        registry.forSymbol("effect:http:server", () => {
+          // Import only ApiLive layers (not models or repos)
+          for (const name of entityNames) {
+            registry.import(`effect:http:${name}:ApiLive`).ref();
+          }
+        });
+
+        // User module imports for SqlClient layer (if configured)
+        const serverUserImports: readonly UserModuleRef[] | undefined = httpConfig.sqlClientLayer
+          ? [httpConfig.sqlClientLayer]
+          : undefined;
 
         for (const stmt of serverStatements) {
-          rendered.push({
+          const serverSymbol: RenderedSymbolWithImports = {
             name: "ServerLive",
             capability: "effect:http:server",
             node: stmt,
             exports: "named", // Node already has export, wrapWithExport will detect and skip
             externalImports: [
-              { from: "@effect/platform", names: ["HttpApiBuilder", "HttpServer", "Layer"] },
+              { from: "@effect/platform", names: ["HttpApiBuilder", "HttpServer"] },
+              { from: "effect", names: ["Layer"] },
             ],
-          });
+            userImports: serverUserImports,
+          };
+          rendered.push(serverSymbol);
         }
       }
 

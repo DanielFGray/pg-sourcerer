@@ -13,7 +13,7 @@ import {
   // valibot,
   // typesPlugin,
   effect,
-  // userModule,
+  userModule,
 } from "@danielfgray/pg-sourcerer";
 export default defineConfig({
   connectionString: process.env.DATABASE_URL!,
@@ -21,6 +21,10 @@ export default defineConfig({
   outputDir: "./generated",
   formatter: "bunx oxfmt --write",
   plugins: [
-    effect(),
+    effect({
+      http: {
+        sqlClientLayer: userModule("./db.ts", { named: ["SqlLive"] }),
+      },
+    }),
   ],
 });

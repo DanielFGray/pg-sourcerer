@@ -8,6 +8,7 @@ import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import type { TableEntity, Field, EnumEntity } from "../../ir/semantic-ir.js";
 import { conjure } from "../../conjure/index.js";
 import type { FileNaming } from "../../runtime/file-assignment.js";
+import type { UserModuleRef } from "../../user-module.js";
 
 // =============================================================================
 // Configuration
@@ -26,6 +27,8 @@ export const HttpConfigSchema = S.Struct({
 export type ParsedHttpConfig = S.Schema.Type<typeof HttpConfigSchema> & {
   /** Output file for server aggregator. Resolved separately. */
   serverFile: FileNaming;
+  /** User module providing the SqlClient layer. */
+  sqlClientLayer?: UserModuleRef;
 };
 
 export const EffectConfigSchema = S.Struct({
@@ -60,6 +63,31 @@ export interface HttpConfig {
    * @example ({ folderName }) => `${folderName}/server.ts` - dynamic path
    */
   serverFile?: string | FileNaming;
+  /**
+   * User module providing the SqlClient layer for database access.
+   * Use userModule() helper to specify the path relative to your config file.
+   *
+   * @example
+   * ```typescript
+   * import { effect, userModule } from "pg-sourcerer";
+   *
+   * effect({
+   *   http: {
+   *     sqlClientLayer: userModule("./db.ts", { named: ["SqlLive"] }),
+   *   },
+   * })
+   * ```
+   *
+   * The imported layer will be provided to ServerLive:
+   * ```typescript
+   * export const ServerLive = HttpApiBuilder.serve().pipe(
+   *   Layer.provide([...ApiLive layers...]),
+   *   Layer.provide(SqlLive),  // <-- Your layer
+   *   HttpServer.withLogAddress,
+   * )
+   * ```
+   */
+  sqlClientLayer?: UserModuleRef;
 }
 
 /**
