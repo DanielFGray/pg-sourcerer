@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./plugins": {
+      "types": "./dist/plugins/index.d.ts",
+      "import": "./dist/plugins/index.js"
+    },
     "./plugins/*": {
       "types": "./dist/plugins/*.d.ts",
       "import": "./dist/plugins/*.js"
