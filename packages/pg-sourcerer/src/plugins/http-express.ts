@@ -12,7 +12,7 @@
  * - Calls registry.import(queryCapability).ref() during render
  * - Emit phase generates imports from the recorded references
  */
-import { Effect, Array as Arr, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
@@ -20,19 +20,28 @@ import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { inflect } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
-import { isTableEntity, type TableEntity } from "../ir/semantic-ir.js";
-import { QueryMethodKind } from "../ir/extensions/queries.js";
+import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import type {
-  SchemaBuilder,
-  SchemaBuilderResult,
-  SchemaImportSpec,
-} from "../ir/extensions/schema-builder.js";
+  QueryMethod,
+  QueryMethodParam,
+  EntityQueriesExtension,
+} from "../ir/extensions/queries.js";
+import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
-import { type FileNaming, type FileNamingContext, normalizeFileNaming } from "../runtime/file-assignment.js";
+import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
+import {
+  buildQueryInvocation,
+  coerceParam,
+  getBodySchemaName,
+  getRoutePath,
+  kindToHttpMethod,
+  needsCoercion,
+  toExternalImport,
+} from "./shared/http-helpers.js";
+import { getSchemaBuilder } from "./shared/schema-builder.js";
 
-const b = conjure.b;
+const { b, stmt } = conjure;
 
 const PLUGIN_NAME = "express-http";
 
@@ -79,137 +88,12 @@ interface ResolvedHttpExpressConfig {
   appFile: FileNaming;
 }
 
-/**
- * Coerce a URL param (always string) to the expected type.
- * Returns an expression that wraps the identifier with the appropriate coercion.
- */
-function coerceParam(paramName: string, paramType: string): n.Expression {
-  const ident = b.identifier(paramName);
-  const lowerType = paramType.toLowerCase();
-
-  // Numeric types
-  if (lowerType === "number" || lowerType === "int" || lowerType === "integer" || lowerType === "bigint") {
-    return b.callExpression(b.identifier("Number"), [ident]);
-  }
-
-  // Date types
-  if (lowerType === "date" || lowerType.includes("timestamp") || lowerType.includes("datetime")) {
-    return b.newExpression(b.identifier("Date"), [ident]);
-  }
-
-  // Boolean
-  if (lowerType === "boolean" || lowerType === "bool") {
-    // "true" -> true, anything else -> false
-    return b.binaryExpression("===", ident, b.stringLiteral("true"));
-  }
-
-  // String, UUID, and other types - no coercion needed
-  return ident;
-}
-
-/**
- * Check if a param needs coercion (comes from URL string).
- */
-function needsCoercion(param: QueryMethodParam): boolean {
-  return (
-    param.source === "pk" ||
-    param.source === "fk" ||
-    param.source === "lookup" ||
-    param.source === "pagination"
-  );
-}
-
-function toExternalImport(spec: SchemaImportSpec): ExternalImport {
-  return {
-    from: spec.from,
-    names: spec.names,
-    namespace: spec.namespace,
-  };
-}
-
-function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
-  if (handle.consume && args.length <= 1) {
-    const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
-  }
-  return handle.call(...args) as n.Expression;
-}
-
-const kindToHttpMethod = (kind: QueryMethodKind): string => {
-  switch (kind) {
-    case "read":
-    case "list":
-    case "lookup":
-      return "get";
-    case "create":
-      return "post";
-    case "update":
-      return "put";
-    case "delete":
-      return "delete";
-    case "function":
-      return "post";
-  }
-};
-
-const getRoutePath = (method: QueryMethod, entityName: string, inflection: CoreInflection): string => {
-  switch (method.kind) {
-    case "read":
-    case "update":
-    case "delete": {
-      const pkParam = method.params.find((p) => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "list":
-      return "/";
-    case "create":
-      return "/";
-    case "lookup": {
-      const field = method.lookupField ?? "field";
-      const lookupParam = method.params.find((p) => p.source === "lookup" || p.source === "fk");
-      const paramName = lookupParam?.name ?? field;
-      const kebab = inflection.kebabCase(field);
-      return `/by-${kebab}/:${paramName}`;
-    }
-    case "function": {
-      return `/${inflection.kebabCase(method.name)}`;
-    }
-  }
-};
-
-const stmt = conjure.stmt;
-
-/**
- * Get the body schema name for a method if it needs validation.
- */
-function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
-  if (method.kind === "create") {
-    return `${entityName}Insert`;
-  }
-  if (method.kind === "update") {
-    return `${entityName}Update`;
-  }
-  return null;
-}
-
 type ConsumeFn = (input: n.Expression) => n.Expression;
 
 interface ValidationSchemas {
   readonly paramSchema?: SchemaBuilderResult;
   readonly querySchema?: SchemaBuilderResult;
   readonly bodyConsume?: ConsumeFn;
-}
-
-function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
-  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
-  if (schemaBuilders.length === 0) return undefined;
-
-  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
-  if (metadata && typeof metadata === "object" && "builder" in metadata) {
-    return (metadata as { builder: SchemaBuilder }).builder;
-  }
-  return undefined;
 }
 
 function buildHandlerBody(
@@ -226,7 +110,7 @@ function buildHandlerBody(
 
   // Extract path params: const { id } = req.params
   const pathParams = method.params.filter(
-    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
   if (pathParams.length > 0 && paramConsume) {
     statements.push(
@@ -237,7 +121,7 @@ function buildHandlerBody(
     );
   } else if (pathParams.length > 0) {
     const pattern = b.objectPattern(
-      pathParams.map((p) => {
+      pathParams.map(p => {
         const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
         prop.shorthand = true;
         return prop;
@@ -252,7 +136,7 @@ function buildHandlerBody(
   }
 
   // Extract query params: const { limit, offset } = req.query
-  const queryParams = method.params.filter((p) => p.source === "pagination");
+  const queryParams = method.params.filter(p => p.source === "pagination");
   if (queryParams.length > 0 && queryConsume) {
     statements.push(
       stmt.const(
@@ -262,7 +146,7 @@ function buildHandlerBody(
     );
   } else if (queryParams.length > 0) {
     const pattern = b.objectPattern(
-      queryParams.map((p) => {
+      queryParams.map(p => {
         const prop = b.property("init", b.identifier(p.name), b.identifier(p.name));
         prop.shorthand = true;
         return prop;
@@ -278,10 +162,10 @@ function buildHandlerBody(
 
   // Extract body: const body = req.body
   const needsBody =
-    method.params.some((p) => p.source === "body") ||
+    method.params.some(p => p.source === "body") ||
     method.kind === "create" ||
     method.kind === "update" ||
-    (method.kind === "function" && method.params.some((p) => !p.source));
+    (method.kind === "function" && method.params.some(p => !p.source));
   if (needsBody) {
     statements.push(
       stmt.const(
@@ -323,8 +207,8 @@ function buildHandlerBody(
       args.push(paramExpr(param));
     }
   } else {
-    const bodyParam = method.params.find((p) => p.source === "body");
-    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyParam = method.params.find(p => p.source === "body");
+    const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       if (nonBodyParams.length > 0) {
@@ -367,18 +251,12 @@ function buildHandlerBody(
   if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
     const notFoundResponse = b.callExpression(
       b.memberExpression(
-        b.callExpression(
-          b.memberExpression(b.identifier("res"), b.identifier("status")),
-          [b.numericLiteral(404)],
-        ),
+        b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("status")), [
+          b.numericLiteral(404),
+        ]),
         b.identifier("json"),
       ),
-      [
-        conjure
-          .obj()
-          .prop("error", b.stringLiteral("Not found"))
-          .build(),
-      ],
+      [conjure.obj().prop("error", b.stringLiteral("Not found")).build()],
     );
     statements.push(
       b.ifStatement(
@@ -393,19 +271,17 @@ function buildHandlerBody(
   if (method.kind === "create") {
     responseExpr = b.callExpression(
       b.memberExpression(
-        b.callExpression(
-          b.memberExpression(b.identifier("res"), b.identifier("status")),
-          [b.numericLiteral(201)],
-        ),
+        b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("status")), [
+          b.numericLiteral(201),
+        ]),
         b.identifier("json"),
       ),
       [b.identifier("result")],
     );
   } else {
-    responseExpr = b.callExpression(
-      b.memberExpression(b.identifier("res"), b.identifier("json")),
-      [b.identifier("result")],
-    );
+    responseExpr = b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("json")), [
+      b.identifier("result"),
+    ]);
   }
   statements.push(b.returnStatement(cast.toExpr(responseExpr)));
 
@@ -424,7 +300,7 @@ function buildRouteCall(
   handler: n.ArrowFunctionExpression;
 } {
   const httpMethod = kindToHttpMethod(method.kind);
-  const path = getRoutePath(method, entityName, inflection);
+  const path = getRoutePath(method, { kebabCase: inflection.kebabCase });
 
   const handlerBody = buildHandlerBody(method, inflection, schemas, queryHandle);
   const handler = b.arrowFunctionExpression(
@@ -468,9 +344,9 @@ function generateExpressRoutes(
     }
 
     const pathParams = method.params.filter(
-      (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+      p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
     );
-    const queryParams = method.params.filter((p) => p.source === "pagination");
+    const queryParams = method.params.filter(p => p.source === "pagination");
 
     const paramSchema =
       schemaBuilder && pathParams.length > 0
@@ -596,10 +472,9 @@ function generateAggregator(
   for (const [entityName, queries] of entityEntries) {
     const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
 
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")),
-      [b.identifier(routesVarName)],
-    );
+    chainExpr = b.callExpression(b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")), [
+      b.identifier(routesVarName),
+    ]);
 
     const routeCapability = `http-routes:express:${entityName}`;
     if (registry.has(routeCapability)) {
@@ -607,10 +482,7 @@ function generateAggregator(
     }
   }
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier("api"),
-    cast.toExpr(chainExpr),
-  );
+  const variableDeclarator = b.variableDeclarator(b.identifier("api"), cast.toExpr(chainExpr));
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   return {
@@ -708,13 +580,7 @@ export function express(config?: HttpExpressConfig): Plugin {
         const capability = `http-routes:express:${entityName}`;
 
         const { statements, externalImports } = registry.forSymbol(capability, () =>
-          generateExpressRoutes(
-            entityName,
-            queries,
-            resolvedConfig,
-            registry,
-            inflection,
-          ),
+          generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
@@ -730,12 +596,7 @@ export function express(config?: HttpExpressConfig): Plugin {
         const appCapability = "http-routes:express:app";
 
         const { statements, externalImports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(
-            entityQueries,
-            resolvedConfig,
-            registry,
-            inflection,
-          ),
+          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({

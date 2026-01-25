@@ -22,18 +22,23 @@ import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import type {
-  SchemaBuilder,
-  SchemaBuilderResult,
-  SchemaImportSpec,
-} from "../ir/extensions/schema-builder.js";
+  QueryMethod,
+  QueryMethodParam,
+  EntityQueriesExtension,
+} from "../ir/extensions/queries.js";
+import type { SchemaBuilder, SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport, RenderedSymbolWithImports } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
+import {
+  buildQueryInvocation,
+  getBodySchemaName,
+  toExternalImport,
+} from "./shared/http-helpers.js";
+import { getSchemaBuilder } from "./shared/schema-builder.js";
 
-const b = conjure.b;
-const stmt = conjure.stmt;
+const { b, stmt } = conjure;
 
 const PLUGIN_NAME = "trpc-http";
 
@@ -129,22 +134,6 @@ const kindToProcedureType = (kind: QueryMethodKind): "query" | "mutation" => {
   }
 };
 
-function toExternalImport(spec: SchemaImportSpec): ExternalImport {
-  return {
-    from: spec.from,
-    names: spec.names,
-    namespace: spec.namespace,
-  };
-}
-
-function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
-  if (handle.consume && args.length <= 1) {
-    const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
-  }
-  return handle.call(...args) as n.Expression;
-}
-
 /**
  * Build the handler function body for a tRPC procedure.
  * tRPC handlers receive { input } and return data directly.
@@ -193,8 +182,8 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
     }
   } else {
     // Named style
-    const bodyParam = method.params.find((p) => p.source === "body");
-    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyParam = method.params.find(p => p.source === "body");
+    const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       // Body fields spread directly: fn(input)
@@ -211,17 +200,18 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
     } else if (bodyParam && callSig.bodyStyle === "property") {
       // Body wrapped in property: fn({ id, data })
       const nonBodyParams = method.params.filter(
-        (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination",
+        p =>
+          p.source === "pk" ||
+          p.source === "fk" ||
+          p.source === "lookup" ||
+          p.source === "pagination",
       );
 
       if (nonBodyParams.length > 0) {
         // Build object with non-body params + body property
         let objBuilder = conjure.obj();
         for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(
-            param.name,
-            paramExpr(param),
-          );
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
         objBuilder = objBuilder.prop(
           bodyParam.name,
@@ -256,29 +246,8 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
 /**
  * Build Zod type expression for a param.
  */
-function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
-  if (method.kind === "create") {
-    return `${entityName}Insert`;
-  }
-  if (method.kind === "update") {
-    return `${entityName}Update`;
-  }
-  return null;
-}
-
-function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
-  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
-  if (schemaBuilders.length === 0) return undefined;
-
-  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
-  if (metadata && typeof metadata === "object" && "builder" in metadata) {
-    return (metadata as { builder: SchemaBuilder }).builder;
-  }
-  return undefined;
-}
-
 function getBodySource(method: QueryMethod): n.Expression {
-  const bodyParam = method.params.find((p) => p.source === "body");
+  const bodyParam = method.params.find(p => p.source === "body");
   if (!bodyParam) return b.identifier("input");
 
   const callSig = method.callSignature ?? { style: "named" as const };
@@ -319,7 +288,7 @@ function buildProcedure(
     ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
     : undefined;
 
-  const nonBodyParams = method.params.filter((p) => p.source !== "body");
+  const nonBodyParams = method.params.filter(p => p.source !== "body");
   const paramSchema =
     schemaBuilder && nonBodyParams.length > 0
       ? schemaBuilder.build({ variant: "params", params: nonBodyParams })
@@ -329,7 +298,7 @@ function buildProcedure(
     externalImports.push(toExternalImport(paramSchema.importSpec));
   }
 
-  const hasBody = method.params.some((p) => p.source === "body");
+  const hasBody = method.params.some(p => p.source === "body");
   const shouldUseInputSchema = !hasBody && paramSchema;
 
   if (shouldUseInputSchema) {
@@ -462,8 +431,13 @@ function generateTrpcRouter(
   }
 
   // Build: export const userRouter = router({ ... })
-  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
-  const variableDeclarator = b.variableDeclarator(b.identifier(routerName), cast.toExpr(routerCall));
+  const routerCall = b.callExpression(b.identifier("router"), [
+    cast.toExpr(routerObjBuilder.build()),
+  ]);
+  const variableDeclarator = b.variableDeclarator(
+    b.identifier(routerName),
+    cast.toExpr(routerCall),
+  );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   const externalImports: ExternalImport[] = schemaImports;
@@ -496,7 +470,7 @@ function generateAggregator(
   let routerObjBuilder = conjure.obj();
 
   for (const [entityName] of entityEntries) {
-  const routerName = inflection.variableName(entityName, "Router");
+    const routerName = inflection.variableName(entityName, "Router");
     const key = inflection.camelCase(entityName);
 
     routerObjBuilder = routerObjBuilder.prop(key, b.identifier(routerName));
@@ -508,7 +482,9 @@ function generateAggregator(
     }
   }
 
-  const routerCall = b.callExpression(b.identifier("router"), [cast.toExpr(routerObjBuilder.build())]);
+  const routerCall = b.callExpression(b.identifier("router"), [
+    cast.toExpr(routerObjBuilder.build()),
+  ]);
   const variableDeclarator = b.variableDeclarator(
     b.identifier(config.aggregatorName),
     cast.toExpr(routerCall),

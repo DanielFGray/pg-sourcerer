@@ -8,18 +8,16 @@
  * This plugin is incompatible with other type-generation plugins (types, zod, etc.)
  * since it provides its own type definitions optimized for Kysely.
  */
-import { Effect, Array as Arr, Option, pipe } from "effect";
+import { Effect } from "effect";
 import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 
 import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
 import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.js";
-import { normalizeFileNaming, type FileNamingContext, type FileNaming } from "../runtime/file-assignment.js";
+import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import {
-  isTableEntity,
   getTableEntities,
   getEnumEntities,
   getCompositeEntities,
@@ -31,7 +29,8 @@ import {
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
-import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
+import { type UserModuleRef } from "../user-module.js";
+import { getPgType, pgTypeToTsType, resolveFieldTypeInfo } from "./shared/pg-types.js";
 
 const { fn, stmt, ts, param, str, exp, b, chain, arrExpr } = conjure;
 
@@ -107,7 +106,7 @@ export interface KyselyConfig {
   /**
    * Output file path for all Kysely types (single file).
    * All entity types, enums, composites, and DB interface go here.
-   * @default "db.ts"
+   * @default "DB.ts"
    */
   typesFile?: string;
   /**
@@ -298,15 +297,25 @@ interface TypeContext {
   readonly composites: readonly CompositeEntity[];
 }
 
+function getResolvedTypeName(field: Field): string {
+  const resolved = resolveFieldTypeInfo(field);
+  return resolved?.typeName ?? getPgType(field);
+}
+
+function getResolvedTypeInfo(field: Field) {
+  const resolved = resolveFieldTypeInfo(field);
+  return resolved?.typeInfo ?? field.pgAttribute.getType();
+}
+
 /**
  * Resolve a field to its Kysely type.
  */
 function resolveFieldType(field: Field, ctx: TypeContext): KyselyType {
-  const pgType = field.pgAttribute.getType();
-  const typeName = pgType?.typname ?? "";
+  const typeName = getResolvedTypeName(field);
+  const typeInfo = getResolvedTypeInfo(field);
 
   // Check if it's an enum
-  if (pgType?.typtype === "e") {
+  if (typeInfo?.typtype === "e") {
     const enumDef = ctx.enums.find(e => e.pgType.typname === typeName);
     if (enumDef) {
       return {
@@ -317,7 +326,7 @@ function resolveFieldType(field: Field, ctx: TypeContext): KyselyType {
   }
 
   // Check if it's a composite type
-  if (pgType?.typtype === "c") {
+  if (typeInfo?.typtype === "c") {
     const compositeDef = ctx.composites.find(c => c.pgType.typname === typeName);
     if (compositeDef) {
       return {
@@ -505,8 +514,7 @@ function collectTypeImports(
   let needsJsonTypes = false;
 
   const processField = (field: Field, checkGenerated: boolean) => {
-    const pgType = field.pgAttribute.getType();
-    const typeName = pgType?.typname ?? "";
+    const typeName = getResolvedTypeName(field);
 
     const kyselyType = resolveFieldType(field, ctx);
 
@@ -589,30 +597,11 @@ function buildListByName(inflection: CoreInflection, entityName: string, columnN
   return inflection.variableName(entityName, `ListBy${inflection.pascalCase(columnName)}`);
 }
 
-function getPgType(field: Field): string {
-  const pgType = field.pgAttribute.getType();
-  return pgType?.typname ?? "unknown";
-}
-
-function pgTypeToTsType(pgType: string): string {
-  const lower = pgType.toLowerCase();
-  if (["uuid", "text", "varchar", "char", "citext", "name"].includes(lower)) return "string";
-  if (
-    ["int2", "int4", "int8", "integer", "smallint", "bigint", "numeric", "decimal", "real", "float4", "float8"].includes(
-      lower,
-    )
-  )
-    return "number";
-  if (["bool", "boolean"].includes(lower)) return "boolean";
-  if (["timestamp", "timestamptz", "date"].includes(lower)) return "Date";
-  if (["json", "jsonb"].includes(lower)) return "unknown";
-  return "string";
-}
 
 function buildPkParam(field: Field) {
   return {
     name: field.name,
-    type: pgTypeToTsType(getPgType(field)),
+    type: pgTypeToTsType(getResolvedTypeName(field)),
     required: true,
     columnName: field.columnName,
     source: "pk" as const,
@@ -622,7 +611,7 @@ function buildPkParam(field: Field) {
 function buildLookupParam(field: Field) {
   return {
     name: field.name,
-    type: pgTypeToTsType(getPgType(field)),
+    type: pgTypeToTsType(getResolvedTypeName(field)),
     required: true,
     columnName: field.columnName,
     source: "lookup" as const,
@@ -656,13 +645,6 @@ interface PaginationParam {
   required: false;
   defaultValue: number;
   source: "pagination";
-}
-
-function buildPaginationParams(defaultLimit: number): PaginationParam[] {
-  return [
-    { name: "limit", type: "number", required: false, defaultValue: defaultLimit, source: "pagination" as const },
-    { name: "offset", type: "number", required: false, defaultValue: 0, source: "pagination" as const },
-  ];
 }
 
 function buildReturnType(entityName: string, isArray: boolean, nullable: boolean) {
@@ -729,7 +711,7 @@ export function kysely(config?: KyselyConfig): Plugin {
   // queriesFile can be dynamic per-entity
   const resolvedConfig: ResolvedKyselyConfig = {
     ...schemaConfig,
-    typesFile: config?.typesFile ?? "db.ts",
+    typesFile: config?.typesFile ?? "DB.ts",
     queriesFile: normalizeFileNaming(config?.queriesFile, "queries.ts"),
     dbImport: config?.dbImport,
   };
@@ -1031,7 +1013,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const pkField = entity.shapes.row.fields.find(f => f.name === candidate.pkColumn);
             if (!pkField) continue;
 
-            const pkParamType = pgTypeToTsType(getPgType(pkField));
+            const pkParamType = pgTypeToTsType(getResolvedTypeName(pkField));
 
             const cursorColumnParamName = inflection.camelCase(
               `cursor_${candidate.cursorColumnName}`,
@@ -1395,7 +1377,7 @@ export function kysely(config?: KyselyConfig): Plugin {
 
           const entityExtension: EntityQueriesExtension = {
             methods: entityMethods,
-            pkType: pkField ? pgTypeToTsType(getPgType(pkField)) : undefined,
+            pkType: pkField ? pgTypeToTsType(getResolvedTypeName(pkField)) : undefined,
             hasCompositePk: (entity.primaryKey?.columns.length ?? 0) > 1,
           };
 

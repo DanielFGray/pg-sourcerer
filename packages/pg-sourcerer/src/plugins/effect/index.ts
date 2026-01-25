@@ -2,12 +2,12 @@
  * Effect Plugin Preset
  * 
  * Generates @effect/sql Model classes, Effect Schema for enums,
- * and Model.makeRepository for tables with single-column primary keys.
+ * and repository services for tables with single-column primary keys.
  * 
  * This is a preset that returns multiple focused plugins:
  * - effect-schemas: S.Union(S.Literal(...)) for enums
  * - effect-models: Model.Class for table entities  
- * - effect-repos: Model.makeRepository for tables with single-col PKs
+ * - effect-repos: Repository services for tables with single-col PKs
  */
 import { Schema as S } from "effect";
 
@@ -30,7 +30,7 @@ const DEFAULT_SERVER_FILE = "server.ts";
  * Generates:
  * - Model.Class for table/view entities
  * - S.Union(S.Literal(...)) for enum entities
- * - Model.makeRepository for tables with single-column primary keys
+ * - Repository services for tables with single-column primary keys
  * 
  * @example
  * ```typescript
@@ -43,10 +43,16 @@ const DEFAULT_SERVER_FILE = "server.ts";
  */
 export function effect(config?: EffectConfig): Plugin[] {
   const schemaValidated = S.decodeSync(EffectConfigSchema)(config ?? {});
+  const repoModel = config?.repos === false
+    ? false
+    : config?.repoModel ?? schemaValidated.repoModel;
+  const reposEnabled = config?.repos === false ? true : schemaValidated.repos;
 
   // Resolve FileNaming for HTTP config (Schema can't validate functions)
   const parsed: ParsedEffectConfig = {
     ...schemaValidated,
+    repos: reposEnabled,
+    repoModel,
     http: schemaValidated.http === false 
       ? false 
       : {
@@ -65,7 +71,7 @@ export function effect(config?: EffectConfig): Plugin[] {
 
   // Optionally add repos
   if (parsed.repos) {
-    plugins.push(effectRepos());
+    plugins.push(effectRepos(parsed));
   }
 
   // HTTP requires repos - only add if repos are enabled and http is not disabled

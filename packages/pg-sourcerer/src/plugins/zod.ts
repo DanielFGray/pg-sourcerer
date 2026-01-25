@@ -10,9 +10,8 @@
  * - `schema:zod:EntityName:update` for Update shape
  * - `schema:zod:EnumName` for enum entities
  */
-import { Effect, Array as Arr, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
-import type { StatementKind } from "ast-types/lib/gen/kinds.js";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
@@ -32,6 +31,19 @@ import type {
   SchemaBuilderRequest,
   SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
+import {
+  pgStringTypes,
+  pgNumberTypes,
+  pgBooleanTypes,
+  pgDateTypes,
+  pgJsonTypes,
+  resolveFieldTypeInfo,
+} from "./shared/pg-types.js";
+import {
+  buildEnumDeclarations,
+  buildSchemaBuilderDeclaration,
+  buildShapeDeclarations,
+} from "./shared/schema-declarations.js";
 
 /**
  * Creates a consume callback for Zod schemas.
@@ -42,7 +54,10 @@ import type {
  */
 function createZodConsumeCallback(schemaName: string): (input: unknown) => n.Expression {
   return (input: unknown) => {
-    return conjure.id(schemaName).method("parse", [cast.toExpr(input as n.Expression)]).build();
+    return conjure
+      .id(schemaName)
+      .method("parse", [cast.toExpr(input as n.Expression)])
+      .build();
   };
 }
 
@@ -65,10 +80,9 @@ const zodSchemaBuilder: SchemaBuilder = {
 
     const ast = conjure.id("z").method("object", [objBuilder.build()]).build();
     const consume = (input: n.Expression) =>
-      b.callExpression(
-        b.memberExpression(cast.toExpr(ast), b.identifier("parse")),
-        [cast.toExpr(input)],
-      );
+      b.callExpression(b.memberExpression(cast.toExpr(ast), b.identifier("parse")), [
+        cast.toExpr(input),
+      ]);
 
     return {
       ast,
@@ -155,50 +169,8 @@ function toExpr(node: n.Expression): ExpressionKind {
   return node as ExpressionKind;
 }
 
-function toStmt(node: n.Statement): StatementKind {
-  return node as StatementKind;
-}
-
 // =============================================================================
 // PostgreSQL Type to Zod Schema Mapping
-// =============================================================================
-
-const PG_STRING_TYPES = new Set([
-  "uuid",
-  "text",
-  "varchar",
-  "char",
-  "character",
-  "name",
-  "bpchar",
-  "citext",
-  "tsvector",
-  "tsquery",
-]);
-
-const PG_NUMBER_TYPES = new Set([
-  "int2",
-  "int4",
-  "int8",
-  "integer",
-  "smallint",
-  "bigint",
-  "numeric",
-  "decimal",
-  "real",
-  "float4",
-  "float8",
-  "double",
-]);
-
-const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
-
-const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
-
-const PG_JSON_TYPES = new Set(["json", "jsonb"]);
-
-// =============================================================================
-// Field to Zod Schema
 // =============================================================================
 
 /**
@@ -211,30 +183,11 @@ type ZodMapping =
   | { kind: "enumRef"; enumRef: string; schema?: undefined };
 
 function fieldToZodMapping(field: Field, enums: EnumEntity[]): ZodMapping {
-  const pgType = field.pgAttribute.getType();
-
-  if (!pgType) {
+  const resolved = resolveFieldTypeInfo(field);
+  if (!resolved) {
     return { kind: "schema", schema: conjure.id("z").method("unknown").build() };
   }
-
-  // For arrays, use element type; for domains, use base type; otherwise use pgType
-  let typeName: string;
-  let typeInfo: { typcategory?: string | null; typtype?: string | null };
-
-  if (pgType.typcategory === "A") {
-    // Array type - use element type name
-    typeName = field.elementTypeName ?? "unknown";
-    typeInfo = pgType;
-  } else if (pgType.typtype === "d" && field.domainBaseType) {
-    // Domain type - resolve to underlying base type
-    typeName = field.domainBaseType.typeName;
-    typeInfo = { typcategory: field.domainBaseType.category };
-  } else {
-    typeName = pgType.typname;
-    typeInfo = pgType;
-  }
-
-  const baseResult = baseTypeToZodMapping(typeName, typeInfo, enums);
+  const baseResult = baseTypeToZodMapping(resolved.typeName, resolved.typeInfo, enums);
 
   // For enum references, return as-is (modifiers applied in shapeToZodObject)
   if (baseResult.kind === "enumRef") {
@@ -265,7 +218,7 @@ function baseTypeToZodMapping(
 ): ZodMapping {
   const normalized = typeName.toLowerCase();
 
-  if (PG_STRING_TYPES.has(normalized)) {
+  if (pgStringTypes.has(normalized)) {
     if (normalized === "uuid") {
       return { kind: "schema", schema: conjure.id("z").method("uuid").build() };
     }
@@ -274,19 +227,19 @@ function baseTypeToZodMapping(
     return { kind: "schema", schema: conjure.id("z").method("string").build() };
   }
 
-  if (PG_NUMBER_TYPES.has(normalized)) {
+  if (pgNumberTypes.has(normalized)) {
     return { kind: "schema", schema: conjure.id("z").method("number").build() };
   }
 
-  if (PG_BOOLEAN_TYPES.has(normalized)) {
+  if (pgBooleanTypes.has(normalized)) {
     return { kind: "schema", schema: conjure.id("z").method("boolean").build() };
   }
 
-  if (PG_DATE_TYPES.has(normalized)) {
+  if (pgDateTypes.has(normalized)) {
     return { kind: "schema", schema: conjure.id("z").prop("coerce").method("date").build() };
   }
 
-  if (PG_JSON_TYPES.has(normalized)) {
+  if (pgJsonTypes.has(normalized)) {
     return { kind: "schema", schema: conjure.id("z").method("any").build() };
   }
 
@@ -348,48 +301,6 @@ function shapeToZodObject(
 // Zod Plugin Definition
 // =============================================================================
 
-function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
-  const declarations: SymbolDeclaration[] = [];
-  const baseEntityName = entity.name;
-
-  // Row shape uses the entity name directly
-  declarations.push({
-    name: entity.shapes.row.name,
-    capability: `schema:zod:${entity.shapes.row.name}`,
-    baseEntityName,
-  });
-
-  if (entity.shapes.insert) {
-    const insertName = entity.shapes.insert.name;
-    declarations.push({
-      name: insertName,
-      capability: `schema:zod:${insertName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: insertName,
-      capability: `schema:zod:${insertName}:type`,
-      baseEntityName,
-    });
-  }
-
-  if (entity.shapes.update) {
-    const updateName = entity.shapes.update.name;
-    declarations.push({
-      name: updateName,
-      capability: `schema:zod:${updateName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: updateName,
-      capability: `schema:zod:${updateName}:type`,
-      baseEntityName,
-    });
-  }
-
-  return declarations;
-}
-
 export function zod(config?: ZodConfig): Plugin {
   // Parse schema-validated options
   const schemaConfig = S.decodeSync(ZodSchemaConfig)(config ?? {});
@@ -419,29 +330,17 @@ export function zod(config?: ZodConfig): Plugin {
 
       const enumEntities = [...ir.entities.values()].filter(isEnumEntity);
       for (const entity of enumEntities) {
-        declarations.push({
-          name: entity.name,
-          capability: `schema:zod:${entity.name}`,
-          baseEntityName: entity.name,
-        });
-        declarations.push({
-          name: entity.name,
-          capability: `schema:zod:${entity.name}:type`,
-          baseEntityName: entity.name,
-        });
+        declarations.push(...buildEnumDeclarations(entity, "schema:zod"));
       }
 
       for (const entity of ir.entities.values()) {
         if (!isTableEntity(entity)) continue;
         // Push declarations directly - they already include baseEntityName
-        declarations.push(...getShapeDeclarations(entity));
+        declarations.push(...buildShapeDeclarations(entity, "schema:zod"));
       }
 
       // Declare the schema builder capability
-      declarations.push({
-        name: "zodSchemaBuilder",
-        capability: "schema:zod:builder",
-      });
+      declarations.push(buildSchemaBuilderDeclaration("zodSchemaBuilder", "schema:zod"));
 
       return declarations;
     }),

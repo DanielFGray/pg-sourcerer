@@ -343,6 +343,9 @@ not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string
 
 The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
 
+Set `repoModel: false` (or `repos: false` for legacy configs) to skip `Model.makeRepository`
+and expose query functions from the active `queries` plugin (kysely/sql-queries).
+
 ```typescript
 // users/model.ts
 import { Model } from "@effect/sql";
@@ -365,7 +368,7 @@ import { User } from "./User.js";
 
 export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
   effect: Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+    const db = yield* KyselyDB
     const queries = {
       findById: ({ id }: { id: string }) => db
         .selectFrom("app_public.users")

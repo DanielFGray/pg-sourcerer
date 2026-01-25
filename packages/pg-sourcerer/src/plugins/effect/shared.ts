@@ -9,6 +9,14 @@ import type { TableEntity, Field, EnumEntity } from "../../ir/semantic-ir.js";
 import { conjure } from "../../conjure/index.js";
 import type { FileNaming } from "../../runtime/file-assignment.js";
 import type { UserModuleRef } from "../../user-module.js";
+import {
+  PG_STRING_TYPES,
+  PG_NUMBER_TYPES,
+  PG_BOOLEAN_TYPES,
+  PG_DATE_TYPES,
+  PG_JSON_TYPES,
+  resolveFieldTypeInfo,
+} from "../shared/pg-types.js";
 
 // =============================================================================
 // Configuration
@@ -34,7 +42,12 @@ export type ParsedHttpConfig = S.Schema.Type<typeof HttpConfigSchema> & {
 export const EffectConfigSchema = S.Struct({
   /** Export inferred TypeScript types alongside schemas. Default: true */
   exportTypes: S.optionalWith(S.Boolean, { default: () => true }),
-  /** Generate Model.makeRepository for tables with single-column PKs. Default: true */
+  /** Use Model.makeRepository for repos. Default: true */
+  repoModel: S.optionalWith(S.Boolean, { default: () => true }),
+  /**
+   * Generate repository services for tables with single-column PKs. Default: true
+   * If set to false, repositories still generate but use query providers.
+   */
   repos: S.optionalWith(S.Boolean, { default: () => true }),
   /** HTTP API generation config. Set to false to disable. Default: enabled */
   http: S.optionalWith(
@@ -96,47 +109,16 @@ export interface HttpConfig {
 export interface EffectConfig {
   /** Export inferred TypeScript types alongside schemas. Default: true */
   exportTypes?: boolean;
-  /** Generate Model.makeRepository for tables with single-column PKs. Default: true */
+  /** Use Model.makeRepository for repos. Default: true */
+  repoModel?: boolean;
+  /**
+   * Generate repository services for tables with single-column PKs. Default: true
+   * If set to false, repositories still generate but use query providers.
+   */
   repos?: boolean;
   /** HTTP API generation config. Set to false to disable. */
   http?: false | HttpConfig;
 }
-
-// =============================================================================
-// PostgreSQL Type Sets
-// =============================================================================
-
-export const PG_STRING_TYPES = new Set([
-  "uuid",
-  "text",
-  "varchar",
-  "char",
-  "character",
-  "name",
-  "bpchar",
-  "citext",
-]);
-
-export const PG_NUMBER_TYPES = new Set([
-  "int2",
-  "int4",
-  "int8",
-  "integer",
-  "smallint",
-  "bigint",
-  "numeric",
-  "decimal",
-  "real",
-  "float4",
-  "float8",
-  "double",
-]);
-
-export const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
-
-export const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
-
-export const PG_JSON_TYPES = new Set(["json", "jsonb"]);
 
 // =============================================================================
 // Type Mapping
@@ -147,27 +129,11 @@ export type EffectMapping =
   | { kind: "enumRef"; enumRef: string; schema?: undefined };
 
 export function fieldToEffectMapping(field: Field, enums: EnumEntity[]): EffectMapping {
-  const pgType = field.pgAttribute.getType();
-
-  if (!pgType) {
+  const resolved = resolveFieldTypeInfo(field);
+  if (!resolved) {
     return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
   }
-
-  let typeName: string;
-  let typeInfo: { typcategory?: string | null; typtype?: string | null };
-
-  if (pgType.typcategory === "A") {
-    typeName = field.elementTypeName ?? "unknown";
-    typeInfo = pgType;
-  } else if (pgType.typtype === "d" && field.domainBaseType) {
-    typeName = field.domainBaseType.typeName;
-    typeInfo = { typcategory: field.domainBaseType.category };
-  } else {
-    typeName = pgType.typname;
-    typeInfo = pgType;
-  }
-
-  const baseResult = baseTypeToEffectMapping(typeName, typeInfo, enums);
+  const baseResult = baseTypeToEffectMapping(resolved.typeName, resolved.typeInfo, enums);
 
   if (baseResult.kind === "enumRef") {
     return baseResult;

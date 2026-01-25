@@ -30,8 +30,8 @@ import {
   hasSingleColumnPrimaryKey,
   getPrimaryKeyColumn,
   toExpr,
-  PG_NUMBER_TYPES,
 } from "./shared.js";
+import { PG_NUMBER_TYPES } from "../shared/pg-types.js";
 
 const b = conjure.b;
 

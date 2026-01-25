@@ -12,84 +12,39 @@
  * - Calls registry.import(queryCapability).ref() during render
  * - Emit phase generates imports from the recorded references
  */
-import { Effect, Array as Arr, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
-import { isTableEntity, type TableEntity } from "../ir/semantic-ir.js";
-import { QueryMethodKind } from "../ir/extensions/queries.js";
+import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import type {
-  SchemaBuilder,
-  SchemaBuilderResult,
-  SchemaImportSpec,
-} from "../ir/extensions/schema-builder.js";
+  QueryMethod,
+  QueryMethodParam,
+  EntityQueriesExtension,
+} from "../ir/extensions/queries.js";
+import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
-import { type FileNaming, type FileNamingContext, normalizeFileNaming } from "../runtime/file-assignment.js";
+import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
+import {
+  buildQueryInvocation,
+  coerceParam,
+  defaultHttpMethodMap,
+  getBodySchemaName,
+  getRoutePath,
+  kindToHttpMethod,
+  listByRouteFromName,
+  needsCoercion,
+  toExternalImport,
+} from "./shared/http-helpers.js";
+import { getSchemaBuilder } from "./shared/schema-builder.js";
 
-const b = conjure.b;
+const { b, stmt } = conjure;
 
 const PLUGIN_NAME = "elysia-http";
-
-/**
- * Coerce a URL param (always string) to the expected type.
- * Returns an expression that wraps the identifier with the appropriate coercion.
- */
-function coerceParam(paramName: string, paramType: string): n.Expression {
-  const ident = b.identifier(paramName);
-  const lowerType = paramType.toLowerCase();
-
-  // Numeric types
-  if (lowerType === "number" || lowerType === "int" || lowerType === "integer" || lowerType === "bigint") {
-    return b.callExpression(b.identifier("Number"), [ident]);
-  }
-
-  // Date types
-  if (lowerType === "date" || lowerType.includes("timestamp") || lowerType.includes("datetime")) {
-    return b.newExpression(b.identifier("Date"), [ident]);
-  }
-
-  // Boolean
-  if (lowerType === "boolean" || lowerType === "bool") {
-    // "true" -> true, anything else -> false
-    return b.binaryExpression("===", ident, b.stringLiteral("true"));
-  }
-
-  // String, UUID, and other types - no coercion needed
-  return ident;
-}
-
-/**
- * Check if a param needs coercion (comes from URL string).
- */
-function needsCoercion(param: QueryMethodParam): boolean {
-  return (
-    param.source === "pk" ||
-    param.source === "fk" ||
-    param.source === "lookup" ||
-    param.source === "pagination"
-  );
-}
-
-function toExternalImport(spec: SchemaImportSpec): ExternalImport {
-  return {
-    from: spec.from,
-    names: spec.names,
-    namespace: spec.namespace,
-  };
-}
-
-function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
-  if (handle.consume && args.length <= 1) {
-    const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
-  }
-  return handle.call(...args) as n.Expression;
-}
 
 const DEFAULT_OUTPUT_DIR = "";
 const DEFAULT_ROUTES_FILE = "routes.ts";
@@ -139,62 +94,6 @@ interface ResolvedHttpElysiaConfig {
 // - inflection.elysiaRoutesName() for route variable names
 // - inflection.entityRoutePath() for entity path segments
 
-const kindToHttpMethod = (kind: QueryMethodKind): string => {
-  switch (kind) {
-    case "read":
-    case "list":
-    case "lookup":
-      return "get";
-    case "create":
-      return "post";
-    case "update":
-      return "patch";
-    case "delete":
-      return "delete";
-    case "function":
-      return "post";
-  }
-};
-
-const getRoutePath = (method: QueryMethod, entityName: string, inflection: CoreInflection): string => {
-  switch (method.kind) {
-    case "read":
-    case "update":
-    case "delete": {
-      const pkParam = method.params.find((p) => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "list":
-      // Check if this is a cursor pagination method (listBy{Column})
-      // These methods have names like: "postListByCreatedAt" -> should be "/by-created-at"
-      // Regular list methods (if any existed) would be just: "postList" -> "/"
-      if (/ListBy/i.test(method.name) || /listBy/i.test(method.name)) {
-        // Extract column name after the list pattern
-        // Handles both "postListByCreatedAt" and "postlistByCreatedAt"
-        const match = method.name.match(/(?:ListBy|listBy)(.+)/i);
-        if (match && match[1]) {
-          const columnKebab = inflection.kebabCase(match[1]);
-          return `/by-${columnKebab}`;
-        }
-      }
-      // Standard list route
-      return "/";
-    case "create":
-      return "/";
-    case "lookup": {
-      const field = method.lookupField ?? "field";
-      const fieldKebab = inflection.kebabCase(field);
-      const lookupParam = method.params.find((p) => p.source === "lookup" || p.source === "fk");
-      const paramName = lookupParam?.name ?? field;
-      return `/by-${fieldKebab}/:${paramName}`;
-    }
-    case "function": {
-      return `/${inflection.kebabCase(method.name)}`;
-    }
-  }
-};
-
 function buildHandlerBody(
   method: QueryMethod,
   schemas: ValidationSchemas,
@@ -208,9 +107,9 @@ function buildHandlerBody(
   const bodyConsume = schemas.bodyConsume;
 
   const pathParams = method.params.filter(
-    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
-  const queryParams = method.params.filter((p) => p.source === "pagination");
+  const queryParams = method.params.filter(p => p.source === "pagination");
 
   if (pathParams.length > 0 && paramConsume) {
     statements.push(stmt.const("parsedParams", paramConsume(b.identifier("params"))));
@@ -221,10 +120,10 @@ function buildHandlerBody(
   }
 
   const needsBody =
-    method.params.some((p) => p.source === "body") ||
+    method.params.some(p => p.source === "body") ||
     method.kind === "create" ||
     method.kind === "update" ||
-    (method.kind === "function" && method.params.some((p) => !p.source));
+    (method.kind === "function" && method.params.some(p => !p.source));
 
   if (needsBody && bodyConsume) {
     statements.push(stmt.const("parsedBody", bodyConsume(b.identifier("body"))));
@@ -261,8 +160,8 @@ function buildHandlerBody(
       args.push(paramExpr(param));
     }
   } else {
-    const bodyParam = method.params.find((p) => p.source === "body");
-    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyParam = method.params.find(p => p.source === "body");
+    const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
     const bodyExpr = bodyConsume ? b.identifier("parsedBody") : b.identifier("body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
@@ -310,43 +209,24 @@ function buildHandlerBody(
   const resultDecl = stmt.const("result", awaitExpr);
 
   if (method.kind === "read" || (method.kind === "lookup" && method.isUniqueLookup)) {
-    const statusCall = b.callExpression(
-      b.identifier("status"),
-      [b.numericLiteral(404), b.stringLiteral("Not found")],
-    );
+    const statusCall = b.callExpression(b.identifier("status"), [
+      b.numericLiteral(404),
+      b.stringLiteral("Not found"),
+    ]);
     const notFoundCheck = b.ifStatement(
       b.unaryExpression("!", b.identifier("result")),
       b.returnStatement(statusCall),
     );
-    return [
-      ...statements,
-      resultDecl,
-      notFoundCheck,
-      b.returnStatement(b.identifier("result")),
-    ];
+    return [...statements, resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
   }
 
-  return [
-    ...statements,
-    resultDecl,
-    b.returnStatement(b.identifier("result")),
-  ];
+  return [...statements, resultDecl, b.returnStatement(b.identifier("result"))];
 }
 
-const stmt = conjure.stmt;
-
-/**
- * Get the body schema name for a method if it needs validation.
- */
-function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
-  if (method.kind === "create") {
-    return `${entityName}Insert`;
-  }
-  if (method.kind === "update") {
-    return `${entityName}Update`;
-  }
-  return null;
-}
+const elysiaMethodMap = {
+  ...defaultHttpMethodMap,
+  update: "patch",
+};
 
 type ConsumeFn = (input: n.Expression) => n.Expression;
 
@@ -354,17 +234,6 @@ interface ValidationSchemas {
   readonly paramSchema?: SchemaBuilderResult;
   readonly querySchema?: SchemaBuilderResult;
   readonly bodyConsume?: ConsumeFn;
-}
-
-function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
-  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
-  if (schemaBuilders.length === 0) return undefined;
-
-  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
-  if (metadata && typeof metadata === "object" && "builder" in metadata) {
-    return (metadata as { builder: SchemaBuilder }).builder;
-  }
-  return undefined;
 }
 
 function buildRouteCall(
@@ -381,13 +250,16 @@ function buildRouteCall(
   bodySchemaName: string | null;
   options: n.ObjectExpression | null;
 } {
-  const httpMethod = kindToHttpMethod(method.kind);
-  const path = getRoutePath(method, entityName, inflection);
+  const httpMethod = kindToHttpMethod(method.kind, elysiaMethodMap);
+  const path = getRoutePath(method, {
+    kebabCase: inflection.kebabCase,
+    listByRoute: candidate => listByRouteFromName(candidate, inflection.kebabCase),
+  });
 
   const handlerProps: n.Property[] = [];
 
   const pathParams = method.params.filter(
-    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
   if (pathParams.length > 0) {
     const paramsProp = b.property("init", b.identifier("params"), b.identifier("params"));
@@ -396,17 +268,17 @@ function buildRouteCall(
   }
 
   const needsBody =
-    method.params.some((p) => p.source === "body") ||
+    method.params.some(p => p.source === "body") ||
     method.kind === "create" ||
     method.kind === "update" ||
-    (method.kind === "function" && method.params.some((p) => !p.source));
+    (method.kind === "function" && method.params.some(p => !p.source));
   if (needsBody) {
     const prop = b.property("init", b.identifier("body"), b.identifier("body"));
     prop.shorthand = true;
     handlerProps.push(prop);
   }
 
-  const paginationParams = method.params.filter((p) => p.source === "pagination");
+  const paginationParams = method.params.filter(p => p.source === "pagination");
   if (paginationParams.length > 0) {
     const queryProp = b.property("init", b.identifier("query"), b.identifier("query"));
     queryProp.shorthand = true;
@@ -433,10 +305,7 @@ function buildRouteCall(
   let options: n.ObjectExpression | null = null;
   if (bodySchemaName) {
     // { body: EntityInsert } or { body: EntityUpdate }
-    options = conjure
-      .obj()
-      .prop("body", b.identifier(bodySchemaName))
-      .build();
+    options = conjure.obj().prop("body", b.identifier(bodySchemaName)).build();
   }
 
   return { httpMethod, path, handler, needsBody, bodySchemaName, options };
@@ -470,10 +339,7 @@ function generateElysiaRoutes(
   const fullPrefix = basePath ? `/${basePath}${prefix}` : prefix;
 
   let chainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), [
-    conjure
-      .obj()
-      .prop("prefix", b.stringLiteral(fullPrefix))
-      .build(),
+    conjure.obj().prop("prefix", b.stringLiteral(fullPrefix)).build(),
   ]);
   const schemaBuilder = getSchemaBuilder(registry);
   const schemaImports: ExternalImport[] = [];
@@ -488,9 +354,9 @@ function generateElysiaRoutes(
     }
 
     const pathParams = method.params.filter(
-      (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+      p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
     );
-    const queryParams = method.params.filter((p) => p.source === "pagination");
+    const queryParams = method.params.filter(p => p.source === "pagination");
 
     const paramSchema =
       schemaBuilder && pathParams.length > 0
@@ -518,17 +384,17 @@ function generateElysiaRoutes(
       : undefined;
 
     const queryHandle = registry.import(methodCapability);
-    const { httpMethod, path, handler, bodySchemaName: routeBodySchema, options } = buildRouteCall(
-      method,
-      entityName,
-      inflection,
-      queryHandle,
-      {
-        paramSchema,
-        querySchema,
-        bodyConsume,
-      },
-    );
+    const {
+      httpMethod,
+      path,
+      handler,
+      bodySchemaName: routeBodySchema,
+      options,
+    } = buildRouteCall(method, entityName, inflection, queryHandle, {
+      paramSchema,
+      querySchema,
+      bodyConsume,
+    });
 
     if (routeBodySchema) {
       // Use registry to import schema - this ensures correct relative path resolution
@@ -629,7 +495,6 @@ function getMethodCapabilitySuffix(
 
 function generateAggregator(
   entities: Map<string, EntityQueriesExtension>,
-  config: ResolvedHttpElysiaConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
@@ -650,10 +515,9 @@ function generateAggregator(
     // Use same name as the symbol declaration for consistency with cross-references
     const routesVarName = inflection.variableName(entityName, "ElysiaRoutes");
 
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")),
-      [b.identifier(routesVarName)],
-    );
+    chainExpr = b.callExpression(b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")), [
+      b.identifier(routesVarName),
+    ]);
 
     // Record cross-reference to the entity's routes capability
     // The emit phase will generate the import automatically
@@ -663,10 +527,7 @@ function generateAggregator(
     }
   }
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier("app"),
-    cast.toExpr(chainExpr),
-  );
+  const variableDeclarator = b.variableDeclarator(b.identifier("app"), cast.toExpr(chainExpr));
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   return {
@@ -775,13 +636,7 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
 
         // Scope cross-references to this specific capability
         const { statements, externalImports } = registry.forSymbol(capability, () =>
-          generateElysiaRoutes(
-            entityName,
-            queries,
-            resolvedConfig,
-            registry,
-            inflection,
-          ),
+          generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
@@ -798,12 +653,7 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
 
         // Scope cross-references to the app capability
         const { statements, externalImports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(
-            entityQueries,
-            resolvedConfig,
-            registry,
-            inflection,
-          ),
+          generateAggregator(entityQueries, registry, inflection),
         );
 
         rendered.push({

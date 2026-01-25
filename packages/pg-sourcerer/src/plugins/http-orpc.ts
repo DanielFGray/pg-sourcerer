@@ -15,23 +15,28 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration, SymbolHandle } from "../runtime/types.js";
 import type { RenderedSymbolWithImports } from "../runtime/emit.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
-import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import type {
-  SchemaBuilder,
-  SchemaBuilderResult,
-  SchemaImportSpec,
-} from "../ir/extensions/schema-builder.js";
+  QueryMethod,
+  QueryMethodParam,
+  EntityQueriesExtension,
+} from "../ir/extensions/queries.js";
+import type { SchemaBuilder, SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
+import {
+  buildQueryInvocation,
+  getBodySchemaName,
+  toExternalImport,
+} from "./shared/http-helpers.js";
+import { getSchemaBuilder } from "./shared/schema-builder.js";
 
 const b = conjure.b;
 const stmt = conjure.stmt;
@@ -111,22 +116,6 @@ interface ProcedureSchemas {
   readonly queryHandle: SymbolHandle;
 }
 
-function toExternalImport(spec: SchemaImportSpec): ExternalImport {
-  return {
-    from: spec.from,
-    names: spec.names,
-    namespace: spec.namespace,
-  };
-}
-
-function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
-  if (handle.consume && args.length <= 1) {
-    const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
-  }
-  return handle.call(...args) as n.Expression;
-}
-
 /**
  * Build the handler function body for an oRPC procedure.
  * oRPC handlers receive { input } and return data directly.
@@ -166,8 +155,8 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
     }
   } else {
     // Named style
-    const bodyParam = method.params.find((p) => p.source === "body");
-    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyParam = method.params.find(p => p.source === "body");
+    const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       // Body fields spread directly: fn(input)
@@ -184,17 +173,18 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
     } else if (bodyParam && callSig.bodyStyle === "property") {
       // Body wrapped in property: fn({ id, data })
       const nonBodyParams = method.params.filter(
-        (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination",
+        p =>
+          p.source === "pk" ||
+          p.source === "fk" ||
+          p.source === "lookup" ||
+          p.source === "pagination",
       );
 
       if (nonBodyParams.length > 0) {
         // Build object with non-body params + body property
         let objBuilder = conjure.obj();
         for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(
-            param.name,
-            paramExpr(param),
-          );
+          objBuilder = objBuilder.prop(param.name, paramExpr(param));
         }
         objBuilder = objBuilder.prop(
           bodyParam.name,
@@ -229,33 +219,12 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
 /**
  * Get the body schema name for a method if it needs validation.
  */
-function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
-  if (method.kind === "create") {
-    return `${entityName}Insert`;
-  }
-  if (method.kind === "update") {
-    return `${entityName}Update`;
-  }
-  return null;
-}
-
 /**
  * Build input schema expression for a procedure.
  * Returns the schema expression and whether we need z import.
  */
-function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
-  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
-  if (schemaBuilders.length === 0) return undefined;
-
-  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
-  if (metadata && typeof metadata === "object" && "builder" in metadata) {
-    return (metadata as { builder: SchemaBuilder }).builder;
-  }
-  return undefined;
-}
-
 function getBodySource(method: QueryMethod): n.Expression {
-  const bodyParam = method.params.find((p) => p.source === "body");
+  const bodyParam = method.params.find(p => p.source === "body");
   if (!bodyParam) return b.identifier("input");
 
   const callSig = method.callSignature ?? { style: "named" as const };
@@ -293,7 +262,7 @@ function buildProcedure(
     ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
     : undefined;
 
-  const nonBodyParams = method.params.filter((p) => p.source !== "body");
+  const nonBodyParams = method.params.filter(p => p.source !== "body");
   const paramSchema =
     schemaBuilder && nonBodyParams.length > 0
       ? schemaBuilder.build({ variant: "params", params: nonBodyParams })
@@ -303,7 +272,7 @@ function buildProcedure(
     externalImports.push(toExternalImport(paramSchema.importSpec));
   }
 
-  const hasBody = method.params.some((p) => p.source === "body");
+  const hasBody = method.params.some(p => p.source === "body");
   const shouldUseInputSchema = !hasBody && paramSchema;
 
   if (shouldUseInputSchema) {

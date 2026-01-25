@@ -7,31 +7,31 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
-import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.js";
+import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
+import type { RenderedSymbolWithImports } from "../runtime/emit.js";
 import type { FileNaming } from "../runtime/file-assignment.js";
 import { normalizeFileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
 import { CoreInflection, Inflection } from "../services/inflection.js";
 import {
-  isTableEntity,
   getTableEntities,
-  getEnumEntities,
   getCursorPaginationCandidates,
   type TableEntity,
-  type EnumEntity,
   type Field,
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import { type UserModuleRef } from "../user-module.js";
+import { getPgType, pgTypeToTsType, resolveFieldTypeInfo } from "./shared/pg-types.js";
 
-const { fn, ts, param, str, b, exp } = conjure;
+const { fn, ts, param, b, exp } = conjure;
 
-const createQueryConsume = (method: QueryMethod) => (input: unknown): n.Expression => {
-  const args = input == null ? [] : [cast.toExpr(input as n.Expression)];
-  return b.callExpression(b.identifier(method.name), args);
-};
+const createQueryConsume =
+  (method: QueryMethod) =>
+  (input: unknown): n.Expression => {
+    const args = input == null ? [] : [cast.toExpr(input as n.Expression)];
+    return b.callExpression(b.identifier(method.name), args);
+  };
 
 // ============================================================================
 // Name Building Helpers
@@ -41,12 +41,25 @@ function buildQueryName(inflection: CoreInflection, entityName: string, operatio
   return inflection.variableName(entityName, operation);
 }
 
-function buildFindByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+function buildFindByName(
+  inflection: CoreInflection,
+  entityName: string,
+  columnName: string,
+): string {
   return inflection.variableName(entityName, `FindBy${inflection.pascalCase(columnName)}`);
 }
 
-function buildListByName(inflection: CoreInflection, entityName: string, columnName: string): string {
+function buildListByName(
+  inflection: CoreInflection,
+  entityName: string,
+  columnName: string,
+): string {
   return inflection.variableName(entityName, `ListBy${inflection.pascalCase(columnName)}`);
+}
+
+function getResolvedTypeName(field: Field): string {
+  const resolved = resolveFieldTypeInfo(field);
+  return resolved?.typeName ?? getPgType(field);
 }
 
 // ============================================================================
@@ -122,9 +135,7 @@ function buildColumnList(fields: readonly Field[]): string {
 }
 
 function buildSelectClause(entity: TableEntity, explicitColumns: boolean): string {
-  return explicitColumns
-    ? `select ${buildColumnList(entity.shapes.row.fields)}`
-    : "select *";
+  return explicitColumns ? `select ${buildColumnList(entity.shapes.row.fields)}` : "select *";
 }
 
 function buildTableName(entity: TableEntity, defaultSchemas: readonly string[]): string {
@@ -133,30 +144,10 @@ function buildTableName(entity: TableEntity, defaultSchemas: readonly string[]):
     : `${entity.schemaName}.${entity.pgName}`;
 }
 
-function getPgType(field: Field): string {
-  const pgType = field.pgAttribute.getType();
-  return pgType?.typname ?? "unknown";
-}
-
-function pgTypeToTsType(pgType: string): string {
-  const lower = pgType.toLowerCase();
-  if (["uuid", "text", "varchar", "char", "citext", "name"].includes(lower)) return "string";
-  if (
-    ["int2", "int4", "int8", "integer", "smallint", "bigint", "numeric", "decimal", "real", "float4", "float8"].includes(
-      lower,
-    )
-  )
-    return "number";
-  if (["bool", "boolean"].includes(lower)) return "boolean";
-  if (["timestamp", "timestamptz", "date"].includes(lower)) return "Date";
-  if (["json", "jsonb"].includes(lower)) return "unknown";
-  return "string";
-}
-
 function buildPkParam(field: Field) {
   return {
     name: field.name,
-    type: pgTypeToTsType(getPgType(field)),
+    type: pgTypeToTsType(getResolvedTypeName(field)),
     required: true,
     columnName: field.columnName,
     source: "pk" as const,
@@ -166,7 +157,7 @@ function buildPkParam(field: Field) {
 function buildLookupParam(field: Field) {
   return {
     name: field.name,
-    type: pgTypeToTsType(getPgType(field)),
+    type: pgTypeToTsType(getResolvedTypeName(field)),
     required: true,
     columnName: field.columnName,
     source: "lookup" as const,
@@ -200,13 +191,6 @@ interface PaginationParam {
   required: false;
   defaultValue: number;
   source: "pagination";
-}
-
-function buildPaginationParams(defaultLimit: number): PaginationParam[] {
-  return [
-    { name: "limit", type: "number", required: false, defaultValue: defaultLimit, source: "pagination" as const },
-    { name: "offset", type: "number", required: false, defaultValue: 0, source: "pagination" as const },
-  ];
 }
 
 function buildReturnType(entityName: string, isArray: boolean, nullable: boolean) {
@@ -302,15 +286,17 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           const entityName = entity.name;
           let hasAnyMethods = false;
 
-          if (entity.permissions.canSelect && entity.primaryKey && entity.primaryKey.columns.length > 0) {
+          if (
+            entity.permissions.canSelect &&
+            entity.primaryKey &&
+            entity.primaryKey.columns.length > 0
+          ) {
             hasAnyMethods = true;
             declarations.push({
               name: buildQueryName(inflection, entityName, "FindById"),
               capability: `queries:sql:${entityName}:findById`,
             });
           }
-
-
 
           if (entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert) {
             hasAnyMethods = true;
@@ -413,9 +399,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
           const fromClause = `from ${tableName}`;
 
-          const buildTemplateLiteral = (
-            parts: readonly string[],
-          ): n.TaggedTemplateExpression => {
+          const buildTemplateLiteral = (parts: readonly string[]): n.TaggedTemplateExpression => {
             return conjure.taggedTemplate("sql", parts, []);
           };
 
@@ -426,7 +410,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             return conjure.taggedTemplate("sql", parts, [...params]);
           };
 
-          if (entity.permissions.canSelect && entity.primaryKey && entity.primaryKey.columns.length > 0) {
+          if (
+            entity.permissions.canSelect &&
+            entity.primaryKey &&
+            entity.primaryKey.columns.length > 0
+          ) {
             const pkColumn = entity.primaryKey.columns[0]!;
             const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumn)!;
             const pkParam = buildPkParam(pkField);
@@ -446,9 +434,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             ]);
 
             const destructuredParam = buildDestructuredParam([pkParam]);
-            const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-              conjure.stmt.return(templateLiteral),
-            ).build();
+            const fnExpr = fn()
+              .rawParam(destructuredParam)
+              .arrow()
+              .body(conjure.stmt.return(templateLiteral))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -471,7 +461,9 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             };
             entityMethods.push(method);
 
-            const insertableFields = entity.shapes.insert.fields.filter(f => f.permissions.canInsert);
+            const insertableFields = entity.shapes.insert.fields.filter(
+              f => f.permissions.canInsert,
+            );
             const columnNames = insertableFields.map(f => f.columnName);
             const columnList = columnNames.join(", ");
 
@@ -491,9 +483,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             const templateLiteral = buildTemplateLiteralWithParams(templateParts, paramExprs);
 
             const destructuredParam = buildDestructuredParam([bodyParam]);
-            const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-              conjure.stmt.return(templateLiteral),
-            ).build();
+            const fnExpr = fn()
+              .rawParam(destructuredParam)
+              .arrow()
+              .body(conjure.stmt.return(templateLiteral))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -532,7 +526,9 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             };
             entityMethods.push(method);
 
-            const updatableFields = entity.shapes.update.fields.filter(f => f.permissions.canUpdate);
+            const updatableFields = entity.shapes.update.fields.filter(
+              f => f.permissions.canUpdate,
+            );
 
             const templateParts: string[] = [`update ${tableName} set `];
             for (let i = 0; i < updatableFields.length; i++) {
@@ -546,15 +542,19 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             templateParts.push(" returning *");
 
             const paramExprs: n.Expression[] = [
-              ...updatableFields.map(f => b.memberExpression(b.identifier("data"), b.identifier(f.name))),
+              ...updatableFields.map(f =>
+                b.memberExpression(b.identifier("data"), b.identifier(f.name)),
+              ),
               b.identifier(pkField.name),
             ];
             const templateLiteral = buildTemplateLiteralWithParams(templateParts, paramExprs);
 
             const destructuredParam = buildDestructuredParam([pkParam, bodyParam]);
-            const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-              conjure.stmt.return(templateLiteral),
-            ).build();
+            const fnExpr = fn()
+              .rawParam(destructuredParam)
+              .arrow()
+              .body(conjure.stmt.return(templateLiteral))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -597,9 +597,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             ]);
 
             const destructuredParam = buildDestructuredParam([pkParam]);
-            const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-              conjure.stmt.return(templateLiteral),
-            ).build();
+            const fnExpr = fn()
+              .rawParam(destructuredParam)
+              .arrow()
+              .body(conjure.stmt.return(templateLiteral))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -647,9 +649,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               ]);
 
               const destructuredParam = buildDestructuredParam([lookupParam]);
-              const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-                conjure.stmt.return(templateLiteral),
-              ).build();
+              const fnExpr = fn()
+                .rawParam(destructuredParam)
+                .arrow()
+                .body(conjure.stmt.return(templateLiteral))
+                .build();
 
               symbols.push({
                 name: method.name,
@@ -670,7 +674,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
             const pkParam = {
               name: candidate.pkColumn,
-              type: pgTypeToTsType(getPgType(pkField)),
+              type: pgTypeToTsType(getResolvedTypeName(pkField)),
               required: false,
             };
 
@@ -728,9 +732,11 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               cursorPkParam,
               limitParam,
             ]);
-            const fnExpr = fn().rawParam(destructuredParam).arrow().body(
-              conjure.stmt.return(templateLiteral),
-            ).build();
+            const fnExpr = fn()
+              .rawParam(destructuredParam)
+              .arrow()
+              .body(conjure.stmt.return(templateLiteral))
+              .build();
 
             symbols.push({
               name: method.name,
@@ -747,7 +753,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
           const entityExtension: EntityQueriesExtension = {
             methods: entityMethods,
-            pkType: pkField ? pgTypeToTsType(getPgType(pkField)) : undefined,
+            pkType: pkField ? pgTypeToTsType(getResolvedTypeName(pkField)) : undefined,
             hasCompositePk: (entity.primaryKey?.columns.length ?? 0) > 1,
           };
 
