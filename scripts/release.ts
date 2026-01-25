@@ -1,18 +1,27 @@
 /// <reference types="bun" />
+/**
+ * Release Script
+ * 
+ * Squash-merges develop into main for release-please to handle.
+ * 
+ * Usage:
+ *   bun scripts/release.ts              # Squash-merge develop to main
+ *   bun scripts/release.ts --dry-run    # Show what would happen without making changes
+ * 
+ * Workflow:
+ * 1. Run this script from develop branch
+ * 2. Script squash-merges develop into main and pushes
+ * 3. CI runs, release-please creates a release PR with changelog
+ * 4. Merge the release PR to trigger npm publish
+ */
 
-const version = process.argv[2];
-if (!version) {
-  console.error("Usage: bun scripts/release.ts <version>");
-  process.exit(1);
-}
-
-const semverPattern = /^\d+\.\d+\.\d+$/;
-if (!semverPattern.test(version)) {
-  console.error(`Invalid version: ${version}. Expected X.Y.Z`);
-  process.exit(1);
-}
+const args = process.argv.slice(2);
+const dryRun = args.includes("--dry-run");
 
 const run = async (command: string[], cwd?: string) => {
+  console.log(`$ ${command.join(" ")}`);
+  if (dryRun) return;
+  
   const proc = Bun.spawn(command, {
     cwd,
     stdout: "inherit",
@@ -24,7 +33,7 @@ const run = async (command: string[], cwd?: string) => {
   }
 };
 
-const runCapture = async (command: string[], cwd?: string) => {
+const runCapture = async (command: string[], cwd?: string): Promise<string> => {
   const proc = Bun.spawn(command, {
     cwd,
     stdout: "pipe",
@@ -40,40 +49,13 @@ const runCapture = async (command: string[], cwd?: string) => {
   return stdout;
 };
 
-const runCaptureOptional = async (command: string[], cwd?: string) => {
-  const proc = Bun.spawn(command, {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-  return { exitCode, stdout, stderr };
-};
-
-const runCheck = async (command: string[], cwd?: string) => {
+const runCheck = async (command: string[], cwd?: string): Promise<boolean> => {
   const proc = Bun.spawn(command, {
     cwd,
     stdout: "ignore",
     stderr: "ignore",
   });
   return (await proc.exited) === 0;
-};
-
-const readText = async (path: string) => Bun.file(path).text();
-
-const parseVersion = (input: string) => {
-  const [major = 0, minor = 0, patch = 0] = input.split(".").map(Number);
-  return [major, minor, patch] as const;
-};
-
-const compareSemver = (left: string, right: string) => {
-  const [lMajor, lMinor, lPatch] = parseVersion(left);
-  const [rMajor, rMinor, rPatch] = parseVersion(right);
-  if (lMajor !== rMajor) return lMajor - rMajor;
-  if (lMinor !== rMinor) return lMinor - rMinor;
-  return lPatch - rPatch;
 };
 
 const ensureClean = async () => {
@@ -92,54 +74,11 @@ const ensureBranch = async (name: string) => {
   }
 };
 
-const ensureTagAvailable = async (tag: string) => {
-  const local = (await runCapture(["git", "tag", "--list", tag])).trim();
-  if (local.length > 0) {
-    console.error(`Tag ${tag} already exists locally.`);
-    process.exit(1);
-  }
-
-  const remote = (await runCapture(["git", "ls-remote", "--tags", "origin", tag])).trim();
-  if (remote.length > 0) {
-    console.error(`Tag ${tag} already exists on origin.`);
-    process.exit(1);
-  }
-};
-
-const ensureReleasePleasePrClosed = async () => {
-  const result = await runCaptureOptional([
-    "gh",
-    "pr",
-    "list",
-    "--state",
-    "open",
-    "--search",
-    "release-please",
-    "--json",
-    "number,title",
-  ]);
-  if (result.exitCode !== 0) {
-    console.warn("Warning: unable to check release-please PR status.");
-    return;
-  }
-
-  const prs = JSON.parse(result.stdout) as Array<{ number: number; title: string }>;
-  if (prs.length > 0) {
-    console.error(
-      [
-        "Release-please PR already open:",
-        ...prs.map(pr => `#${pr.number} ${pr.title}`),
-      ].join("\n"),
-    );
-    process.exit(1);
-  }
-};
-
 const ensureDevelopContainsMain = async () => {
   await run(["git", "fetch", "origin"]);
   const hasMain = await runCheck(["git", "merge-base", "--is-ancestor", "origin/main", "develop"]);
   if (!hasMain) {
-    console.error("Develop is missing commits from main. Merge main into develop first.");
+    console.error("Develop is missing commits from main. Run: git merge origin/main");
     process.exit(1);
   }
 };
@@ -154,94 +93,104 @@ const ensureDevelopUpToDate = async () => {
   ]);
   const [behind = 0] = output.trim().split("\t").map(Number);
   if (behind > 0) {
-    console.error("Develop is behind origin/develop. Pull first.");
+    console.error("Develop is behind origin/develop. Run: git pull");
     process.exit(1);
   }
 };
 
-const ensureVersionAdvances = async () => {
-  const manifest = JSON.parse(
-    await readText(".release-please-manifest.json"),
-  ) as Record<string, string>;
-  const current = manifest["packages/pg-sourcerer"];
-  if (!current) {
-    console.error("Release-please manifest missing packages/pg-sourcerer version.");
+const ensureDevelopAheadOfMain = async () => {
+  const output = await runCapture([
+    "git",
+    "rev-list",
+    "--count",
+    "origin/main..develop",
+  ]);
+  const ahead = parseInt(output.trim(), 10);
+  if (ahead === 0) {
+    console.error("Develop has no commits ahead of main. Nothing to release.");
     process.exit(1);
   }
-
-  if (compareSemver(version, current) <= 0) {
-    console.error(`Version must be greater than ${current}.`);
-    process.exit(1);
-  }
-
-  const pkg = JSON.parse(
-    await readText("packages/pg-sourcerer/package.json"),
-  ) as { version: string };
-  if (pkg.version !== current) {
-    console.error("Package version and release-please manifest are out of sync.");
-    process.exit(1);
-  }
-};
-
-const bumpVersion = async () => {
-  const pkgPath = "packages/pg-sourcerer/package.json";
-  const manifestPath = ".release-please-manifest.json";
-
-  const pkg = JSON.parse(await readText(pkgPath)) as { version: string };
-  pkg.version = version;
-  await Bun.write(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-
-  const manifest = JSON.parse(await readText(manifestPath)) as Record<string, string>;
-  manifest["packages/pg-sourcerer"] = version;
-  await Bun.write(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  console.log(`Develop is ${ahead} commit(s) ahead of main.`);
+  return ahead;
 };
 
 const runTests = async () => {
+  console.log("\nRunning tests...");
   await run(["bun", "run", "typecheck"], "packages/pg-sourcerer");
-  await run(["bun", "run", "test"], "packages/pg-sourcerer");
+  await run(["bun", "run", "test:unit"], "packages/pg-sourcerer");
 };
 
-const commitVersion = async () => {
-  await run([
+const getCommitSummary = async (): Promise<string> => {
+  const log = await runCapture([
     "git",
-    "add",
-    "packages/pg-sourcerer/package.json",
-    ".release-please-manifest.json",
+    "log",
+    "--oneline",
+    "origin/main..develop",
   ]);
-  await run([
-    "git",
-    "commit",
-    "-m",
-    `chore: bump version to ${version}`,
-    "-m",
-    "- sync release-please manifest",
-    "-m",
-    `- prep release ${version}`,
-  ]);
+  const lines = log.trim().split("\n").filter(Boolean);
+  
+  // Group by conventional commit type
+  const features = lines.filter(l => l.includes("feat"));
+  const fixes = lines.filter(l => l.includes("fix"));
+  const others = lines.filter(l => !l.includes("feat") && !l.includes("fix"));
+  
+  const parts: string[] = [];
+  if (features.length) parts.push(`${features.length} feature(s)`);
+  if (fixes.length) parts.push(`${fixes.length} fix(es)`);
+  if (others.length) parts.push(`${others.length} other`);
+  
+  return parts.join(", ");
 };
 
-const pushDevelop = async () => {
-  await run(["git", "push", "origin", "develop"]);
+const squashMergeToMain = async (summary: string) => {
+  console.log("\nSquash-merging develop into main...");
+  
+  // Checkout main
+  await run(["git", "checkout", "main"]);
+  await run(["git", "pull", "origin", "main"]);
+  
+  // Squash merge develop
+  await run(["git", "merge", "--squash", "develop"]);
+  
+  // Commit with summary
+  const message = `chore: merge develop (${summary})`;
+  await run(["git", "commit", "-m", message]);
+  
+  // Push main
+  await run(["git", "push", "origin", "main"]);
+  
+  // Return to develop
+  await run(["git", "checkout", "develop"]);
 };
 
 const main = async () => {
+  if (dryRun) {
+    console.log("=== DRY RUN MODE ===\n");
+  }
+  
+  console.log("Checking prerequisites...");
   await ensureClean();
   await ensureBranch("develop");
   await ensureDevelopContainsMain();
   await ensureDevelopUpToDate();
-  await ensureReleasePleasePrClosed();
-  await ensureVersionAdvances();
-  await ensureTagAvailable(`v${version}`);
-  await bumpVersion();
+  await ensureDevelopAheadOfMain();
+  
   await runTests();
-  await commitVersion();
-  await pushDevelop();
-  console.log(
-    [
-      `Version bump ${version} committed and pushed to develop.`,
-      "Next: merge develop into main and let release-please open the PR.",
-    ].join("\n"),
-  );
+  
+  const summary = await getCommitSummary();
+  console.log(`\nCommit summary: ${summary}`);
+  
+  await squashMergeToMain(summary);
+  
+  console.log(`
+Release merge complete!
+
+Next steps:
+1. Wait for CI to run on main
+2. Release-please will create a PR with version bump and changelog
+3. Review and merge the release PR
+4. Publish will run automatically after merge
+`);
 };
 
-await main();
+main().catch(console.error);

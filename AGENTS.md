@@ -53,42 +53,42 @@ Scripts in `packages/example` use `bun --env-file=.env` to load environment vari
 
 ### Releasing to main
 
-This project uses **release-please** to automate releases. The workflow:
+This project uses **release-please** to automate releases. Release-please handles version bumps and changelog generation automatically.
 
-1. Merge develop into main with version bump
-2. Push to main
-3. Release-please CI creates a release and publishes to npm
+**Use the release script:**
 
 ```bash
-# 1. Ensure develop is up to date
-git checkout develop && git pull
-
-# 2. Bump version in BOTH files (they must stay in sync!)
-cd packages/pg-sourcerer
-# Edit package.json version manually (npm version doesn't work with workspace:*)
-# Then update .release-please-manifest.json to match
-
-# 3. Commit and push to develop
-git add -A && git commit -m "chore: bump version to X.Y.Z" && git push
-
-# 4. Merge to main and push
-git checkout main
-git pull origin main
-git merge develop -m "Release vX.Y.Z - <brief description>"
-git push origin main
-
-# 5. Switch back to develop
-git checkout develop
+bun scripts/release.ts           # Squash-merge develop to main
+bun scripts/release.ts --dry-run # Preview without making changes
 ```
 
-**IMPORTANT: release-please manifest sync**
+The script will:
+1. Verify develop is clean and up to date
+2. Run tests
+3. Squash-merge develop into main
+4. Push to main
 
-Release-please tracks versions in `.release-please-manifest.json`, NOT `package.json`.
-If these get out of sync, release-please will suggest wrong versions.
+After the script runs:
+1. CI runs on main
+2. Release-please creates a PR with version bump and changelog
+3. Review and merge the release PR
+4. Publish runs automatically
 
-Always update BOTH files when bumping versions:
-- `packages/pg-sourcerer/package.json` - the actual package version
-- `.release-please-manifest.json` - release-please's version tracker
+**Why squash-merge?**
+
+Release-please walks the full git graph to generate changelogs. Regular merges from develop can include duplicate commits from parallel development, causing messy release notes. Squash-merge keeps main's history linear and clean.
+
+**Manual release (if needed):**
+
+```bash
+git checkout develop && git pull
+# Run tests locally: cd packages/pg-sourcerer && bun run test
+git checkout main && git pull origin main
+git merge --squash develop
+git commit -m "chore: merge develop"
+git push origin main
+git checkout develop
+```
 
 ### Syncing main→develop
 
