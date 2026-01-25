@@ -1,7 +1,8 @@
 /**
  * Effect Repos Plugin
  *
- * Generates Effect.Service wrappers around Model.makeRepository for table entities with single-column PKs
+ * Generates Effect.Service wrappers around Model.makeRepository or query plugins
+ * for table entities with single-column PKs.
  */
 import { Effect } from "effect";
 import type { namedTypes as n } from "ast-types";
@@ -9,14 +10,17 @@ import type { namedTypes as n } from "ast-types";
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../../runtime/types.js";
 import { SymbolRegistry } from "../../runtime/registry.js";
 import { IR } from "../../services/ir.js";
+import { Inflection } from "../../services/inflection.js";
 import { isTableEntity } from "../../ir/semantic-ir.js";
+import type { EntityQueriesExtension } from "../../ir/extensions/queries.js";
 import { conjure, cast } from "../../conjure/index.js";
-import { hasSingleColumnPrimaryKey, getPrimaryKeyColumn } from "./shared.js";
+import { hasSingleColumnPrimaryKey, getPrimaryKeyColumn, type ParsedEffectConfig } from "./shared.js";
 
 const b = conjure.b;
 
 /**
  * Effect Repos plugin - generates Effect.Service wrappers around Model.makeRepository
+ * or query plugin exports.
  *
  * Output:
  * ```typescript
@@ -33,13 +37,17 @@ const b = conjure.b;
  * }) {}
  * ```
  */
-export function effectRepos(): Plugin {
+export function effectRepos(config: ParsedEffectConfig): Plugin {
+  const usesModelRepo = config.repoModel;
+
+  const consumes = usesModelRepo ? ["effect:models"] : ["effect:models", "queries"];
+
   return {
     name: "effect-repos",
 
     provides: ["effect:repos"],
 
-    consumes: ["effect:models"], // Need model classes to reference
+    consumes, // Need model classes to reference
 
     fileDefaults: [
       {
@@ -69,6 +77,7 @@ export function effectRepos(): Plugin {
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
+      const inflection = yield* Inflection;
 
       const rendered: RenderedSymbol[] = [];
 
@@ -76,36 +85,79 @@ export function effectRepos(): Plugin {
         if (isTableEntity(entity) && hasSingleColumnPrimaryKey(entity)) {
           const repoName = `${entity.name}Repo`;
           const capability = `effect:repo:${entity.name}`;
-          const qualifiedTableName = `${entity.schemaName}.${entity.pgName}`;
-          const idColumn = getPrimaryKeyColumn(entity)!;
 
           // Scope cross-references (model import) to this specific capability
           const exportedClass = registry.forSymbol(capability, () => {
-            // Get reference to the model class
-            const modelHandle = registry.import(`effect:model:${entity.name}`);
-            const modelRef = modelHandle.ref() as n.Expression;
+            let repoVarDecl: n.VariableDeclaration;
 
-            // Build: Model.makeRepository(Entity, { tableName, spanPrefix, idColumn })
-            const makeRepoCall = conjure
-              .id("Model")
-              .method("makeRepository", [
-                modelRef,
-                conjure
-                  .obj()
-                  .prop("tableName", conjure.str(qualifiedTableName))
-                  .prop("spanPrefix", conjure.str(repoName))
-                  .prop("idColumn", conjure.str(idColumn))
-                  .build(),
-              ])
-              .build();
+            if (usesModelRepo) {
+              const qualifiedTableName = `${entity.schemaName}.${entity.pgName}`;
+              const idColumn = getPrimaryKeyColumn(entity)!;
 
-            // Build: const repo = yield* Model.makeRepository(...)
-            const repoVarDecl = b.variableDeclaration("const", [
-              b.variableDeclarator(
-                b.identifier("repo"),
-                b.yieldExpression(cast.toExpr(makeRepoCall), true), // true = delegate (yield*)
-              ),
-            ]);
+              // Get reference to the model class
+              const modelHandle = registry.import(`effect:model:${entity.name}`);
+              const modelRef = modelHandle.ref() as n.Expression;
+
+              // Build: Model.makeRepository(Entity, { tableName, spanPrefix, idColumn })
+              const makeRepoCall = conjure
+                .id("Model")
+                .method("makeRepository", [
+                  modelRef,
+                  conjure
+                    .obj()
+                    .prop("tableName", conjure.str(qualifiedTableName))
+                    .prop("spanPrefix", conjure.str(repoName))
+                    .prop("idColumn", conjure.str(idColumn))
+                    .build(),
+                ])
+                .build();
+
+              // Build: const repo = yield* Model.makeRepository(...)
+              repoVarDecl = b.variableDeclaration("const", [
+                b.variableDeclarator(
+                  b.identifier("repo"),
+                  b.yieldExpression(cast.toExpr(makeRepoCall), true), // true = delegate (yield*)
+                ),
+              ]);
+            } else {
+              const queriesHandle = registry.import(`queries:${entity.name}`);
+              const queryMetadata = queriesHandle.metadata as EntityQueriesExtension | undefined;
+              const properties: n.ObjectProperty[] = [];
+              const seen = new Set<string>();
+              const queryPrefix = inflection.variableName(entity.name, "");
+
+              if (queryMetadata?.methods) {
+                for (const method of queryMetadata.methods) {
+                  const rawSuffix = method.name.startsWith(queryPrefix)
+                    ? method.name.slice(queryPrefix.length)
+                    : method.name;
+                  const operation = rawSuffix.length > 0
+                    ? rawSuffix[0]!.toLowerCase() + rawSuffix.slice(1)
+                    : rawSuffix;
+                  if (!operation) continue;
+
+                  const queryCapability = `queries:${entity.name}:${operation}`;
+                  if (!registry.has(queryCapability)) continue;
+
+                  const queryRef = registry.import(queryCapability).ref() as n.Expression;
+
+                  if (!seen.has(operation)) {
+                    properties.push(b.objectProperty(b.identifier(operation), cast.toExpr(queryRef)));
+                    seen.add(operation);
+                  }
+
+                  if (method.kind === "create" && !seen.has("insert")) {
+                    properties.push(b.objectProperty(b.identifier("insert"), cast.toExpr(queryRef)));
+                    seen.add("insert");
+                  }
+                }
+              }
+
+              const queriesObject = b.objectExpression(properties);
+              repoVarDecl = b.variableDeclaration("const", [
+                b.variableDeclarator(b.identifier("repo"), queriesObject),
+              ]);
+            }
 
             // Build: return { ...repo }
             const returnStmt = b.returnStatement(
@@ -124,8 +176,6 @@ export function effectRepos(): Plugin {
             const effectGenCall = conjure.id("Effect").method("gen", [generatorFn]).build();
 
             // Build: { effect: Effect.gen(...) }
-            // Note: SqlClient dependency is not specified here since it doesn't have a Default layer.
-            // Users provide SqlClient via Layer.provide when using the repo.
             const serviceConfig = conjure.obj().prop("effect", effectGenCall).build();
 
             // Build: Effect.Service<RepoName>()
@@ -155,10 +205,12 @@ export function effectRepos(): Plugin {
             capability,
             node: exportedClass,
             exports: "named",
-            externalImports: [
-              { from: "effect", names: ["Effect"] },
-              { from: "@effect/sql", names: ["Model"] },
-            ],
+            externalImports: usesModelRepo
+              ? [
+                  { from: "effect", names: ["Effect"] },
+                  { from: "@effect/sql", names: ["Model"] },
+                ]
+              : [{ from: "effect", names: ["Effect"] }],
           });
         }
       }
