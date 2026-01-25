@@ -13,65 +13,41 @@
  *
  * Routes use @hono/standard-validator for middleware-based validation.
  */
-import { Effect, Array as Arr, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
-import { isTableEntity, type TableEntity } from "../ir/semantic-ir.js";
-import { QueryMethodKind } from "../ir/extensions/queries.js";
+import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, QueryMethodParam, EntityQueriesExtension } from "../ir/extensions/queries.js";
 import type {
-  SchemaBuilder,
-  SchemaBuilderRequest,
-  SchemaBuilderResult,
-  SchemaImportSpec,
-} from "../ir/extensions/schema-builder.js";
+  QueryMethod,
+  QueryMethodParam,
+  EntityQueriesExtension,
+} from "../ir/extensions/queries.js";
+import type { SchemaBuilder, SchemaBuilderRequest } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
-import { type FileNaming, type FileNamingContext, normalizeFileNaming } from "../runtime/file-assignment.js";
+import {
+  buildQueryInvocation,
+  coerceParam,
+  getBodySchemaName,
+  getRoutePath,
+  kindToHttpMethod,
+  listByRouteFromName,
+  toExternalImport,
+} from "./shared/http-helpers.js";
+import { getSchemaBuilder } from "./shared/schema-builder.js";
+import { FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 
-const b = conjure.b;
+const { b, stmt } = conjure;
 
 const PLUGIN_NAME = "hono-http";
 
 const DEFAULT_OUTPUT_DIR = "";
 const DEFAULT_ROUTES_FILE = "routes.ts";
 const DEFAULT_APP_FILE = "routes.ts";
-
-/**
- * Coerce a URL param (always string) to the expected type.
- * Returns an expression that wraps the identifier with the appropriate coercion.
- */
-function coerceParam(paramName: string, paramType: string): n.Expression {
-  const ident = b.identifier(paramName);
-  const lowerType = paramType.toLowerCase();
-
-  if (lowerType === "number" || lowerType === "int" || lowerType === "integer" || lowerType === "bigint") {
-    return b.callExpression(b.identifier("Number"), [ident]);
-  }
-
-  if (lowerType === "date" || lowerType.includes("timestamp") || lowerType.includes("datetime")) {
-    return b.newExpression(b.identifier("Date"), [ident]);
-  }
-
-  if (lowerType === "boolean" || lowerType === "bool") {
-    return b.binaryExpression("===", ident, b.stringLiteral("true"));
-  }
-
-  return ident;
-}
-
-function needsCoercion(param: QueryMethodParam): boolean {
-  return (
-    param.source === "pk" ||
-    param.source === "fk" ||
-    param.source === "lookup" ||
-    param.source === "pagination"
-  );
-}
 
 /**
  * Schema-validated portion of the config (simple types only).
@@ -105,56 +81,6 @@ interface ResolvedHttpHonoConfig {
   appFile: FileNaming;
 }
 
-const kindToHttpMethod = (kind: QueryMethodKind): string => {
-  switch (kind) {
-    case "read":
-    case "list":
-    case "lookup":
-      return "get";
-    case "create":
-      return "post";
-    case "update":
-      return "put";
-    case "delete":
-      return "delete";
-    case "function":
-      return "post";
-  }
-};
-
-const getRoutePath = (method: QueryMethod, entityName: string, inflection: CoreInflection): string => {
-  switch (method.kind) {
-    case "read":
-    case "update":
-    case "delete": {
-      const pkParam = method.params.find((p) => p.source === "pk");
-      const paramName = pkParam?.name ?? "id";
-      return `/:${paramName}`;
-    }
-    case "list":
-      if (/ListBy/i.test(method.name) || /listBy/i.test(method.name)) {
-        const match = method.name.match(/(?:ListBy|listBy)(.+)/i);
-        if (match && match[1]) {
-          const columnKebab = inflection.kebabCase(match[1]);
-          return `/by-${columnKebab}`;
-        }
-      }
-      return "/";
-    case "create":
-      return "/";
-    case "lookup": {
-      const field = method.lookupField ?? "field";
-      const fieldKebab = inflection.kebabCase(field);
-      const lookupParam = method.params.find((p) => p.source === "lookup" || p.source === "fk");
-      const paramName = lookupParam?.name ?? field;
-      return `/by-${fieldKebab}/:${paramName}`;
-    }
-    case "function": {
-      return `/${inflection.kebabCase(method.name)}`;
-    }
-  }
-};
-
 interface HandlerValidationState {
   readonly hasParamValidation: boolean;
   readonly hasQueryValidation: boolean;
@@ -169,23 +95,29 @@ function buildHandlerBody(
   const callSig = method.callSignature ?? { style: "named" };
   const statements: n.Statement[] = [];
   const pathParams = method.params.filter(
-    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
-  const queryParams = method.params.filter((p) => p.source === "pagination");
+  const queryParams = method.params.filter(p => p.source === "pagination");
   const needsBody =
-    method.params.some((p) => p.source === "body") ||
+    method.params.some(p => p.source === "body") ||
     method.kind === "create" ||
     method.kind === "update" ||
-    (method.kind === "function" && method.params.some((p) => !p.source));
+    (method.kind === "function" && method.params.some(p => !p.source));
 
   if (pathParams.length > 0) {
     const paramSource = validation.hasParamValidation
       ? b.callExpression(
-          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          b.memberExpression(
+            b.memberExpression(b.identifier("c"), b.identifier("req")),
+            b.identifier("valid"),
+          ),
           [b.stringLiteral("param")],
         )
       : b.callExpression(
-          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("param")),
+          b.memberExpression(
+            b.memberExpression(b.identifier("c"), b.identifier("req")),
+            b.identifier("param"),
+          ),
           [],
         );
     statements.push(stmt.const("params", paramSource));
@@ -194,11 +126,17 @@ function buildHandlerBody(
   if (queryParams.length > 0) {
     const querySource = validation.hasQueryValidation
       ? b.callExpression(
-          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          b.memberExpression(
+            b.memberExpression(b.identifier("c"), b.identifier("req")),
+            b.identifier("valid"),
+          ),
           [b.stringLiteral("query")],
         )
       : b.callExpression(
-          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("query")),
+          b.memberExpression(
+            b.memberExpression(b.identifier("c"), b.identifier("req")),
+            b.identifier("query"),
+          ),
           [],
         );
     statements.push(stmt.const("query", querySource));
@@ -207,12 +145,18 @@ function buildHandlerBody(
   if (needsBody) {
     const bodySource = validation.hasBodyValidation
       ? b.callExpression(
-          b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("valid")),
+          b.memberExpression(
+            b.memberExpression(b.identifier("c"), b.identifier("req")),
+            b.identifier("valid"),
+          ),
           [b.stringLiteral("json")],
         )
       : b.awaitExpression(
           b.callExpression(
-            b.memberExpression(b.memberExpression(b.identifier("c"), b.identifier("req")), b.identifier("json")),
+            b.memberExpression(
+              b.memberExpression(b.identifier("c"), b.identifier("req")),
+              b.identifier("json"),
+            ),
             [],
           ),
         );
@@ -244,8 +188,8 @@ function buildHandlerBody(
       args.push(paramExpr(param));
     }
   } else {
-    const bodyParam = method.params.find((p) => p.source === "body");
-    const nonBodyParams = method.params.filter((p) => p.source && p.source !== "body");
+    const bodyParam = method.params.find(p => p.source === "body");
+    const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       if (nonBodyParams.length > 0) {
@@ -314,42 +258,14 @@ function buildHandlerBody(
   return statements;
 }
 
-const stmt = conjure.stmt;
-
-function getBodySchemaName(method: QueryMethod, entityName: string): string | null {
-  if (method.kind === "create") {
-    return `${entityName}Insert`;
-  }
-  if (method.kind === "update") {
-    return `${entityName}Update`;
-  }
-  return null;
-}
-
 /**
  * Build sValidator('target', schema) middleware call.
  */
 function buildSValidator(target: string, schema: n.Expression): n.Expression {
-  return b.callExpression(
-    b.identifier("sValidator"),
-    [b.stringLiteral(target), cast.toExpr(schema)],
-  );
-}
-
-function toExternalImport(spec: SchemaImportSpec): ExternalImport {
-  return {
-    from: spec.from,
-    names: spec.names,
-    namespace: spec.namespace,
-  };
-}
-
-function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
-  if (handle.consume && args.length <= 1) {
-    const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
-  }
-  return handle.call(...args) as n.Expression;
+  return b.callExpression(b.identifier("sValidator"), [
+    b.stringLiteral(target),
+    cast.toExpr(schema),
+  ]);
 }
 
 interface RouteCallResult {
@@ -374,12 +290,15 @@ function buildRouteCall(
   schemaBuilder: SchemaBuilder | undefined,
 ): RouteCallResult {
   const httpMethod = kindToHttpMethod(method.kind);
-  const path = getRoutePath(method, entityName, inflection);
+  const path = getRoutePath(method, {
+    kebabCase: inflection.kebabCase,
+    listByRoute: candidate => listByRouteFromName(candidate, inflection.kebabCase),
+  });
   const validators: n.Expression[] = [];
   const schemaImports: ExternalImport[] = [];
 
   const pathParams = method.params.filter(
-    (p) => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
   let hasParamValidation = false;
   if (pathParams.length > 0 && schemaBuilder) {
@@ -392,7 +311,7 @@ function buildRouteCall(
     }
   }
 
-  const queryParams = method.params.filter((p) => p.source === "pagination");
+  const queryParams = method.params.filter(p => p.source === "pagination");
   let hasQueryValidation = false;
   if (queryParams.length > 0 && schemaBuilder) {
     const request: SchemaBuilderRequest = { variant: "query", params: queryParams };
@@ -409,11 +328,15 @@ function buildRouteCall(
     validators.push(buildSValidator("json", b.identifier(bodySchemaName)));
   }
 
-  const handlerBody = buildHandlerBody(method, {
-    hasParamValidation,
-    hasQueryValidation,
-    hasBodyValidation: bodySchemaName != null,
-  }, queryHandle);
+  const handlerBody = buildHandlerBody(
+    method,
+    {
+      hasParamValidation,
+      hasQueryValidation,
+      hasBodyValidation: bodySchemaName != null,
+    },
+    queryHandle,
+  );
   const handler = b.arrowFunctionExpression(
     [b.identifier("c")],
     b.blockStatement(handlerBody.map(cast.toStmt)),
@@ -457,14 +380,14 @@ function generateHonoRoutes(
     const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
     const queryHandle = registry.import(methodCapability);
 
-    const { httpMethod, path, handler, validators, bodySchemaName, schemaImports: routeImports } =
-      buildRouteCall(
-        method,
-        entityName,
-        inflection,
-        queryHandle,
-        schemaBuilder,
-      );
+    const {
+      httpMethod,
+      path,
+      handler,
+      validators,
+      bodySchemaName,
+      schemaImports: routeImports,
+    } = buildRouteCall(method, entityName, inflection, queryHandle, schemaBuilder);
     schemaImports.push(...routeImports);
 
     if (bodySchemaName) {
@@ -489,15 +412,16 @@ function generateHonoRoutes(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = [
-    { from: "hono", names: ["Hono"] },
-    ...schemaImports,
-  ];
+  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
   const needsSValidator =
     schemaCapabilities.length > 0 ||
     queries.methods.some(m =>
       m.params.some(
-        p => p.source === "pk" || p.source === "fk" || p.source === "lookup" || p.source === "pagination",
+        p =>
+          p.source === "pk" ||
+          p.source === "fk" ||
+          p.source === "lookup" ||
+          p.source === "pagination",
       ),
     );
 
@@ -551,17 +475,6 @@ function getMethodCapabilitySuffix(
 /**
  * Get the schema builder from registry if available.
  */
-function getSchemaBuilder(registry: SymbolRegistryService): SchemaBuilder | undefined {
-  const schemaBuilders = registry.query("schema:").filter(decl => decl.capability.endsWith(":builder"));
-  if (schemaBuilders.length === 0) return undefined;
-
-  const metadata = registry.getMetadata(schemaBuilders[0]!.capability);
-  if (metadata && typeof metadata === "object" && "builder" in metadata) {
-    return (metadata as { builder: SchemaBuilder }).builder;
-  }
-  return undefined;
-}
-
 function generateAggregator(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpHonoConfig,
@@ -590,7 +503,7 @@ function generateAggregator(
   const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }];
 
   for (const [entityName] of entityEntries) {
-  const routesVarName = inflection.variableName(entityName, "HonoRoutes");
+    const routesVarName = inflection.variableName(entityName, "HonoRoutes");
     const routeCapability = `http-routes:hono:${entityName}`;
 
     const prefix = inflection.entityRoutePath(entityName);
@@ -604,10 +517,7 @@ function generateAggregator(
     }
   }
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier("app"),
-    cast.toExpr(chainExpr),
-  );
+  const variableDeclarator = b.variableDeclarator(b.identifier("app"), cast.toExpr(chainExpr));
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   return {
@@ -708,14 +618,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
 
         const { statements, externalImports, needsSValidator } = registry.forSymbol(
           capability,
-          () =>
-            generateHonoRoutes(
-              entityName,
-              queries,
-              resolvedConfig,
-              registry,
-              inflection,
-            ),
+          () => generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         if (needsSValidator) {
@@ -735,12 +638,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
         const appCapability = "http-routes:hono:app";
 
         const { statements, externalImports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(
-            entityQueries,
-            resolvedConfig,
-            registry,
-            inflection,
-          ),
+          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
@@ -752,7 +650,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
         });
       }
 
-      return rendered.map((r) => {
+      return rendered.map(r => {
         const needsSValidator = allNeedsSValidator.has(r.capability);
         return {
           ...r,
