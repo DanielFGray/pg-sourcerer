@@ -26,6 +26,19 @@ import {
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
+import {
+  PG_STRING_TYPES,
+  PG_NUMBER_TYPES,
+  PG_BOOLEAN_TYPES,
+  PG_DATE_TYPES,
+  PG_JSON_TYPES,
+  resolveFieldTypeInfo,
+} from "./shared/pg-types.js";
+import {
+  buildEnumDeclarations,
+  buildSchemaBuilderDeclaration,
+  buildShapeDeclarations,
+} from "./shared/schema-declarations.js";
 
 const b = conjure.b;
 
@@ -44,64 +57,16 @@ interface ResolvedValibotConfig extends SchemaConfig {
   schemasFile: FileNaming;
 }
 
-const PG_STRING_TYPES = new Set([
-  "uuid",
-  "text",
-  "varchar",
-  "char",
-  "character",
-  "name",
-  "bpchar",
-  "citext",
-]);
-
-const PG_NUMBER_TYPES = new Set([
-  "int2",
-  "int4",
-  "int8",
-  "integer",
-  "smallint",
-  "bigint",
-  "numeric",
-  "decimal",
-  "real",
-  "float4",
-  "float8",
-  "double",
-]);
-
-const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
-
-const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
-
-const PG_JSON_TYPES = new Set(["json", "jsonb"]);
-
 type ValibotMapping =
   | { kind: "schema"; schema: n.Expression; enumRef?: undefined }
   | { kind: "enumRef"; enumRef: string; schema?: undefined };
 
 function fieldToValibotMapping(field: Field, enums: EnumEntity[]): ValibotMapping {
-  const pgType = field.pgAttribute.getType();
-
-  if (!pgType) {
+  const resolved = resolveFieldTypeInfo(field);
+  if (!resolved) {
     return { kind: "schema", schema: conjure.id("v").method("unknown").build() };
   }
-
-  let typeName: string;
-  let typeInfo: { typcategory?: string | null; typtype?: string | null };
-
-  if (pgType.typcategory === "A") {
-    typeName = field.elementTypeName ?? "unknown";
-    typeInfo = pgType;
-  } else if (pgType.typtype === "d" && field.domainBaseType) {
-    typeName = field.domainBaseType.typeName;
-    typeInfo = { typcategory: field.domainBaseType.category };
-  } else {
-    typeName = pgType.typname;
-    typeInfo = pgType;
-  }
-
-  const baseResult = baseTypeToValibotMapping(typeName, typeInfo, enums);
+  const baseResult = baseTypeToValibotMapping(resolved.typeName, resolved.typeInfo, enums);
 
   if (baseResult.kind === "enumRef") {
     return baseResult;
@@ -329,47 +294,6 @@ function paramToValibotType(param: { type: string; required: boolean }) {
   return valibotSchema;
 }
 
-function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
-  const declarations: SymbolDeclaration[] = [];
-  const baseEntityName = entity.name;
-
-  declarations.push({
-    name: entity.shapes.row.name,
-    capability: `schema:valibot:${entity.shapes.row.name}`,
-    baseEntityName,
-  });
-
-  if (entity.shapes.insert) {
-    const insertName = entity.shapes.insert.name;
-    declarations.push({
-      name: insertName,
-      capability: `schema:valibot:${insertName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: insertName,
-      capability: `schema:valibot:${insertName}:type`,
-      baseEntityName,
-    });
-  }
-
-  if (entity.shapes.update) {
-    const updateName = entity.shapes.update.name;
-    declarations.push({
-      name: updateName,
-      capability: `schema:valibot:${updateName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: updateName,
-      capability: `schema:valibot:${updateName}:type`,
-      baseEntityName,
-    });
-  }
-
-  return declarations;
-}
-
 export function valibot(config?: ValibotConfig): Plugin {
   const schemaConfig = S.decodeSync(ValibotSchemaConfig)(config ?? {});
 
@@ -397,25 +321,13 @@ export function valibot(config?: ValibotConfig): Plugin {
 
       for (const entity of ir.entities.values()) {
         if (isTableEntity(entity)) {
-          declarations.push(...getShapeDeclarations(entity));
+          declarations.push(...buildShapeDeclarations(entity, "schema:valibot"));
         } else if (isEnumEntity(entity)) {
-          declarations.push({
-            name: entity.name,
-            capability: `schema:valibot:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-          declarations.push({
-            name: entity.name,
-            capability: `schema:valibot:${entity.name}:type`,
-            baseEntityName: entity.name,
-          });
+          declarations.push(...buildEnumDeclarations(entity, "schema:valibot"));
         }
       }
 
-      declarations.push({
-        name: "valibotSchemaBuilder",
-        capability: "schema:valibot:builder",
-      });
+      declarations.push(buildSchemaBuilderDeclaration("valibotSchemaBuilder", "schema:valibot"));
 
       return declarations;
     }),

@@ -10,7 +10,7 @@
  * - `schema:arktype:EntityName:update` for Update shape
  * - `schema:arktype:EnumName` for enum entities
  */
-import { Effect, Array as Arr, pipe, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
@@ -25,14 +25,26 @@ import {
   type EnumEntity,
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import type {
   SchemaBuilder,
   SchemaBuilderRequest,
   SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
+import {
+  pgStringTypes,
+  pgNumberTypes,
+  pgBooleanTypes,
+  pgDateTypes,
+  pgJsonTypes,
+  resolveFieldTypeInfo,
+} from "./shared/pg-types.js";
+import {
+  buildEnumDeclarations,
+  buildSchemaBuilderDeclaration,
+  buildShapeDeclarations,
+} from "./shared/schema-declarations.js";
 
-const b = conjure.b;
+const { b } = conjure;
 
 /**
  * Creates a consume callback for ArkType schemas.
@@ -43,7 +55,10 @@ const b = conjure.b;
  */
 function createArkTypeConsumeCallback(schemaName: string): (input: unknown) => n.Expression {
   return (input: unknown) => {
-    return conjure.id(schemaName).method("assert", [cast.toExpr(input as n.Expression)]).build();
+    return conjure
+      .id(schemaName)
+      .method("assert", [cast.toExpr(input as n.Expression)])
+      .build();
   };
 }
 
@@ -106,10 +121,9 @@ const arkTypeSchemaBuilder: SchemaBuilder = {
 
     const ast = conjure.id("type").call([objBuilder.build()]).build();
     const consume = (input: n.Expression) =>
-      b.callExpression(
-        b.memberExpression(cast.toExpr(ast), b.identifier("assert")),
-        [cast.toExpr(input)],
-      );
+      b.callExpression(b.memberExpression(cast.toExpr(ast), b.identifier("assert")), [
+        cast.toExpr(input),
+      ]);
 
     return {
       ast,
@@ -155,48 +169,8 @@ interface ResolvedArkTypeConfig extends SchemaConfig {
   schemasFile: FileNaming;
 }
 
-function toExpr(node: n.Expression): ExpressionKind {
-  return node as ExpressionKind;
-}
-
 // =============================================================================
 // PostgreSQL Type to ArkType String Mapping
-// =============================================================================
-
-const PG_STRING_TYPES = new Set([
-  "uuid",
-  "text",
-  "varchar",
-  "char",
-  "character",
-  "name",
-  "bpchar",
-  "citext",
-]);
-
-const PG_NUMBER_TYPES = new Set([
-  "int2",
-  "int4",
-  "int8",
-  "integer",
-  "smallint",
-  "bigint",
-  "numeric",
-  "decimal",
-  "real",
-  "float4",
-  "float8",
-  "double",
-]);
-
-const PG_BOOLEAN_TYPES = new Set(["bool", "boolean"]);
-
-const PG_DATE_TYPES = new Set(["timestamp", "timestamptz", "date", "time", "timetz"]);
-
-const PG_JSON_TYPES = new Set(["json", "jsonb"]);
-
-// =============================================================================
-// Field to ArkType Type
 // =============================================================================
 
 /**
@@ -209,30 +183,11 @@ type ArkTypeMapping =
   | { kind: "enumRef"; enumRef: string; typeString?: undefined };
 
 function fieldToArkType(field: Field, enums: EnumEntity[]): ArkTypeMapping {
-  const pgType = field.pgAttribute.getType();
-
-  if (!pgType) {
+  const resolved = resolveFieldTypeInfo(field);
+  if (!resolved) {
     return { kind: "string", typeString: "unknown" };
   }
-
-  // For arrays, use element type; for domains, use base type; otherwise use pgType
-  let typeName: string;
-  let typeInfo: { typcategory?: string | null; typtype?: string | null };
-
-  if (pgType.typcategory === "A") {
-    // Array type - use element type name
-    typeName = field.elementTypeName ?? "unknown";
-    typeInfo = pgType;
-  } else if (pgType.typtype === "d" && field.domainBaseType) {
-    // Domain type - resolve to underlying base type
-    typeName = field.domainBaseType.typeName;
-    typeInfo = { typcategory: field.domainBaseType.category };
-  } else {
-    typeName = pgType.typname;
-    typeInfo = pgType;
-  }
-
-  const baseResult = baseTypeToArkType(typeName, typeInfo, enums);
+  const baseResult = baseTypeToArkType(resolved.typeName, resolved.typeInfo, enums);
 
   // For enum references, we can't easily add modifiers in string form,
   // so we handle them specially in shapeToArkTypeObject
@@ -264,7 +219,7 @@ function baseTypeToArkType(
 ): ArkTypeMapping {
   const normalized = typeName.toLowerCase();
 
-  if (PG_STRING_TYPES.has(normalized)) {
+  if (pgStringTypes.has(normalized)) {
     if (normalized === "uuid") {
       return { kind: "string", typeString: "string.uuid" };
     }
@@ -273,19 +228,19 @@ function baseTypeToArkType(
     return { kind: "string", typeString: "string" };
   }
 
-  if (PG_NUMBER_TYPES.has(normalized)) {
+  if (pgNumberTypes.has(normalized)) {
     return { kind: "string", typeString: "number" };
   }
 
-  if (PG_BOOLEAN_TYPES.has(normalized)) {
+  if (pgBooleanTypes.has(normalized)) {
     return { kind: "string", typeString: "boolean" };
   }
 
-  if (PG_DATE_TYPES.has(normalized)) {
+  if (pgDateTypes.has(normalized)) {
     return { kind: "string", typeString: "Date" };
   }
 
-  if (PG_JSON_TYPES.has(normalized)) {
+  if (pgJsonTypes.has(normalized)) {
     return { kind: "string", typeString: "unknown" };
   }
 
@@ -324,7 +279,15 @@ function shapeToArkTypeObject(
         enumExpr = conjure.chain(enumExpr).method("array").build();
       }
       if (field.nullable) {
-        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+        enumExpr = conjure
+          .chain(enumExpr)
+          .method("or", [
+            conjure
+              .id("type")
+              .call([conjure.str("null")])
+              .build(),
+          ])
+          .build();
       }
       // Note: ArkType doesn't have a direct .optional() method like Zod
       // Optional is typically handled at the object level with "key?" syntax
@@ -367,10 +330,7 @@ function buildUpdateInputSchema(
     if (!pkField) continue;
 
     // Get the base type without optional/nullable modifiers for PK
-    const mapping = fieldToArkType(
-      { ...pkField, optional: false, nullable: false },
-      enums,
-    );
+    const mapping = fieldToArkType({ ...pkField, optional: false, nullable: false }, enums);
 
     if (mapping.kind === "enumRef") {
       const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
@@ -397,7 +357,15 @@ function buildUpdateInputSchema(
         enumExpr = conjure.chain(enumExpr).method("array").build();
       }
       if (field.nullable) {
-        enumExpr = conjure.chain(enumExpr).method("or", [conjure.id("type").call([conjure.str("null")]).build()]).build();
+        enumExpr = conjure
+          .chain(enumExpr)
+          .method("or", [
+            conjure
+              .id("type")
+              .call([conjure.str("null")])
+              .build(),
+          ])
+          .build();
       }
       // For optional enum fields, we need to use .optional() method
       enumExpr = conjure.chain(enumExpr).method("optional").build();
@@ -421,63 +389,6 @@ function buildUpdateInputSchema(
  */
 function getUpdateInputName(entity: TableEntity): string {
   return `${entity.name}UpdateInput`;
-}
-
-function getShapeDeclarations(entity: TableEntity): SymbolDeclaration[] {
-  const declarations: SymbolDeclaration[] = [];
-  const baseEntityName = entity.name;
-
-  declarations.push({
-    name: entity.shapes.row.name,
-    capability: `schema:arktype:${entity.shapes.row.name}`,
-    baseEntityName,
-  });
-
-  if (entity.shapes.insert) {
-    const insertName = entity.shapes.insert.name;
-    declarations.push({
-      name: insertName,
-      capability: `schema:arktype:${insertName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: insertName,
-      capability: `schema:arktype:${insertName}:type`,
-      baseEntityName,
-    });
-  }
-
-  if (entity.shapes.update) {
-    const updateName = entity.shapes.update.name;
-    declarations.push({
-      name: updateName,
-      capability: `schema:arktype:${updateName}`,
-      baseEntityName,
-    });
-    declarations.push({
-      name: updateName,
-      capability: `schema:arktype:${updateName}:type`,
-      baseEntityName,
-    });
-
-    // UpdateInput schema: required PK + optional non-PK fields
-    // Only declare if entity has both update shape AND primary key
-    if (entity.primaryKey) {
-      const updateInputName = getUpdateInputName(entity);
-      declarations.push({
-        name: updateInputName,
-        capability: `schema:arktype:${updateInputName}`,
-        baseEntityName,
-      });
-      declarations.push({
-        name: updateInputName,
-        capability: `schema:arktype:${updateInputName}:type`,
-        baseEntityName,
-      });
-    }
-  }
-
-  return declarations;
 }
 
 export function arktype(config?: ArkTypeConfig): Plugin {
@@ -507,26 +418,27 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
       for (const entity of ir.entities.values()) {
         if (isTableEntity(entity)) {
-          declarations.push(...getShapeDeclarations(entity));
+          declarations.push(...buildShapeDeclarations(entity, "schema:arktype"));
+          if (entity.shapes.update && entity.primaryKey) {
+            const updateInputName = getUpdateInputName(entity);
+            declarations.push({
+              name: updateInputName,
+              capability: `schema:arktype:${updateInputName}`,
+              baseEntityName: entity.name,
+            });
+            declarations.push({
+              name: updateInputName,
+              capability: `schema:arktype:${updateInputName}:type`,
+              baseEntityName: entity.name,
+            });
+          }
         } else if (isEnumEntity(entity)) {
-          declarations.push({
-            name: entity.name,
-            capability: `schema:arktype:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-          declarations.push({
-            name: entity.name,
-            capability: `schema:arktype:${entity.name}:type`,
-            baseEntityName: entity.name,
-          });
+          declarations.push(...buildEnumDeclarations(entity, "schema:arktype"));
         }
       }
 
       // Declare the schema builder capability
-      declarations.push({
-        name: "arkTypeSchemaBuilder",
-        capability: "schema:arktype:builder",
-      });
+      declarations.push(buildSchemaBuilderDeclaration("arkTypeSchemaBuilder", "schema:arktype"));
 
       return declarations;
     }),
@@ -622,7 +534,10 @@ export function arktype(config?: ArkTypeConfig): Plugin {
           }
         } else if (isEnumEntity(entity)) {
           const enumString = entity.values.map(v => `'${v}'`).join(" | ");
-          const schemaNode = conjure.id("type").call([conjure.str(enumString)]).build();
+          const schemaNode = conjure
+            .id("type")
+            .call([conjure.str(enumString)])
+            .build();
 
           const schemaDecl = conjure.export.const(entity.name, schemaNode);
 
