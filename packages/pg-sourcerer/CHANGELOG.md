@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.5.0...v0.5.1) (2026-01-25)
+
+
+### Features
+
+* **cli:** expand init guidance ([cd01495](https://github.com/DanielFGray/pg-sourcerer/commit/cd0149515822f331a90e8115ecbc0e5cb526be6c))
+
+
+### Bug Fixes
+
+* **plugins:** effect scoping, pagination stability, schema alignment, hex simplification ([61b9772](https://github.com/DanielFGray/pg-sourcerer/commit/61b97722d4061cc9f4f0009f1d3ed8f46cec9110))
+
 ## [0.5.0](https://github.com/DanielFGray/pg-sourcerer/compare/v0.4.0...v0.5.0) (2026-01-21)
 
 
