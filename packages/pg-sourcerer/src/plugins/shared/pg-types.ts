@@ -34,6 +34,13 @@ export const pgDateTypes = new Set(["timestamp", "timestamptz", "date", "time", 
 
 export const pgJsonTypes = new Set(["json", "jsonb"]);
 
+// Legacy aliases for backwards compatibility
+export const PG_STRING_TYPES = pgStringTypes;
+export const PG_NUMBER_TYPES = pgNumberTypes;
+export const PG_BOOLEAN_TYPES = pgBooleanTypes;
+export const PG_DATE_TYPES = pgDateTypes;
+export const PG_JSON_TYPES = pgJsonTypes;
+
 export function getPgType(field: Field): string {
   const pgType = field.pgAttribute.getType();
   return pgType?.typname ?? "unknown";
