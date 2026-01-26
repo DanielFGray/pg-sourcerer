@@ -5,7 +5,7 @@
  * PostgreSQL type names. Built on top of the low-level AST builders in
  * lib/conjure.ts.
  */
-import recast from "recast";
+import * as recast from "recast";
 import type { TSTypeKind } from "ast-types/lib/gen/kinds.js";
 import type { Field } from "../ir/semantic-ir.js";
 

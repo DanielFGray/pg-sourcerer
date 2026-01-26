@@ -7,14 +7,23 @@
  *
  * Other plugins can consume these types via the SymbolRegistry.
  */
-import { Effect, Array as Arr, pipe } from "effect";
+import { Effect } from "effect";
 import type { namedTypes as n } from "ast-types";
 
+import type { TSTypeKind } from "ast-types/lib/gen/kinds.js";
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
-import { isTableEntity, type TableEntity, type Field } from "../ir/semantic-ir.js";
+import {
+  isEnumEntity,
+  isTableEntity,
+  type EnumEntity,
+  type Field,
+  type Shape,
+  type TableEntity,
+} from "../ir/semantic-ir.js";
 import { conjure } from "../conjure/index.js";
 import { types } from "../conjure/types.js";
+import { resolveFieldTypeInfo } from "./shared/pg-types.js";
 
 const b = conjure.b;
 
@@ -25,12 +34,39 @@ const b = conjure.b;
 /**
  * Convert a Field to a TSPropertySignature for interface generation.
  */
-function fieldToPropertySignature(field: Field): n.TSPropertySignature {
+function fieldToTsType(field: Field, enumMap: Map<string, string>): TSTypeKind {
+  const resolved = resolveFieldTypeInfo(field);
+  const typeName = resolved?.typeName ?? "unknown";
+  const typeInfo = resolved?.typeInfo;
+
+  const isEnum = typeInfo?.typtype === "e" || typeInfo?.typcategory === "E";
+
+  let resultType = isEnum
+    ? types.ref(enumMap.get(typeName) ?? typeName)
+    : types.fromPg(typeName);
+
+  if (field.isArray) {
+    resultType = types.array(resultType);
+  }
+
+  if (field.nullable) {
+    resultType = types.nullable(resultType);
+  }
+
+  return resultType;
+}
+
+function fieldToPropertySignature(
+  field: Field,
+  enumMap: Map<string, string>,
+  readonly: boolean,
+): n.TSPropertySignature {
   const propName = b.identifier(field.name);
-  const tsType = types.fromField(field);
+  const tsType = fieldToTsType(field, enumMap);
 
   const sig = b.tsPropertySignature(propName, b.tsTypeAnnotation(tsType));
-  sig.readonly = true;
+  sig.optional = field.optional;
+  if (readonly) sig.readonly = true;
 
   return sig;
 }
@@ -50,11 +86,18 @@ function fieldToPropertySignature(field: Field): n.TSPropertySignature {
  *   readonly name: string | null;
  * }
  */
-function entityToInterface(entity: TableEntity): n.TSInterfaceDeclaration {
-  const members = entity.shapes.row.fields.map(fieldToPropertySignature);
+function shapeToInterface(
+  shape: Shape,
+  enumMap: Map<string, string>,
+  readonly: boolean,
+): n.TSInterfaceDeclaration {
+  const members = shape.fields.map(field => fieldToPropertySignature(field, enumMap, readonly));
+  return b.tsInterfaceDeclaration(b.identifier(shape.name), b.tsInterfaceBody(members));
+}
 
-  // entity.name is already the inflected name (done by IR builder)
-  return b.tsInterfaceDeclaration(b.identifier(entity.name), b.tsInterfaceBody(members));
+function enumToTypeAlias(entity: EnumEntity): n.TSTypeAliasDeclaration {
+  const union = b.tsUnionType(entity.values.map(value => b.tsLiteralType(b.stringLiteral(value))));
+  return b.tsTypeAliasDeclaration(b.identifier(entity.name), union);
 }
 
 // =============================================================================
@@ -95,34 +138,65 @@ export function typesPlugin(): Plugin {
       const ir = yield* IR;
 
       // entity.name is already inflected by the IR builder
-      return pipe(
-        Array.from(ir.entities.values()),
-        Arr.filter(isTableEntity),
-        Arr.map(
-          (entity): SymbolDeclaration => ({
-            name: entity.name,
-            capability: `type:${entity.name}`,
-          }),
-        ),
-      );
+      const declarations: SymbolDeclaration[] = [];
+
+      for (const entity of ir.entities.values()) {
+        if (isEnumEntity(entity)) {
+          declarations.push({ name: entity.name, capability: `type:${entity.name}` });
+        }
+      }
+
+      for (const entity of ir.entities.values()) {
+        if (!isTableEntity(entity)) continue;
+
+        const shapes: Shape[] = [entity.shapes.row];
+        if (entity.shapes.update) shapes.push(entity.shapes.update);
+        if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+
+        for (const shape of shapes) {
+          declarations.push({ name: shape.name, capability: `type:${shape.name}` });
+        }
+      }
+
+      return declarations;
     }),
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
 
       // entity.name is already inflected by the IR builder
-      return pipe(
-        Array.from(ir.entities.values()),
-        Arr.filter(isTableEntity),
-        Arr.map(
-          (entity): RenderedSymbol => ({
-            name: entity.name,
-            capability: `type:${entity.name}`,
-            node: entityToInterface(entity),
+      const enumEntities = [...ir.entities.values()].filter(isEnumEntity);
+      const enumMap = new Map(enumEntities.map(entity => [entity.pgType.typname, entity.name]));
+
+      const rendered: RenderedSymbol[] = [];
+
+      for (const entity of enumEntities) {
+        rendered.push({
+          name: entity.name,
+          capability: `type:${entity.name}`,
+          node: enumToTypeAlias(entity),
+          exports: "named",
+        });
+      }
+
+      for (const entity of ir.entities.values()) {
+        if (!isTableEntity(entity)) continue;
+
+        const shapes: Shape[] = [entity.shapes.row];
+        if (entity.shapes.update) shapes.push(entity.shapes.update);
+        if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+
+        for (const shape of shapes) {
+          rendered.push({
+            name: shape.name,
+            capability: `type:${shape.name}`,
+            node: shapeToInterface(shape, enumMap, shape.kind === "row"),
             exports: "named",
-          }),
-        ),
-      );
+          });
+        }
+      }
+
+      return rendered;
     }),
   };
 }

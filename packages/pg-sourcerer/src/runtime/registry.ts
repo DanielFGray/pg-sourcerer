@@ -1,4 +1,4 @@
-import recast from "recast";
+import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import { Context, Effect, Schema } from "effect";

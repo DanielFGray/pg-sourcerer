@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
     "./plugins": {
       "types": "./dist/plugins/index.d.ts",
       "import": "./dist/plugins/index.js"
@@ -70,6 +74,11 @@
     "recast": "^0.23.11"
   },
   "devDependencies": {
+    "@types/diff": "^5.2.0",
+    "@electric-sql/pglite": "^0.3.15",
+    "@mdx-js/mdx": "^3.1.1",
+    "codehike": "^1.0.7",
+    "diff": "^5.2.0",
     "@effect/vitest": "catalog:",
     "@opentui/core": "^0.1.73",
     "@types/bun": "^1.3.6",

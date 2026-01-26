@@ -264,7 +264,7 @@ function buildField(
         break;
       case "row":
       default:
-        optional = nullable;
+        optional = false;
         break;
     }
 

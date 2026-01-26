@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dry": "bun --env-file=.env pgsourcerer generate --log-level debug --dry-run",
+    "dry": "bun -b pgsourcerer generate --log-level debug --dry-run",
     "dev": "bun run-p db:watch generate:watch",
     "start": "bun run generate",
-    "generate": "bun --env-file=.env pgsourcerer generate --log-level debug",
-    "generate:watch": "bun --env-file=.env --watch pgsourcerer generate --log-level debug",
+    "generate": "bun -b pgsourcerer generate --log-level debug",
+    "generate:watch": "bun -b --watch pgsourcerer generate --log-level debug",
     "predev": "bun db:ensure",
     "gm": "bun --env-file=.env ../../node_modules/.bin/graphile-migrate",
     "db:ensure": "bun scripts/dbEnsure.ts",
@@ -23,7 +23,10 @@
     "db:init": "run-s db:start db:setup db:reset db:latest",
     "env:init": "bun scripts/generateEnvFile.ts",
     "init": "NOCONFIRM=1 run-s -s env:init db:init",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "readme:verify": "bun scripts/verifyReadmeSpec.ts",
+    "readme:verify:pglite": "bun scripts/readmePgliteHarnessMinimalRunner.ts",
+    "readme:compile": "bun scripts/compileReadme.ts"
   },
   "dependencies": {
     "@danielfgray/pg-sourcerer": "workspace:*",
@@ -49,7 +52,16 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@babel/parser": "^7.28.6",
+    "@mdx-js/mdx": "^3.1.1",
+    "@types/bun": "catalog:",
+    "@types/node": "^22.12.0",
+    "@electric-sql/pglite": "^0.3.15",
+    "@danielfgray/pg-introspection": "workspace:*",
+    "codehike": "^1.0.7",
+    "diff": "^5.2.0",
     "kysely": "^0.28.9",
+    "recast": "^0.23.11",
     "kysely-codegen": "^0.19.0",
     "prettier": "^3.2.4",
     "typescript": "catalog:"
