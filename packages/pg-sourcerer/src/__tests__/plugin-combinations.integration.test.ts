@@ -54,7 +54,7 @@ const combos: PluginCombo[] = [
       kysely({ dbImport: userModule("./db", { named: ["db"] }) }),
       express({}),
     ],
-    expectedFilePatterns: ["schemas", "routes", "db", "queries"],
+    expectedFilePatterns: ["schemas", "routes", "DB", "queries"],
     expectedContentPatterns: ["z.object", "z.infer", "Router()", "export const commentRoutes"],
   },
   {
@@ -64,7 +64,7 @@ const combos: PluginCombo[] = [
       kysely({ dbImport: userModule("./db", { named: ["db"] }) }),
       elysia({}),
     ],
-    expectedFilePatterns: ["schemas", "routes", "db", "queries"],
+    expectedFilePatterns: ["schemas", "routes", "DB", "queries"],
     expectedContentPatterns: ["v.object", "v.InferOutput", "new Elysia", ".get"],
   },
   {
@@ -76,7 +76,7 @@ const combos: PluginCombo[] = [
         trpcImport: userModule("./trpc", { named: ["router", "publicProcedure"] }),
       }),
     ],
-    expectedFilePatterns: ["types", "trpc", "db", "queries"],
+    expectedFilePatterns: ["types", "trpc", "DB", "queries"],
     expectedContentPatterns: ["export interface", "publicProcedure", ".query"],
   },
   {
@@ -151,10 +151,11 @@ describe("Plugin Combinations Integration", () => {
           });
 
           const files = emitFiles(result);
+          const filePaths = files.map(f => f.path).join(", ");
 
           for (const pattern of combo.expectedFilePatterns) {
             const matchingFile = files.find((f) => f.path.includes(pattern));
-            expect(matchingFile).toBeDefined();
+            expect(matchingFile, `Expected file matching "${pattern}". Actual files: ${filePaths}`).toBeDefined();
           }
         }),
       );

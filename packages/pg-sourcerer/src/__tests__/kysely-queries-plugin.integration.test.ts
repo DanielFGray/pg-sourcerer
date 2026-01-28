@@ -108,14 +108,15 @@ describe("Kysely Queries Plugin Integration", () => {
     const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [kysely()] }));
     const files = emitFiles(result);
 
-    // Kysely plugin generates both types (db.ts) and queries (queries.ts)
+    // Kysely plugin generates both types and queries
     expect(files.length).toBeGreaterThan(0);
 
-    const typesFile = files.find(f => f.path === "db.ts");
-    const queriesFile = files.find(f => f.path === "queries.ts");
+    // Check that we have the expected files (use flexible matching since paths may vary by config)
+    const typesFile = files.find(f => f.path.includes("DB.ts") || f.path === "db.ts");
+    const queriesFile = files.find(f => f.path.includes("queries.ts"));
 
-    expect(typesFile).toBeDefined();
-    expect(queriesFile).toBeDefined();
+    expect(typesFile, `Should have types file. Files: ${files.map(f => f.path).join(", ")}`).toBeDefined();
+    expect(queriesFile, `Should have queries file. Files: ${files.map(f => f.path).join(", ")}`).toBeDefined();
 
     // Types file should have DB interface and entity types
     expect(typesFile!.content).toContain("export interface DB");

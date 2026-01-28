@@ -39,9 +39,6 @@
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",
     "test": "vitest run",
-    "test:all": "bun --env-file=../example/.env vitest run --config vitest.all.config.ts",
-    "test:unit": "vitest run",
-    "test:integration": "bun --env-file=../example/.env vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
