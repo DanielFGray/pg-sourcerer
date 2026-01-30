@@ -67,7 +67,7 @@ export function effectSchemas(config: ParsedEffectConfig): Plugin {
             capability: `effect:schema:${entity.name}`,
             node: schemaDecl,
             exports: "named",
-            externalImports: [
+            imports: [
               { from: "effect", names: ["Schema as S"] },
             ],
           });
@@ -86,7 +86,7 @@ export function effectSchemas(config: ParsedEffectConfig): Plugin {
               capability: `effect:schema:${entity.name}:type`,
               node: typeDecl,
               exports: "named",
-              externalImports: [{ from: "effect", names: ["Schema as S"] }],
+              imports: [{ from: "effect", names: ["Schema as S"] }],
             });
           }
         }

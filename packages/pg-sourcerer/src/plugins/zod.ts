@@ -369,7 +369,7 @@ export function zod(config?: ZodConfig): Plugin {
           capability: `schema:zod:${entity.name}`,
           node: schemaDecl,
           exports: "named",
-          externalImports: [{ from: "zod", names: ["z"] }],
+          imports: [{ from: "zod", names: ["z"] }],
           metadata: {
             consume: createZodConsumeCallback(entity.name),
           },
@@ -381,7 +381,7 @@ export function zod(config?: ZodConfig): Plugin {
             capability: `schema:zod:${entity.name}:type`,
             node: typeDecl,
             exports: "named",
-            externalImports: [{ from: "zod", names: ["z"] }],
+            imports: [{ from: "zod", names: ["z"] }],
           });
         }
       }
@@ -411,7 +411,7 @@ export function zod(config?: ZodConfig): Plugin {
             capability,
             node: schemaDecl,
             exports: "named",
-            externalImports: [{ from: "zod", names: ["z"] }],
+            imports: [{ from: "zod", names: ["z"] }],
             metadata: {
               consume: createZodConsumeCallback(shape.name),
             },
@@ -428,7 +428,7 @@ export function zod(config?: ZodConfig): Plugin {
               capability: `schema:zod:${shape.name}:type`,
               node: typeDecl,
               exports: "named",
-              externalImports: [{ from: "zod", names: ["z"] }],
+              imports: [{ from: "zod", names: ["z"] }],
             });
           }
         }

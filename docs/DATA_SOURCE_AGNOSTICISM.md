@@ -111,6 +111,8 @@ interface Plugin {
 
 ### Example: Query Ideation with Graceful Degradation
 
+> **Note**: This example shows a hypothetical "query ideation" plugin that hasn't been implemented yet. Currently, query plugins generate `QueryMethod` directly from IR. This pattern illustrates how capability-gated features could enable smarter query suggestions in the future.
+
 ```typescript
 export const queryIdeation: Plugin = {
   name: "query-ideation",

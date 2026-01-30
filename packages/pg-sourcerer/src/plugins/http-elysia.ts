@@ -327,7 +327,7 @@ function generateElysiaRoutes(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   // Use inflection.entityRoutePath which handles pluralization and kebab-casing
   const prefix = inflection.entityRoutePath(entityName);
@@ -424,14 +424,14 @@ function generateElysiaRoutes(
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   // Only external package imports go here; query and schema imports are handled via cross-references
-  const externalImports: ExternalImport[] = [
+  const imports: ExternalImport[] = [
     { from: "elysia", names: ["Elysia"] },
     ...schemaImports,
   ];
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -499,17 +499,17 @@ function generateAggregator(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { statements: [], imports: [] };
   }
 
   let chainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), []);
 
-  const externalImports: ExternalImport[] = [{ from: "elysia", names: ["Elysia"] }];
+  const imports: ExternalImport[] = [{ from: "elysia", names: ["Elysia"] }];
 
   for (const [entityName, queries] of entityEntries) {
     // Use same name as the symbol declaration for consistency with cross-references
@@ -532,7 +532,7 @@ function generateAggregator(
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -635,16 +635,16 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
         const capability = `http-routes:elysia:${entityName}`;
 
         // Scope cross-references to this specific capability
-        const { statements, externalImports } = registry.forSymbol(capability, () =>
+        const { statements, imports } = registry.forSymbol(capability, () =>
           generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
           name: inflection.variableName(entityName, "ElysiaRoutes"),
           capability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 
@@ -652,16 +652,16 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
         const appCapability = "http-routes:elysia:app";
 
         // Scope cross-references to the app capability
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
+        const { statements, imports } = registry.forSymbol(appCapability, () =>
           generateAggregator(entityQueries, registry, inflection),
         );
 
         rendered.push({
           name: "elysiaApp",
           capability: appCapability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 

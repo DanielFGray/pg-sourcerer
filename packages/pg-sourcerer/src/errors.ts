@@ -117,3 +117,55 @@ export class UserModuleNotFoundError extends Schema.TaggedError<UserModuleNotFou
     resolvedPath: Schema.String,
   }
 ) {}
+
+// =============================================================================
+// Testing Errors
+// =============================================================================
+
+/**
+ * Error when reading a test fixture file fails.
+ */
+export class FixtureReadError extends Schema.TaggedError<FixtureReadError>()(
+  "FixtureReadError",
+  {
+    message: Schema.String,
+    path: Schema.String,
+    cause: Schema.Defect,
+  }
+) {}
+
+/**
+ * Error when executing a SQL fixture fails.
+ */
+export class FixtureExecutionError extends Schema.TaggedError<FixtureExecutionError>()(
+  "FixtureExecutionError",
+  {
+    message: Schema.String,
+    cause: Schema.Defect,
+  }
+) {}
+
+/**
+ * Error when a file cannot be resolved from in-memory storage.
+ */
+export class FileResolverError extends Schema.TaggedError<FileResolverError>()(
+  "FileResolverError",
+  {
+    message: Schema.String,
+    requestedPath: Schema.String,
+    availablePaths: Schema.Array(Schema.String),
+  }
+) {}
+
+/**
+ * Error when README spec verification fails.
+ */
+export class SpecVerificationError extends Schema.TaggedError<SpecVerificationError>()(
+  "SpecVerificationError",
+  {
+    message: Schema.String,
+    verified: Schema.Number,
+    skipped: Schema.Number,
+    failures: Schema.Array(Schema.String),
+  }
+) {}

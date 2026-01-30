@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { namedTypes as n } from "ast-types";
-import { conjure, cast } from "../conjure/index.js";
+import { conjure, cast, extractIdentifierRefs } from "../conjure/index.js";
 
 /** Helper to get printed code from an expression */
 const printExpr = (expr: n.Expression) => conjure.print(conjure.stmt.expr(expr));
@@ -963,107 +963,6 @@ describe("Conjure", () => {
     });
   });
 
-  describe("export helpers (exp.*)", () => {
-    it("creates exported interface with symbol metadata", () => {
-      const iface = conjure.exp.interface(
-        "User",
-        { capability: "types", entity: "User", shape: "row" },
-        [
-          { name: "id", type: conjure.ts.string() },
-          { name: "email", type: conjure.ts.string() },
-          { name: "age", type: conjure.ts.number(), optional: true },
-        ],
-      );
-
-      expect(iface._tag).toBe("SymbolStatement");
-      expect(iface.symbol).toEqual({
-        name: "User",
-        capability: "types",
-        entity: "User",
-        shape: "row",
-        isType: true,
-      });
-
-      const code = printStmt(iface.node);
-      expect(code).toContain("export interface User");
-      expect(code).toContain("id: string");
-      expect(code).toContain("email: string");
-      expect(code).toContain("age?: number");
-    });
-
-    it("creates exported type alias with symbol metadata", () => {
-      const alias = conjure.exp.typeAlias(
-        "Role",
-        { capability: "types", entity: "Role" },
-        conjure.ts.union(
-          conjure.ts.literal("admin"),
-          conjure.ts.literal("user"),
-          conjure.ts.literal("guest"),
-        ),
-      );
-
-      expect(alias._tag).toBe("SymbolStatement");
-      expect(alias.symbol).toEqual({
-        name: "Role",
-        capability: "types",
-        entity: "Role",
-        isType: true,
-      });
-
-      const code = printStmt(alias.node);
-      expect(code).toContain("export type Role");
-      expect(code).toContain('"admin"');
-      expect(code).toContain('"user"');
-      expect(code).toContain('"guest"');
-    });
-
-    it("creates exported const with symbol metadata", () => {
-      const schema = conjure.exp.const(
-        "UserSchema",
-        { capability: "schemas", entity: "User", shape: "row" },
-        conjure.id("z").method("object", [conjure.obj().build()]).build(),
-      );
-
-      expect(schema._tag).toBe("SymbolStatement");
-      expect(schema.symbol).toEqual({
-        name: "UserSchema",
-        capability: "schemas",
-        entity: "User",
-        shape: "row",
-        isType: false,
-      });
-
-      const code = printStmt(schema.node);
-      expect(code).toContain("export const UserSchema = z.object");
-    });
-
-    it("creates exported const with type annotation", () => {
-      const schema = conjure.exp.const(
-        "config",
-        { capability: "config", entity: "Config" },
-        conjure.obj().prop("debug", conjure.bool(true)).build(),
-        conjure.ts.ref("AppConfig"),
-      );
-
-      const code = printStmt(schema.node);
-      expect(code).toContain("export const config: AppConfig");
-    });
-
-    it("creates exported type for inferred types", () => {
-      const inferredType = conjure.exp.type(
-        "User",
-        { capability: "schemas", entity: "User", shape: "row" },
-        conjure.ts.typeof("UserSchema"),
-      );
-
-      expect(inferredType._tag).toBe("SymbolStatement");
-      expect(inferredType.symbol.isType).toBe(true);
-
-      const code = printStmt(inferredType.node);
-      expect(code).toContain("export type User = typeof UserSchema");
-    });
-  });
-
   describe("export helpers (conjure.export.*)", () => {
     it("creates export const", () => {
       const result = conjure.export.const("config", conjure.obj().build());
@@ -1135,74 +1034,6 @@ describe("Conjure", () => {
       expect(code).toContain("name: string");
       expect(code).toContain("age?: number");
       expect(code).toContain("readonly email: string");
-    });
-  });
-
-  describe("symbolProgram", () => {
-    it("extracts symbols from SymbolStatements", () => {
-      const prog = conjure.symbolProgram(
-        conjure.exp.interface("User", { capability: "types", entity: "User", shape: "row" }, [
-          { name: "id", type: conjure.ts.string() },
-        ]),
-        conjure.exp.typeAlias(
-          "Role",
-          { capability: "types", entity: "Role" },
-          conjure.ts.literal("admin"),
-        ),
-      );
-
-      expect(prog._tag).toBe("SymbolProgram");
-      expect(prog.symbols).toHaveLength(2);
-      expect(prog.symbols[0]).toEqual({
-        name: "User",
-        capability: "types",
-        entity: "User",
-        shape: "row",
-        isType: true,
-      });
-      expect(prog.symbols[1]).toEqual({
-        name: "Role",
-        capability: "types",
-        entity: "Role",
-        isType: true,
-      });
-    });
-
-    it("handles mix of regular statements and SymbolStatements", () => {
-      const prog = conjure.symbolProgram(
-        conjure.stmt.const("x", conjure.num(1)),
-        conjure.exp.interface("User", { capability: "types", entity: "User" }, []),
-        conjure.stmt.const("y", conjure.num(2)),
-      );
-
-      expect(prog._tag).toBe("SymbolProgram");
-      expect(prog.symbols).toHaveLength(1);
-      expect(prog.symbols[0]!.name).toBe("User");
-
-      const code = conjure.print(prog.node);
-      expect(code).toContain("const x = 1");
-      expect(code).toContain("export interface User");
-      expect(code).toContain("const y = 2");
-    });
-
-    it("preserves statement order in generated code", () => {
-      const prog = conjure.symbolProgram(
-        conjure.exp.typeAlias(
-          "First",
-          { capability: "types", entity: "First" },
-          conjure.ts.string(),
-        ),
-        conjure.exp.typeAlias(
-          "Second",
-          { capability: "types", entity: "Second" },
-          conjure.ts.number(),
-        ),
-      );
-
-      const code = conjure.print(prog.node);
-      const firstIdx = code.indexOf("First");
-      const secondIdx = code.indexOf("Second");
-      expect(firstIdx).toBeLessThan(secondIdx);
     });
   });
 
@@ -1291,43 +1122,6 @@ describe("Conjure", () => {
     });
   });
 
-  describe("exp.tsEnum", () => {
-    it("generates TS enum with string values", () => {
-      const enumStmt = conjure.exp.tsEnum("Status", { capability: "types", entity: "Status" }, [
-        "active",
-        "pending",
-        "inactive",
-      ]);
-
-      expect(enumStmt._tag).toBe("SymbolStatement");
-      expect(enumStmt.symbol).toEqual({
-        name: "Status",
-        capability: "types",
-        entity: "Status",
-        isType: true,
-      });
-
-      const code = printStmt(enumStmt.node);
-      expect(code).toContain("export enum Status");
-      expect(code).toContain('ACTIVE = "active"');
-      expect(code).toContain('PENDING = "pending"');
-      expect(code).toContain('INACTIVE = "inactive"');
-    });
-
-    it("normalizes member names with special characters", () => {
-      const enumStmt = conjure.exp.tsEnum("Priority", { capability: "types", entity: "Priority" }, [
-        "high-priority",
-        "low.priority",
-        "medium priority",
-      ]);
-
-      const code = printStmt(enumStmt.node);
-      expect(code).toContain('HIGH_PRIORITY = "high-priority"');
-      expect(code).toContain('LOW_PRIORITY = "low.priority"');
-      expect(code).toContain('MEDIUM_PRIORITY = "medium priority"');
-    });
-  });
-
   describe("conjure.call", () => {
     it("creates method call from string callee", () => {
       const expr = conjure.call("db", "selectFrom", [conjure.str("users")]);
@@ -1357,6 +1151,115 @@ describe("Conjure", () => {
       ]);
       const code = printExpr(expr);
       expect(code).toBe('console.log("Hello", 42, true);');
+    });
+  });
+
+  describe("extractIdentifierRefs", () => {
+    it("extracts simple identifier from expression", () => {
+      const expr = conjure.id("foo").build();
+      const refs = extractIdentifierRefs(expr);
+      expect(refs).toEqual(["foo"]);
+    });
+
+    it("extracts identifiers from method chains", () => {
+      const expr = conjure.id("z").method("string").method("uuid").build();
+      const refs = extractIdentifierRefs(expr);
+      expect(refs).toContain("z");
+      expect(refs).toContain("string");
+      expect(refs).toContain("uuid");
+    });
+
+    it("extracts identifiers from object literal", () => {
+      const expr = conjure
+        .obj()
+        .prop("id", conjure.id("z").method("string").build())
+        .prop("name", conjure.id("name").build())
+        .build();
+      const refs = extractIdentifierRefs(expr);
+      expect(refs).toContain("z");
+      expect(refs).toContain("string");
+      expect(refs).toContain("name");
+    });
+
+    it("extracts identifiers from nested structures", () => {
+      const expr = conjure
+        .id("db")
+        .method("selectFrom", [conjure.str("users")])
+        .method("where", [conjure.id("id").build(), conjure.id("userId").build()])
+        .build();
+      const refs = extractIdentifierRefs(expr);
+      expect(refs).toContain("db");
+      expect(refs).toContain("selectFrom");
+      expect(refs).toContain("where");
+      expect(refs).toContain("id");
+      expect(refs).toContain("userId");
+    });
+
+    it("deduplicates identifier names", () => {
+      const expr = conjure
+        .id("z")
+        .method("string")
+        .method("string") // duplicate
+        .build();
+      const refs = extractIdentifierRefs(expr);
+      // Should only appear once
+      const stringCount = refs.filter(r => r === "string").length;
+      expect(stringCount).toBe(1);
+    });
+
+    it("extracts typeof references from TSTypeQuery", () => {
+      const type = conjure.ts.typeof("MySchema");
+      const refs = extractIdentifierRefs(type as unknown as n.Node);
+      expect(refs).toContain("MySchema");
+    });
+
+    it("extracts identifiers from type alias declaration", () => {
+      const decl = conjure.export.type("UserRow", conjure.ts.ref("User"));
+      const refs = extractIdentifierRefs(decl);
+      expect(refs).toContain("UserRow");
+      expect(refs).toContain("User");
+    });
+
+    it("extracts identifiers from const declaration", () => {
+      const decl = conjure.export.const(
+        "userSchema",
+        conjure.id("z").method("object", [conjure.obj().build()]).build(),
+      );
+      const refs = extractIdentifierRefs(decl);
+      expect(refs).toContain("userSchema");
+      expect(refs).toContain("z");
+      expect(refs).toContain("object");
+    });
+
+    it("handles empty/literal-only expressions", () => {
+      const expr = conjure.str("hello");
+      const refs = extractIdentifierRefs(expr);
+      expect(refs).toEqual([]);
+    });
+
+    it("handles complex nested type references", () => {
+      const type = conjure.ts.ref("Promise", [
+        conjure.ts.ref("Array", [conjure.ts.ref("User")]),
+      ]);
+      const refs = extractIdentifierRefs(type as unknown as n.Node);
+      expect(refs).toContain("Promise");
+      expect(refs).toContain("Array");
+      expect(refs).toContain("User");
+    });
+
+    it("extracts from function with typed parameters", () => {
+      const fn = conjure
+        .fn()
+        .arrow()
+        .param("user", conjure.ts.ref("User"))
+        .returns(conjure.ts.ref("Result"))
+        .body(conjure.stmt.return(conjure.id("user").prop("id").build()))
+        .build();
+      const refs = extractIdentifierRefs(fn);
+      expect(refs).toContain("user");
+      expect(refs).toContain("User");
+      expect(refs).toContain("Result");
+      expect(refs).toContain("id");
     });
   });
 });

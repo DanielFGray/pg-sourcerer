@@ -363,7 +363,7 @@ export function valibot(config?: ValibotConfig): Plugin {
               capability,
               node: schemaDecl,
               exports: "named",
-              externalImports: [{ from: "valibot", names: ["v"] }],
+              imports: [{ from: "valibot", names: ["v"] }],
               metadata: {
                 consume: createValibotConsumeCallback(shape.name),
               },
@@ -380,7 +380,7 @@ export function valibot(config?: ValibotConfig): Plugin {
                 capability: `schema:valibot:${shape.name}:type`,
                 node: typeDecl,
                 exports: "named",
-                externalImports: [{ from: "valibot", names: ["v"] }],
+                imports: [{ from: "valibot", names: ["v"] }],
               });
             }
           }
@@ -402,7 +402,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             capability: `schema:valibot:${entity.name}`,
             node: schemaDecl,
             exports: "named",
-            externalImports: [{ from: "valibot", names: ["v"] }],
+            imports: [{ from: "valibot", names: ["v"] }],
             metadata: {
               consume: createValibotConsumeCallback(entity.name),
             },
@@ -414,7 +414,7 @@ export function valibot(config?: ValibotConfig): Plugin {
               capability: `schema:valibot:${entity.name}:type`,
               node: typeDecl,
               exports: "named",
-              externalImports: [{ from: "valibot", names: ["v"] }],
+              imports: [{ from: "valibot", names: ["v"] }],
             });
           }
         }

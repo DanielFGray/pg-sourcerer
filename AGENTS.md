@@ -323,6 +323,38 @@ git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
 
 **NEVER use `git stash`** without explicit user permission. Stashes can be compacted/lost, and subsequent agents may not know to pop them - resulting in work on the wrong working tree state. If you need to test baseline behavior, use `git diff` to save changes to a file, or ask the user first.
 
+## ⚠️ CRITICAL: NEVER Use `git checkout` to Revert Files
+
+**ABSOLUTELY FORBIDDEN: `git checkout <path>` or `git restore <path>`**
+
+These commands **PERMANENTLY DESTROY** uncommitted working tree changes. There is NO recovery - the changes are not in git's object database and cannot be retrieved.
+
+**If you need to undo changes:**
+
+1. **STOP** - Do not use checkout/restore
+2. **Save first** - Use `git diff > backup.patch` to save changes
+3. **Ask the user** - Confirm they want to discard the work
+4. **Only then** - User can manually run the command if they confirm
+
+**If you made a mistake with sed/find/etc:**
+
+```bash
+# ✅ CORRECT: Save changes first
+git diff packages/foo > /tmp/backup.patch
+
+# ✅ Then manually fix the issue with targeted edits
+# Use the Edit tool to fix specific files
+
+# ❌ WRONG: This destroys ALL uncommitted work
+git checkout packages/foo  # FORBIDDEN
+git restore packages/foo   # FORBIDDEN
+```
+
+**Real incident (2026-01-29):**
+An agent used `git checkout packages/pg-sourcerer/src/plugins` after a bad sed replacement, destroying hours of uncommitted plugin work (domain constraint validation, regex helpers, etc.). This was **irreversible data loss**.
+
+**The rule is absolute: NEVER use checkout/restore on working tree files. Save first, ask user, then let THEM decide.**
+
 ## ⚠️ CRITICAL: Decision Making
 
 **ALWAYS defer to the user on design decisions.**

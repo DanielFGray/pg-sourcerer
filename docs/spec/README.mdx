@@ -21,13 +21,13 @@ npm install @danielfgray/pg-sourcerer
 !source #quick-start
 
 ```typescript !expected
-import { defineConfig, typesPlugin, zod } from "@danielfgray/pg-sourcerer";
+import { defineConfig, typesPlugin, zod, express } from "@danielfgray/pg-sourcerer";
 
 export default defineConfig({
   connectionString: process.env.DATABASE_URL,
   schemas: ["public"],
   outputDir: "./src/generated",
-  plugins: [typesPlugin({ outputDir: "types" }), zod({ outputDir: "schemas" })],
+  plugins: [typesPlugin(), zod(), express()],
 });
 ```
 
@@ -115,27 +115,28 @@ Each plugin generates different artifacts:
 ```typescript !expected
 export type UserRole = "admin" | "moderator" | "user";
 
+export type Url = string;
+
+export type Username = string;
+
 export interface User {
-    readonly id: string;
-    readonly username: string;
-    readonly name: string | null;
-    readonly avatar_url: string | null;
-    readonly role: UserRole;
-    readonly bio: string;
-    readonly is_verified: boolean;
-    readonly created_at: Date;
-    readonly updated_at: Date;
+  readonly id: string;
+  readonly username: Username;
+  readonly name: string | null;
+  readonly avatar_url: Url | null;
+  readonly role: UserRole;
+  readonly bio: string;
+  readonly is_verified: boolean;
+  readonly created_at: Date;
+  readonly updated_at: Date;
 }
 
 export interface UserUpdate {
-    username?: string;
-    name?: string | null;
-    avatar_url?: string | null;
-    bio?: string;
+  username?: Username;
+  name?: string | null;
+  avatar_url?: Url | null;
+  bio?: string;
 }
-```
-
-```typescript !actual
 ```
 
 ### !!claim zod-plugin `zodPlugin` -- Zod Schemas
@@ -144,42 +145,42 @@ export interface UserUpdate {
 !file packages/example/generated-readme/minimal/zod-http/schemas.ts
 
 ```typescript !expected
-// UserRole.ts
 import { z } from "zod";
 
-export const UserRole = z.enum(["admin", "moderator", "user"]);
+export const UserRole = z.enum(["admin", "moderator", "user"] as const);
 
 export type UserRole = z.infer<typeof UserRole>;
 
-// User.ts
-import { z } from "zod";
-import { UserRole } from "./UserRole.js";
+export const Url = z.string().regex(/^https?:\/\/\S+/);
+
+export type Url = z.infer<typeof Url>;
+
+export const Username = z.string().min(2).max(24).regex(/^[a-zA-Z][a-zA-Z0-9_-]+$/);
+
+export type Username = z.infer<typeof Username>;
 
 export const User = z.object({
-    id: z.uuid(),
-    username: z.string(),
-    name: z.string().nullable().optional(),
-    avatar_url: z.string().nullable().optional(),
-    role: UserRole,
-    bio: z.string(),
-    is_verified: z.boolean(),
-    created_at: z.coerce.date(),
-    updated_at: z.coerce.date(),
+  id: z.uuid(),
+  username: Username,
+  name: z.string().nullable(),
+  avatar_url: Url.nullable(),
+  role: UserRole,
+  bio: z.string().max(4000),
+  is_verified: z.boolean(),
+  created_at: z.coerce.date(),
+  updated_at: z.coerce.date(),
 });
 
 export type User = z.infer<typeof User>;
 
-export const UserUpdate = z.object({
-    username: z.string().optional(),
-    name: z.string().nullable().optional(),
-    avatar_url: z.string().nullable().optional(),
-    bio: z.string().optional(),
-});
+export const UserUpdate = User.pick({
+  username: true,
+  name: true,
+  avatar_url: true,
+  bio: true,
+}).partial();
 
 export type UserUpdate = z.infer<typeof UserUpdate>;
-```
-
-```typescript !actual
 ```
 
 ### !!claim arktype-plugin `arktypePlugin` -- ArkType Validators
@@ -188,42 +189,42 @@ export type UserUpdate = z.infer<typeof UserUpdate>;
 !file packages/example/generated-readme/minimal/arktype/schemas.ts
 
 ```typescript !expected
-// UserRole.ts
 import { type } from "arktype";
 
 export const UserRole = type("'admin' | 'moderator' | 'user'");
 
 export type UserRole = typeof UserRole.infer;
 
-// User.ts
-import { type } from "arktype";
-import { UserRole } from "./UserRole.js";
+export const Url = type("string & /^https?:\\/\\/\\S+/");
+
+export type Url = typeof Url.infer;
+
+export const Username = type("string >= 2 <= 24 & /^[a-zA-Z][a-zA-Z0-9_-]+$/");
+
+export type Username = typeof Username.infer;
 
 export const User = type({
-    id: "string.uuid",
-    username: "string",
-    "name?": "string | null",
-    "avatar_url?": "string | null",
-    role: UserRole,
-    bio: "string",
-    is_verified: "boolean",
-    created_at: "Date",
-    updated_at: "Date",
+  id: "string.uuid",
+  username: Username,
+  name: "string | null",
+  avatar_url: Url.or(type("null")),
+  role: UserRole,
+  bio: "string <= 4000",
+  is_verified: "boolean",
+  created_at: "Date",
+  updated_at: "Date",
 });
 
 export type User = typeof User.infer;
 
 export const UserUpdate = type({
-    "username?": "string",
-    "name?": "string | null",
-    "avatar_url?": "string | null",
-    "bio?": "string",
+  username: Username,
+  name: "string | null?",
+  avatar_url: Url.or(type("null")),
+  bio: "string <= 4000?",
 });
 
 export type UserUpdate = typeof UserUpdate.infer;
-```
-
-```typescript !actual
 ```
 
 ### !!claim valibot-plugin `valibotPlugin` -- Valibot Schemas
@@ -232,42 +233,47 @@ export type UserUpdate = typeof UserUpdate.infer;
 !file packages/example/generated-readme/minimal/valibot/schemas.ts
 
 ```typescript !expected
-// UserRole.ts
 import * as v from "valibot";
 
 export const UserRole = v.picklist(["admin", "moderator", "user"]);
 
 export type UserRole = v.InferOutput<typeof UserRole>;
 
-// User.ts
-import * as v from "valibot";
-import { UserRole } from "./UserRole.js";
+export const Url = v.pipe(v.string(), v.regex(/^https?:\/\/\S+/));
+
+export type Url = v.InferOutput<typeof Url>;
+
+export const Username = v.pipe(
+  v.string(),
+  v.minLength(2),
+  v.maxLength(24),
+  v.regex(/^[a-zA-Z][a-zA-Z0-9_-]+$/),
+);
+
+export type Username = v.InferOutput<typeof Username>;
 
 export const User = v.object({
-    id: v.pipe(v.string(), v.uuid()),
-    username: v.string(),
-    name: v.optional(v.nullable(v.string())),
-    avatar_url: v.optional(v.nullable(v.string())),
-    role: UserRole,
-    bio: v.string(),
-    is_verified: v.boolean(),
-    created_at: v.date(),
-    updated_at: v.date(),
+  id: v.pipe(v.string(), v.uuid()),
+  username: Username,
+  name: v.nullable(v.string()),
+  avatar_url: v.nullable(Url),
+  role: UserRole,
+  bio: v.pipe(v.string(), v.maxLength(4000)),
+  is_verified: v.boolean(),
+  created_at: v.date(),
+  updated_at: v.date(),
 });
 
 export type User = v.InferOutput<typeof User>;
 
 export const UserUpdate = v.object({
-    username: v.optional(v.string()),
-    name: v.optional(v.nullable(v.string())),
-    avatar_url: v.optional(v.nullable(v.string())),
-    bio: v.optional(v.string()),
+  username: v.optional(Username),
+  name: v.optional(v.nullable(v.string())),
+  avatar_url: v.optional(v.nullable(Url)),
+  bio: v.optional(v.pipe(v.string(), v.maxLength(4000))),
 });
 
 export type UserUpdate = v.InferOutput<typeof UserUpdate>;
-```
-
-```typescript !actual
 ```
 
 ### !!claim kysely-plugin `kysely` -- Kysely Types + Query Builders
@@ -278,73 +284,92 @@ export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 The unified `kysely` plugin generates both type definitions and query functions:
 
 ```typescript !expected
-// DB interface (db.ts)
-import type { Generated, ColumnType } from "kysely";
+export type Generated<T> = T extends ColumnType<infer S, infer I, infer U>
+  ? ColumnType<S, I | undefined, U>
+  : ColumnType<T, T | undefined, T>;
+
+import type { ColumnType } from "kysely";
 
 export type UserRole = "admin" | "moderator" | "user";
 
-export interface UsersTable {
-    id: Generated<string>;
-    username: string;
-    name: string | null;
-    avatar_url: string | null;
-    role: UserRole;
-    bio: string;
-    is_verified: boolean;
-    created_at: Generated<Date>;
-    updated_at: Generated<Date>;
+export interface User {
+  id: Generated<string>;
+  username: string;
+  name: string | null;
+  avatar_url: string | null;
+  role: Generated<UserRole>;
+  bio: Generated<string>;
+  is_verified: Generated<boolean>;
+  created_at: Generated<ColumnType<Date, Date | string, Date | string>>;
+  updated_at: Generated<ColumnType<Date, Date | string, Date | string>>;
 }
 
 export interface DB {
-  "app_public.users": UsersTable;
+  users: User;
 }
+```
 
-//
-import { db } from "../../db.js";
-import type { UsersTable } from "./db.js";
-import type { Insertable, Updateable } from "kysely";
+### !!claim kysely-queries `kysely` -- Kysely Query Functions
+!plugin kysely
+!source #what-gets-generated
+!file packages/example/generated-readme/minimal/kysely/queries.ts
 
-export const findById = ({ id }: { id: string }) =>
-  db
-    .selectFrom("app_public.users")
-    .select([
-      "id",
-      "username",
-      "name",
-      "avatar_url",
-      "role",
-      "bio",
-      "is_verified",
-      "created_at",
-      "updated_at",
-    ])
-    .where("id", "=", id);
+Kysely also generates type-safe query builder functions:
 
-export const create = ({ data }: { data: Insertable<UsersTable> }) =>
-  db.insertInto("app_public.users").values(data).returningAll();
+```typescript !expected
+import type { Updateable } from "kysely";
+import type { User } from "./DB.js";
 
-export const update = ({ id, ..data }: Updateable<UsersTable>) =>
-  db
-    .updateTable("app_public.users")
-    .set(data)
-    .where("id", "=", id)
-    .returningAll();
+export const userListByCreatedAt = (
+  {
+    cursorCreatedAt,
+    cursorId,
+    limit = 50,
+  }: {
+    cursorCreatedAt?: Date;
+    cursorId?: string;
+    limit?: number;
+  },
+) => db.selectFrom("users").select([
+  "id",
+  "username",
+  "name",
+  "avatar_url",
+  "role",
+  "bio",
+  "is_verified",
+  "created_at",
+  "updated_at",
+]).$if(
+  cursorCreatedAt !== undefined && cursorId !== undefined,
+  qb => qb.where(eb => eb.or([
+    eb("created_at", "<", cursorCreatedAt!),
+    eb.and([eb("created_at", "=", cursorCreatedAt!), eb("id", "<", cursorId!)]),
+  ])),
+).orderBy("created_at", "desc").orderBy("id", "desc").limit(limit);
 
-export const findByUsername = ({ username }: { username: string }) =>
-  db
-    .selectFrom("app_public.users")
-    .select([
-      "id",
-      "username",
-      "name",
-      "avatar_url",
-      "role",
-      "bio",
-      "is_verified",
-      "created_at",
-      "updated_at",
-    ])
-    .where("username", "=", username);
+export const userUpdate = (
+  {
+    id,
+    ...data
+  }: Pick<User, "id"> & Omit<Updateable<User>, "id">,
+) => db.updateTable("users").set(data).where("id", "=", id).returningAll();
+
+export const userFindByUsername = (
+  {
+    username,
+  }: Pick<User, "username">,
+) => db.selectFrom("users").select([
+  "id",
+  "username",
+  "name",
+  "avatar_url",
+  "role",
+  "bio",
+  "is_verified",
+  "created_at",
+  "updated_at",
+]).where("username", "=", username);
 ```
 
 ### !!claim sql-queries-plugin `sqlQueries` -- Raw SQL Query Functions
@@ -358,26 +383,28 @@ with `sqlQueries({ sqlStyle: "tag" })`
 import { sql } from "../../db.js";
 import type { User } from "../types/User.js";
 
-export const update = ({
-  id,
-  ...fields
-}: Pick<User, "id"> & Partial<Pick<User, "username" | "name" | "bio" | "avatarUrl">>) =>
-  sql`update users set ${sql(user, ["username", "name", "bio", "avatarUrl"])} where id = ${id}`;
+export const userUpdate = (
+  {
+    id,
+    ...fields
+  }: Pick<User, "id"> & Partial<Pick<User, "username" | "name" | "avatar_url" | "bio">>,
+) => sql`update app_public.users set ${sql(fields, Object.keys(fields))} where id = ${id}`;
 
-export const latest = ({ limit = 50, offset = 0 }: { limit?: number; offset?: number }) =>
-  sql<User[]>`
-    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
-    from app_public.users order by created_at desc limit ${limit} offset ${offset}`;
+export const userFindByUsername = (
+  {
+    username,
+  }: Pick<User, "username">,
+) => sql<User[]>`select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at from app_public.users where username = ${username}`;
 
-export async function findByUsername({ username }: { username: NonNullable<User["username"]> }) {
-  const [result] = await sql<User[]>`
-    select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at
-    from app_public.users where username = ${username}`;
-  return result;
-}
-```
-
-```typescript !actual
+export const userListByCreatedAt = (
+  {
+    limit = 50,
+    offset = 0,
+  }: {
+    limit?: number;
+    offset?: number;
+  },
+) => sql<User[]>`select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at from app_public.users order by created_at desc limit ${limit} offset ${offset}`;
 ```
 
 not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
@@ -393,95 +420,145 @@ Set `repoModel: false` (or `repos: false` for legacy configs) to skip `Model.mak
 and expose query functions from the active `queries` plugin (kysely/sql-queries).
 
 ```typescript !expected
-// users/model.ts
 import { Model } from "@effect/sql";
-import { Schema as S } from "effect";
+import { Schema as S, Effect, Layer, Option } from "effect";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
+import { UserRole } from "./userRole.js";
 
-const UserRole = S.Union(S.Literal("admin"), S.Literal("moderator"), S.Literal("user"));
-
-export class User extends Model.Class<User>("User")({
+export class User extends Model.Class<User>("users")({
   id: Model.Generated(S.UUID),
   username: S.String,
   name: S.NullOr(S.String),
+  avatar_url: S.NullOr(S.String),
   role: UserRole,
   bio: S.String,
-  isVerified: S.Boolean,
-  createdAt: Model.DateTimeInsertFromDate,
-  updatedAt: Model.DateTimeUpdateFromDate,
+  is_verified: S.Boolean,
+  created_at: Model.DateTimeInsertFromDate,
+  updated_at: Model.DateTimeUpdateFromDate,
 }) {}
-
-// users/service.ts
-import { Model, SqlClient } from "@effect/sql";
-import { User } from "./User.js";
 
 export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
-  effect: Effect.gen(function* () {
-    const db = yield* KyselyDB
-    const queries = {
-      findById: ({ id }: { id: string }) => db
-        .selectFrom("app_public.users")
-        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
-        .where("id", "=", id),
+  effect: Effect.gen(function*() {
+    const repo = yield* Model.makeRepository(User, {
+      tableName: "app_public.users",
+      spanPrefix: "UserRepo",
+      idColumn: "id",
+    });
 
-      create: ({ data }: { data: Insertable<UsersTable> }) =>
-        db.insertInto("app_public.users").values(data).returningAll(),
-
-      update: ({ id, data }: { id: string; data: Updateable<UsersTable> }) =>
-        db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll(),
-
-      findByUsername: ({ username }: { username: string }) => db
-        .selectFrom("app_public.users")
-        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
-        .where("username", "=", username),
-
-      latest: ({ offset = 0, limit = 50 }: { offset: number; limit: number }) => db
-        .selectFrom("app_public.users")
-        .select(["id", "username", "name", "avatar_url", "role", "bio", "is_verified", "created_at", "updated_at"])
-        .orderBy("created_at", "desc")
-        .limit(limit).offset(offset),
-    }
-    return { ...queries };
+    return {
+      ...repo,
+    };
   }),
 }) {}
-```
 
-```typescript !actual
+export class UserNotFound extends S.TaggedError<UserNotFound>()("UserNotFound", {
+  id: S.UUID,
+}) {}
+
+export const UserApiGroup = HttpApiGroup.make("users").prefix("/api/users").add(
+  HttpApiEndpoint.get("findById")`/${HttpApiSchema.param("id", S.UUID)}`.addSuccess(User).addError(UserNotFound, {
+    status: 404,
+  }),
+).add(
+  HttpApiEndpoint.post("insert", "/").setPayload(User.insert).addSuccess(User, {
+    status: 201,
+  }),
+).add(
+  HttpApiEndpoint.put("update")`/${HttpApiSchema.param("id", S.UUID)}`.setPayload(User.update).addSuccess(User).addError(UserNotFound, {
+    status: 404,
+  }),
+).add(
+  HttpApiEndpoint.del("delete")`/${HttpApiSchema.param("id", S.UUID)}`.addError(UserNotFound, {
+    status: 404,
+  }),
+);
+
+export const UserApi = HttpApi.make("UserApi").add(UserApiGroup);
+
+export const UserApiGroupLive = HttpApiBuilder.group(UserApi, "users", handlers => Effect.gen(function*() {
+  const repo = yield* UserRepo;
+
+  return handlers.handle("findById", (
+    {
+      path: {
+        id,
+      },
+    },
+  ) => repo.findById(id).pipe(Effect.flatMap(Option.match({
+    onNone: () => Effect.fail(new UserNotFound({
+      id: id,
+    })),
+
+    onSome: Effect.succeed,
+  })))).handle("insert", (
+    {
+      payload,
+    },
+  ) => repo.insert(payload)).handle("update", (
+    {
+      path: {
+        id,
+      },
+
+      payload,
+    },
+  ) => repo.update({
+    ...payload,
+    id,
+  })).handle("delete", (
+    {
+      path: {
+        id,
+      },
+    },
+  ) => repo.delete(id));
+}));
+
+export const UserApiLive = HttpApiBuilder.api(UserApi).pipe(Layer.provide(UserApiGroupLive), Layer.provide(UserRepo.Default));
 ```
 
 ### !!claim http-elysia `httpElysia` -- Elysia REST Routes
 !plugin httpElysia
 !source #what-gets-generated
+!file packages/example/generated-readme/minimal/elysia/routes.ts
 
 ```typescript !expected
-import { Elysia, t } from "elysia";
+import { Elysia } from "elysia";
+import { z } from "zod";
 import { findUserById, findUserManys, getUserByUsername } from "../queries/User.js";
+import { User, UserUpdate } from "../schemas/User.js";
 
-export const userRoutes = new Elysia({ prefix: "/api/users" })
-  .get(
+export const userRoutes = new Elysia({
+  prefix: "/users",
+})
+  .patch(
     "/:id",
-    async ({ params, status }) => {
-      const result = await findUserById({ id: params.id });
-      if (!result) return status(404, "Not found");
+    async ({ params, body }) => {
+      const result = await userUpdate({
+        id: params.id,
+        ...body,
+      }).executeTakeFirstOrThrow();
+
       return result;
     },
-    { params: t.Object({ id: t.String() }) },
-  )
-  .get(
-    "/",
-    async ({ query }) => {
-      return await latest({ limit: query.limit, offset: query.offset });
+    {
+      body: UserUpdate,
+      params: User.pick({ id: true }),
     },
-    { query: t.Object({ limit: t.Optional(t.Numeric()), offset: t.Optional(t.Numeric()) }) },
   )
   .get(
     "/by-username/:username",
     async ({ params, status }) => {
-      const result = await getUserByUsername({ username: params.username });
+      const result = await userFindByUsername({ username: params.username, }).executeTakeFirst();
       if (!result) return status(404, "Not found");
       return result;
     },
-    { params: t.Object({ username: t.String() }) },
+    {
+      params: User.pick({ username: true }),
+    }
   );
+
+
 ```
 
 ### !!claim http-express `httpExpress` -- Express REST Routes
@@ -490,14 +567,15 @@ export const userRoutes = new Elysia({ prefix: "/api/users" })
 
 ```typescript !expected
 import { Router } from "express";
-import { findUserById, listUsers, updateUser } from "../sql-queries/User.js";
+import { z } from "zod";
+import { findUserById, listUsers, updateUser } from "../queries/User.js";
 import { User, UserUpdate } from "../schemas/User.js";
 
 export const userRoutes = Router();
 
 userRoutes.get("/:id", async (req, res) => {
   const { params } = z.object({
-    params: z.object({ id: User.shape.id })
+    params: z.object({ id: User.shape.id }),
   }).parse({ params: req.params }})
   const result = await findUserById({ id: params.id });
   if (!result) return res.status(404).json({ error: "Not found" });
@@ -505,21 +583,27 @@ userRoutes.get("/:id", async (req, res) => {
 });
 
 userRoutes.get("/", async (req, res) => {
-  const { query } = z.object({
-    query: z.object({
-      limit: z.coerce.number().optional(),
-      offset: z.coerce.number().optional(),
-    })
-  }).parse({ query: req.query }})
-  return res.json(await latest(query);
+  const query = z.object({
+    cursorCreatedAt: z.coerce.date().optional(),
+    cursorId: z.string().optional(),
+    limit: z.coerce.number().optional(),
+  }).parse(req.query);
+
+  const result = await userListByCreatedAt({
+    cursorCreatedAt: query.cursorCreatedAt,
+    cursorId: query.cursorId,
+    limit: query.limit,
+  }).execute();
+
+  return res.json(result);
 });
 
 userRoutes.put("/:id", async (req, res) => {
-  const { success,  } = z.object({
+  const { params, body } = z.object({
     params: z.object({ id: User.shape.id })
     body: UserUpdate,
   }).parse({ params: req.params, body: req.body }})
-  const result = await updateUser({ id, ...data });
+  const result = await updateUser({ id: params.id, ...body });
   return res.json(result);
 });
 ```
@@ -532,35 +616,40 @@ userRoutes.put("/:id", async (req, res) => {
 import { Hono } from "hono";
 import { sValidator } from "@hono/standard-validator";
 import { z } from "zod";
-import { findUserById, listUsers, updateUser } from "../sql-queries/User.js";
+import { findUserById, listUsers, updateUser } from "../queries/User.js";
 import { UserUpdate } from "../schemas/User.js";
 
 export const userRoutes = new Hono()
-  .get("/:id", async c => {
-    const id = c.req.param("id");
+  .get("/:id", async ctx => {
+    const id = ctx.req.param("id");
     const result = await findUserById({ id });
-    if (!result) return c.json({ error: "Not found" }, 404);
-    return c.json(result);
+    if (!result) return ctx.json({ error: "Not found" }, 404);
+    return ctx.json(result);
   })
   .get(
-    "/",
+    "/by-created-at",
     sValidator(
       "query",
       z.object({
+        cursorCreatedAt: z.coerce.date().optional(),
+        cursorId: z.string().optional(),
         limit: z.coerce.number().optional(),
-        offset: z.coerce.number().optional(),
       }),
     ),
-    async c => {
-      const { limit, offset } = c.req.valid("query");
-      return c.json(await latest({ limit, offset }));
+    async ctx => {
+      const query = ctx.req.valid("query");
+      return ctx.json(await userListByCreatedAt({
+        cursorCreatedAt: query.cursorCreatedAt,
+        cursorId: query.cursorId,
+        limit: query.limit,
+      }).execute());
     },
   )
-  .put("/:id", sValidator("json", UserUpdate), async c => {
-    const id = c.req.param("id");
-    const data = c.req.valid("json");
+  .put("/:id", sValidator("json", UserUpdate), async ctx => {
+    const id = ctx.req.param("id");
+    const data = ctx.req.valid("json");
     const result = await updateUser({ id, ...data });
-    return c.json(result);
+    return ctx.json(result);
   });
 ```
 
@@ -571,23 +660,29 @@ export const userRoutes = new Hono()
 ```typescript !expected
 import { z } from "zod";
 import { router, publicProcedure } from "../trpc.js";
-import { findUserById, listUsers, getUserByUsername } from "../sql-queries/User.js";
+import { userFindById, userListByCreatedAt, userFindByUsername } from "../queries.js";
 
 export const userRouter = router({
-  findUserById: publicProcedure.input(z.object({ id: z.string() })).query(async ({ input }) => {
-    return await findUserById({ id: input.id }).executeTakeFirst();
-  }),
-
-  listUsers: publicProcedure
-    .input(z.object({ limit: z.coerce.number().optional(), offset: z.coerce.number().optional() }))
+  findById: publicProcedure
+    .input(z.object({ id: z.string() }))
     .query(async ({ input }) => {
-      return await listUsers({ limit: input.limit, offset: input.offset }).execute();
+      return userFindById(input).executeTakeFirst();
     }),
 
-  getUserByUsername: publicProcedure
+  listByCreatedAt: publicProcedure
+    .input(z.object({
+      cursorCreatedAt: z.coerce.date().optional(),
+      cursorId: z.string().optional(),
+      limit: z.coerce.number().optional(),
+    }))
+    .query(async ({ input }) => {
+      return userListByCreatedAt(input).execute();
+    }),
+
+  findByUsername: publicProcedure
     .input(z.object({ username: z.string() }))
     .query(async ({ input }) => {
-      return await getUserByUsername({ username: input.username }).executeTakeFirst();
+      return userFindByUsername(input).executeTakeFirst();
     }),
 });
 ```
@@ -597,22 +692,39 @@ export const userRouter = router({
 !source #what-gets-generated
 
 ```typescript !expected
-import { findUserById, listUsers, getUserByUsername } from "../sql-queries/User.js";
-import { os, type } from "@orpc/server";
+import { z } from "zod";
+import { os } from "@orpc/server";
+import { userFindById, userListByCreatedAt, userFindByUsername } from "../queries.js";
 
 export const findById = os
-  .input(type<{ id: string }>())
-  .handler(async ({ input }) => await findUserById(input)).executeTakeFirst();
+  .input(z.object({ id: z.string() }))
+  .handler(async ({ input }) => {
+    return userFindById(input).executeTakeFirst();
+  });
 
-export const list = os
-  .input(type<{ limit?: number; offset?: number }>())
-  .handler(async ({ input }) => await listUsers(input)).execute();
+export const listByCreatedAt = os
+  .input(z.object({
+    cursorCreatedAt: z.coerce.date().optional(),
+    cursorId: z.string().optional(),
+    limit: z.coerce.number().optional(),
+  }))
+  .handler(async ({ input }) => {
+    return userListByCreatedAt(input).execute();
+  });
 
 export const findByUsername = os
-  .input(type<{ username: string }>())
-  .handler(async ({ input }) => await getUserByUsername(input)).executeTakeFirst();
+  .input(z.object({ username: z.string() }))
+  .handler(async ({ input }) => {
+    return userFindByUsername(input).executeTakeFirst();
+  });
 
-export const userRouter = { findById, list, findByUsername };
+export const router = {
+  user: {
+    findById,
+    listByCreatedAt,
+    findByUsername,
+  },
+};
 ```
 
 ## !!section Smart Tags

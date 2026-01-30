@@ -37,7 +37,7 @@ describe("parseCapabilityInfo", () => {
   });
 
   it("parses schema:zod capability", () => {
-    const info = parseCapabilityInfo("schema:zod:Comment");
+    const info = parseCapabilityInfo("schema:Comment");
     expect(info.entityName).toBe("Comment");
     expect(info.schema).toBe("public");
   });
@@ -88,7 +88,7 @@ describe("getFileForCapability with registry", () => {
   it("uses registry to find baseEntityName for shapes", () => {
     const config = createConfig([
       {
-        pattern: "schema:zod:",
+        pattern: "schema:",
         fileNaming: ({ folderName }) => `${folderName}/schemas.ts`,
       },
     ]);
@@ -96,7 +96,7 @@ describe("getFileForCapability with registry", () => {
     // UserInsert should map to User via registry
     const declaration: SymbolDeclaration = {
       name: "UserInsert",
-      capability: "schema:zod:UserInsert",
+      capability: "schema:UserInsert",
     };
 
     const result = getFileForCapability(declaration, config);
@@ -106,7 +106,7 @@ describe("getFileForCapability with registry", () => {
   it("uses registry for all shape variants", () => {
     const config = createConfig([
       {
-        pattern: "schema:zod:",
+        pattern: "schema:",
         fileNaming: ({ folderName, variant }) => 
           `${folderName}/schemas.ts`,
       },
@@ -115,15 +115,15 @@ describe("getFileForCapability with registry", () => {
     // All User shapes should go to user/schemas.ts
     const userRow: SymbolDeclaration = {
       name: "User",
-      capability: "schema:zod:User",
+      capability: "schema:User",
     };
     const userInsert: SymbolDeclaration = {
       name: "UserInsert",
-      capability: "schema:zod:UserInsert",
+      capability: "schema:UserInsert",
     };
     const userUpdate: SymbolDeclaration = {
       name: "UserUpdate",
-      capability: "schema:zod:UserUpdate",
+      capability: "schema:UserUpdate",
     };
 
     expect(getFileForCapability(userRow, config)).toBe("user/schemas.ts");
@@ -134,7 +134,7 @@ describe("getFileForCapability with registry", () => {
   it("provides variant in context", () => {
     const config = createConfig([
       {
-        pattern: "schema:zod:",
+        pattern: "schema:",
         fileNaming: ({ folderName, variant }) => 
           variant ? `${folderName}/${variant}.ts` : `${folderName}/row.ts`,
       },
@@ -142,7 +142,7 @@ describe("getFileForCapability with registry", () => {
 
     const userInsert: SymbolDeclaration = {
       name: "UserInsert",
-      capability: "schema:zod:UserInsert",
+      capability: "schema:UserInsert",
     };
 
     const result = getFileForCapability(userInsert, config);
@@ -152,7 +152,7 @@ describe("getFileForCapability with registry", () => {
   it("falls back to capability parsing when not in registry", () => {
     const config = createConfig([
       {
-        pattern: "schema:zod:",
+        pattern: "schema:",
         fileNaming: ({ folderName }) => `${folderName}/schemas.ts`,
       },
     ]);
@@ -160,7 +160,7 @@ describe("getFileForCapability with registry", () => {
     // Unknown is not registered, should fall back to parsing
     const unknown: SymbolDeclaration = {
       name: "Unknown",
-      capability: "schema:zod:Unknown",
+      capability: "schema:Unknown",
     };
 
     const result = getFileForCapability(unknown, config);
@@ -170,14 +170,14 @@ describe("getFileForCapability with registry", () => {
   it("respects explicit outputPath", () => {
     const config = createConfig([
       {
-        pattern: "schema:zod:",
+        pattern: "schema:",
         fileNaming: () => "default.ts",
       },
     ]);
 
     const declaration: SymbolDeclaration = {
       name: "Custom",
-      capability: "schema:zod:Custom",
+      capability: "schema:Custom",
       outputPath: "custom/path.ts",
     };
 
@@ -193,7 +193,7 @@ describe("getFileForCapability with registry", () => {
       outputDir: "src/generated",
       rules: [
         {
-          pattern: "schema:zod:",
+          pattern: "schema:",
           fileNaming: ({ folderName }) => `${folderName}/schemas.ts`,
         },
       ],
@@ -203,7 +203,7 @@ describe("getFileForCapability with registry", () => {
 
     const declaration: SymbolDeclaration = {
       name: "SomeShape",
-      capability: "schema:zod:SomeShape",
+      capability: "schema:SomeShape",
       baseEntityName: "BaseEntity", // Explicit override
     };
 

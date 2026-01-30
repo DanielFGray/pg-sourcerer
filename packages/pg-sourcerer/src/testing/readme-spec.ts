@@ -3,18 +3,21 @@ import { parse } from "codehike";
 import { recmaCodeHike, remarkCodeHike } from "codehike/mdx";
 import { Schema } from "effect";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import path from "node:path";
+import url from "node:url";
 import * as recast from "recast";
 import { parse as babelParse } from "@babel/parser";
 import { createPatch } from "diff";
+import type { namedTypes as n } from "ast-types";
+import conjure from "../conjure";
 
-type CodeBlock = {
+interface CodeBlock {
   lang: string;
   meta: string;
   value: string;
-};
+}
 
-type Claim = {
+interface Claim {
   title?: string;
   children?: unknown;
   id?: string;
@@ -25,15 +28,15 @@ type Claim = {
   expected?: CodeBlock;
   actual?: CodeBlock;
   _data?: unknown;
-};
+}
 
-type Section = {
+interface Section {
   title?: string;
   children?: unknown;
-  claim?: ReadonlyArray<Claim>;
-  claims?: ReadonlyArray<Claim>;
+  claim?: readonly Claim[];
+  claims?: readonly Claim[];
   _data?: unknown;
-};
+}
 
 const CodeBlockSchema = Schema.Struct({
   lang: Schema.String,
@@ -73,7 +76,12 @@ const jsx = (type: unknown, props: Record<string, unknown> | null, key?: string)
 const jsxs = jsx;
 
 const normalizeText = (value: string) =>
-  value.replace(/\r\n/g, "\n").split("\n").map(line => line.trimEnd()).join("\n").trim();
+  value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map(line => line.trimEnd())
+    .join("\n")
+    .trim();
 
 const toLines = (value: string) => normalizeText(value).split("\n");
 
@@ -87,11 +95,11 @@ const parseTypeScript = (value: string) =>
           tokens: false,
         }),
     },
-  });
+  }) as n.Node;
 
 const normalizeTypeScript = (value: string) => {
   try {
-    return recast.print(parseTypeScript(value)).code.trim();
+    return conjure.print(parseTypeScript(value));
   } catch {
     return normalizeText(value);
   }
@@ -116,7 +124,7 @@ const isSqlLike = (lang?: string, filePath?: string) => {
   if (lang) {
     return ["sql", "postgresql"].includes(lang);
   }
-  return filePath ? /\.sql$/.test(filePath) : false;
+  return filePath ? filePath.endsWith(".sql") : false;
 };
 
 const normalizeForComparison = (value: string, lang?: string, filePath?: string) => {
@@ -164,9 +172,17 @@ const bestWindowMatch = (actualLines: readonly string[], expectedLines: readonly
 const buildDiff = (label: string, expected: string, actual: string) =>
   createPatch(label, expected, actual, "expected", "actual");
 
-const resolveRepoRoot = () => resolve(import.meta.dir, "../../../..");
+const resolveRepoRoot = () => {
+  // import.meta.dir is Bun-specific and not available in all environments (e.g., vitest)
+  // Fall back to import.meta.url with fileURLToPath
+  if (typeof import.meta.dir !== "undefined") {
+    return path.resolve(import.meta.dir, "../../../..");
+  }
+  // Fallback for Node/vitest environments
+  return path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "../../../..");
+};
 
-const resolveSpecPath = () => resolve(resolveRepoRoot(), "docs/spec/README.mdx");
+const resolveSpecPath = () => path.resolve(resolveRepoRoot(), "docs/spec/README.mdx");
 
 const readSpec = async (specPath: string) => readFile(specPath, "utf8");
 
@@ -188,9 +204,8 @@ const compileSpec = async (specSource: string) => {
 };
 
 const parseSpec = (content: (props: Record<string, unknown>) => unknown) => {
-  const raw = parse(content);
-  const root = raw as Record<string, unknown>;
-  const sectionsValue = root["sections"] ?? root["section"];
+  const raw = parse(content) as Record<string, unknown>;
+  const sectionsValue = raw["sections"] ?? raw["section"];
 
   if (!sectionsValue) {
     throw new Error("Spec is missing sections. Use '## !!section <id>' headings.");
@@ -201,10 +216,13 @@ const parseSpec = (content: (props: Record<string, unknown>) => unknown) => {
 
 const claimId = (claim: Claim, fallback: string) => claim.id ?? claim.title ?? fallback;
 
-const getClaims = (section: Section): ReadonlyArray<Claim> =>
-  section.claims ?? section.claim ?? [];
+const getClaims = (section: Section): readonly Claim[] => section.claims ?? section.claim ?? [];
 
-const verifyClaim = async (claim: Claim, repoRoot: string) => {
+const verifyClaim = async (
+  claim: Claim,
+  repoRoot: string,
+  fileResolver?: (path: string) => Promise<string>,
+) => {
   if (!claim.expected) {
     return { status: "skipped" as const, message: "no expected snippet" };
   }
@@ -213,8 +231,10 @@ const verifyClaim = async (claim: Claim, repoRoot: string) => {
     return { status: "skipped" as const, message: "missing file path" };
   }
 
-  const filePath = isAbsolute(claim.file) ? claim.file : resolve(repoRoot, claim.file);
-  const fileText = await readFile(filePath, "utf8").catch(() => null);
+  const filePath = path.isAbsolute(claim.file) ? claim.file : path.resolve(repoRoot, claim.file);
+  const fileText = fileResolver
+    ? await fileResolver(filePath).catch(() => null)
+    : await readFile(filePath, "utf8").catch(() => null);
   if (fileText === null) {
     return { status: "failed" as const, message: `file not found: ${filePath}` };
   }
@@ -248,7 +268,11 @@ const verifyClaim = async (claim: Claim, repoRoot: string) => {
   return { status: "ok" as const, message: `matched ${claim.file}` };
 };
 
-export const verifyReadmeSpec = async (options?: { specPath?: string; repoRoot?: string }) => {
+export const verifyReadmeSpec = async (options?: {
+  specPath?: string;
+  repoRoot?: string;
+  fileResolver?: (path: string) => Promise<string>;
+}) => {
   const specPath = options?.specPath ?? resolveSpecPath();
   const repoRoot = options?.repoRoot ?? resolveRepoRoot();
   const specSource = await readSpec(specPath);
@@ -263,7 +287,7 @@ export const verifyReadmeSpec = async (options?: { specPath?: string; repoRoot?:
     const claims = getClaims(section);
     for (const [claimIndex, claim] of claims.entries()) {
       const id = claimId(claim, `section-${sectionIndex}-claim-${claimIndex}`);
-      const result = await verifyClaim(claim, repoRoot);
+      const result = await verifyClaim(claim, repoRoot, options?.fileResolver);
       if (result.status === "ok") {
         verified += 1;
         continue;

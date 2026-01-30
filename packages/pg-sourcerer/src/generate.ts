@@ -23,7 +23,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import type { ResolvedConfig } from "./config.js";
 import type { Plugin, RenderedSymbol } from "./runtime/types.js";
 import { runPlugins, type OrchestratorResult } from "./runtime/orchestrator.js";
-import { emitFiles, type EmittedFile, type RenderedSymbolWithImports } from "./runtime/emit.js";
+import { emitFiles, type EmittedFile } from "./runtime/emit.js";
 import { ConfigService } from "./services/config.js";
 import {
   DatabaseIntrospectionService,
@@ -121,10 +121,9 @@ function collectUserModuleRefs(rendered: readonly RenderedSymbol[]): readonly Us
   const refs: UserModuleRef[] = [];
 
   for (const symbol of rendered) {
-    const withImports = symbol as RenderedSymbolWithImports;
-    if (!withImports.userImports) continue;
+    if (!symbol.userImports) continue;
 
-    for (const ref of withImports.userImports) {
+    for (const ref of symbol.userImports) {
       // Only validate refs that have validate: true (default)
       if (ref.validate === false) continue;
 

@@ -22,6 +22,7 @@ import type {
   EnumEntity,
   DomainEntity,
   DomainConstraint,
+  CheckConstraint,
   CompositeEntity,
   ExtensionInfo,
   Field,
@@ -477,6 +478,9 @@ function buildEntity(
     // Build indexes
     const indexes = yield* buildIndexes(pgClass);
 
+    // Build check constraints
+    const checkConstraints = yield* buildCheckConstraints(pgClass);
+
     // Build primary key
     const primaryKey = buildPrimaryKey(pgClass, tableTags);
 
@@ -540,6 +544,7 @@ function buildEntity(
       shapes,
       relations,
       indexes,
+      checkConstraints,
       tags: tableTags,
       permissions,
     };
@@ -696,6 +701,35 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
 }
 
 // ============================================================================
+// Check Constraints
+// ============================================================================
+
+/**
+ * Build check constraints from pg_constraint
+ */
+function buildCheckConstraints(
+  pgClass: PgClass,
+): Effect.Effect<readonly import("../ir/semantic-ir.js").CheckConstraint[], never, Inflection> {
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection;
+
+    const constraints = pgClass.getConstraints().filter(c => c.contype === "c");
+
+    return constraints.map(constraint => {
+      // Get column names from conkey
+      const attrs = constraint.getAttributes() ?? [];
+      const columns = attrs.map(attr => inflection.fieldName(attr, {}));
+
+      return {
+        name: constraint.conname,
+        definition: constraint.condef,
+        columns,
+      };
+    });
+  });
+}
+
+// ============================================================================
 // Enums
 // ============================================================================
 
@@ -749,8 +783,9 @@ function getDomainConstraints(
         name: c.conname,
       };
       // Add expression only if present (exactOptionalPropertyTypes)
-      if (c.consrc) {
-        return { ...constraint, expression: c.consrc };
+      // Use condef which contains the output from pg_get_constraintdef()
+      if (c.condef) {
+        return { ...constraint, expression: c.condef };
       }
       return constraint;
     });

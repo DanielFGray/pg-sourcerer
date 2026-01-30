@@ -48,13 +48,13 @@ describe("Multi-Plugin E2E", () => {
     it.effect("declares capabilities from both plugins", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const typeCapabilities = result.declarations.filter(c =>
           c.capability.startsWith("type:"),
         );
         const zodCapabilities = result.declarations.filter(c =>
-          c.capability.startsWith("schema:zod:"),
+          c.capability.startsWith("schema:"),
         );
 
         const tableEntities = [...ir.entities.values()].filter(isTableEntity);
@@ -73,10 +73,10 @@ describe("Multi-Plugin E2E", () => {
     it.effect("zod plugin declares dependencies on types", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const zodInsertDeclarations = result.declarations.filter(
-          d => d.capability.startsWith("schema:zod:") && d.capability.includes(":insert"),
+          d => d.capability.startsWith("schema:") && d.capability.includes(":insert"),
         );
 
         for (const decl of zodInsertDeclarations) {
@@ -90,7 +90,7 @@ describe("Multi-Plugin E2E", () => {
     it.effect("generates coherent output from both plugins", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const files = emitFiles(result);
 
@@ -102,15 +102,15 @@ describe("Multi-Plugin E2E", () => {
         expect(schemasFile!.content.length).toBeGreaterThan(0);
         expect(typesFile!.content.length).toBeGreaterThan(0);
 
+        // Basic smoke test - just check for zod usage (readme-spec validates actual output)
         expect(schemasFile!.content).toContain("z.object");
-        expect(schemasFile!.content).toContain("z.infer");
       }),
     );
 
     it.effect("emits valid TypeScript for both plugins", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const files = emitFiles(result);
 
@@ -130,7 +130,7 @@ describe("Multi-Plugin E2E", () => {
     it.effect("types file exports all entity interfaces", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const files = emitFiles(result);
         const typesFile = files.find(f => f.path.includes("types"));
@@ -148,7 +148,7 @@ describe("Multi-Plugin E2E", () => {
     it.effect("zod schemas file exports all shape schemas", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         const files = emitFiles(result);
         const schemasFile = files.find(f => f.path.includes("schemas"));
@@ -156,8 +156,8 @@ describe("Multi-Plugin E2E", () => {
 
         const content = schemasFile!.content;
 
+        // Basic smoke test - just check for zod usage (readme-spec validates actual output)
         expect(content).toContain("z.object");
-        expect(content).toContain("z.infer");
       }),
     );
 
@@ -165,10 +165,10 @@ describe("Multi-Plugin E2E", () => {
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
 
-        const result1 = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result1 = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
         const files1 = emitFiles(result1);
 
-        const result2 = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [zod(), typesPlugin()] });
+        const result2 = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [zod({ exportTypes: false }), typesPlugin()] });
         const files2 = emitFiles(result2);
 
         expect(files1.length).toBe(files2.length);
@@ -183,10 +183,10 @@ describe("Multi-Plugin E2E", () => {
     it.effect("zod plugin can run alone but with limited functionality", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [zod({ exportTypes: false })] });
 
         const zodCapabilities = result.declarations.filter(c =>
-          c.capability.startsWith("schema:zod:"),
+          c.capability.startsWith("schema:"),
         );
         expect(zodCapabilities.length).toBeGreaterThan(0);
 
@@ -197,7 +197,7 @@ describe("Multi-Plugin E2E", () => {
     it.effect("succeeds when required capabilities are provided", () =>
       Effect.gen(function* () {
         const ir = yield* buildTestIR;
-        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod()] });
+        const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
         expect(result.declarations.length).toBeGreaterThan(0);
         expect(result.rendered.length).toBeGreaterThan(0);

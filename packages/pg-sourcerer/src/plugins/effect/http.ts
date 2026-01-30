@@ -22,7 +22,7 @@ import { IR } from "../../services/ir.js";
 import { Inflection, type CoreInflection } from "../../services/inflection.js";
 import { isTableEntity, type TableEntity } from "../../ir/semantic-ir.js";
 import { conjure, cast } from "../../conjure/index.js";
-import type { ExternalImport, RenderedSymbolWithImports } from "../../runtime/emit.js";
+import type { ExternalImport } from "../../runtime/emit.js";
 import type { UserModuleRef } from "../../user-module.js";
 import {
   type ParsedEffectConfig,
@@ -732,7 +732,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
             capability,
             node,
             exports: "named", // Node already has export, wrapWithExport will detect and skip
-            externalImports: [platformImports, effectImports],
+            imports: [platformImports, effectImports],
           });
         }
       }
@@ -757,12 +757,12 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
           : undefined;
 
         for (const stmt of serverStatements) {
-          const serverSymbol: RenderedSymbolWithImports = {
+          const serverSymbol: RenderedSymbol = {
             name: "ServerLive",
             capability: "effect:http:server",
             node: stmt,
             exports: "named", // Node already has export, wrapWithExport will detect and skip
-            externalImports: [
+            imports: [
               { from: "@effect/platform", names: ["HttpApiBuilder", "HttpServer"] },
               { from: "effect", names: ["Layer"] },
             ],

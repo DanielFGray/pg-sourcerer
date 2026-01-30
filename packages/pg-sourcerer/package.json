@@ -33,11 +33,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "bun run clean",
+    "prebuild": "bun run clean && bun run readme",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
-    "prepublishOnly": "bun run clean && bun run build",
+    "readme": "bun scripts/compile-readme.ts",
+    "prepublishOnly": "bun run readme && bun run clean && bun run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

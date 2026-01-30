@@ -66,7 +66,9 @@ const evaluateConfig = (source: string) => {
   const fn = new Function(...Object.keys(scope), `"use strict";\n${stripped}`);
   const result = fn(...Object.values(scope)) as unknown;
   if (!result) {
-    throw new Error("Config evaluation returned empty result. Use export default defineConfig(...).");
+    throw new Error(
+      "Config evaluation returned empty result. Use export default defineConfig(...).",
+    );
   }
   return result as ReturnType<typeof defineConfig>;
 };
@@ -86,10 +88,7 @@ const getDb = () => {
 const buildFiles = async (schemaSql: string, configSource: string) => {
   const config = evaluateConfig(configSource);
   const db = await getDb();
-  await db.exec("drop schema if exists app_public cascade;");
-
-  const sql = schemaSql.replace(/:DATABASE_VISITOR/g, "app_visitor");
-  await db.exec(sql);
+  await db.exec(schemaSql);
 
   const raw = await db.query<{ introspection: string }>(makeIntrospectionQuery());
   const introspectionRaw = raw.rows[0]?.introspection;

@@ -9,6 +9,8 @@ import type { SymbolRegistry } from "./registry.js";
 import type { DeclareError, RenderError } from "./errors.js";
 import type { ExternalImport } from "./emit.js";
 import type { FileRule } from "./file-assignment.js";
+import type { UserModuleRef } from "../user-module.js";
+import type recast from "recast";
 
 /**
  * Capability identifier for symbol categorization.
@@ -77,17 +79,36 @@ export interface RenderedSymbol {
   /** Capability identifier */
   readonly capability: Capability;
 
-  /** AST node (recast/AST types - kept loose for flexibility) */
-  readonly node: unknown;
+  /** AST node (null for virtual symbols that don't emit code) */
+  readonly node: null | recast.types.ASTNode;
 
-  /** Export behavior: false=internal, true='named', 'default'=default export */
-  readonly exports?: boolean | "default" | "named";
+  /** Export behavior: 'named' | 'default' | false (false = internal/not exported) */
+  readonly exports: "named" | "default" | false;
 
   /** Plugin-specific metadata for consumers (e.g., QueryDescriptor for query plugins) */
   readonly metadata?: unknown;
 
-  /** External imports needed by this symbol */
-  readonly externalImports?: readonly ExternalImport[];
+  /** External imports needed by this symbol (e.g., from npm packages) */
+  readonly imports?: readonly ExternalImport[];
+
+  /**
+   * Identifier names referenced in this symbol's AST.
+   * Used for automatic cross-file import tracking.
+   * Populated by conjure.symbol.* or extracted from node.
+   */
+  readonly refs?: readonly string[];
+
+  /**
+   * User module imports for this symbol.
+   * These are resolved relative to the config file and converted to
+   * correct relative paths for each output file at emit time.
+   */
+  readonly userImports?: readonly UserModuleRef[];
+
+  /**
+   * @deprecated Use `userImports` instead. Raw code to prepend to the file.
+   */
+  readonly fileHeader?: string;
 }
 
 /**

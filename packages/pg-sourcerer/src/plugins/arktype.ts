@@ -475,7 +475,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
               capability,
               node: schemaDecl,
               exports: "named",
-              externalImports: [{ from: "arktype", names: ["type"] }],
+              imports: [{ from: "arktype", names: ["type"] }],
               metadata: {
                 consume: createArkTypeConsumeCallback(shape.name),
               },
@@ -490,7 +490,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
                 capability: `schema:arktype:${shape.name}:type`,
                 node: typeDecl,
                 exports: "named",
-                externalImports: [{ from: "arktype", names: ["type"] }],
+                imports: [{ from: "arktype", names: ["type"] }],
               });
             }
           }
@@ -512,7 +512,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
                 capability,
                 node: schemaDecl,
                 exports: "named",
-                externalImports: [{ from: "arktype", names: ["type"] }],
+                imports: [{ from: "arktype", names: ["type"] }],
                 metadata: {
                   consume: createArkTypeConsumeCallback(updateInputName),
                 },
@@ -527,7 +527,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
                   capability: `schema:arktype:${updateInputName}:type`,
                   node: typeDecl,
                   exports: "named",
-                  externalImports: [{ from: "arktype", names: ["type"] }],
+                  imports: [{ from: "arktype", names: ["type"] }],
                 });
               }
             }
@@ -549,7 +549,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             capability: `schema:arktype:${entity.name}`,
             node: schemaDecl,
             exports: "named",
-            externalImports: [{ from: "arktype", names: ["type"] }],
+            imports: [{ from: "arktype", names: ["type"] }],
             metadata: {
               consume: createArkTypeConsumeCallback(entity.name),
             },
@@ -561,7 +561,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
               capability: `schema:arktype:${entity.name}:type`,
               node: typeDecl,
               exports: "named",
-              externalImports: [{ from: "arktype", names: ["type"] }],
+              imports: [{ from: "arktype", names: ["type"] }],
             });
           }
         }

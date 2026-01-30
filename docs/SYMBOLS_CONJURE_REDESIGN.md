@@ -30,32 +30,18 @@ Introspection (tables, RLS, indexes, relations)
         │
         ▼
 ┌─────────────────────────────────────────────┐
-│  Query Ideation Plugin                      │
-│  - Analyzes schema, indexes, RLS policies   │
-│  - Proposes query patterns (not final SQL)  │
-│  - Outputs QueryIdea[]                      │
-└─────────────────┬───────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────┐
-│  Query Materialization Plugin               │
-│  - Takes ideas, produces QueryDescriptor[]  │
-│  - Coordinates with schema plugins          │
+│  Query Plugin (sql-queries, kysely, etc.)   │
+│  - Generates typed query functions          │
+│  - Registers QueryMethod metadata           │
 └─────────────────┬───────────────────────────┘
                   │
                   ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Parallel consumers:                                     │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐  │
-│  │ SQL Files    │ │ Schema Gen   │ │ HTTP Routes      │  │
-│  │ Plugin       │ │ (Zod/Effect) │ │ Plugin           │  │
+│  │ Schema Gen   │ │ HTTP Routes  │ │ Client SDK       │  │
+│  │ (Zod/Effect) │ │ Plugin       │ │ Plugin           │  │
 │  └──────────────┘ └──────────────┘ └──────────────────┘  │
-│                          │                               │
-│                          ▼                               │
-│                 ┌──────────────────┐                     │
-│                 │ Client SDK       │                     │
-│                 │ Plugin           │                     │
-│                 └──────────────────┘                     │
 │                          │                               │
 │                          ▼                               │
 │                 ┌──────────────────┐                     │
@@ -64,27 +50,6 @@ Introspection (tables, RLS, indexes, relations)
 │                 └──────────────────┘                     │
 └──────────────────────────────────────────────────────────┘
 ```
-
-### Query Ideas: Intent Before Implementation
-
-A key insight: there's a layer *before* `QueryDescriptor`. A "query idea" captures intent without committing to SQL:
-
-```typescript
-interface QueryIdea {
-  entity: string
-  operation: "findOne" | "findMany" | "create" | "update" | "delete" | "upsert"
-  lookupFields?: string[]      // ["id"] or ["email"] - indexes suggest these
-  includeRelations?: string[]  // eager load related data
-  pagination?: boolean         // needs limit/offset
-  rlsContext?: string          // which RLS policy applies
-  rationale?: string           // "unique index on email suggests lookup"
-}
-```
-
-This separation enables:
-- **Different ideation strategies** (conservative, aggressive, custom)
-- **Schema-aware materialization** (knows about shapes, types)
-- **Downstream inspection of intent** (HTTP plugin can see operation type, not just SQL)
 
 ## Architecture Layers
 
@@ -124,8 +89,8 @@ PostgreSQL Schema
 | **Introspection** | Database connection, pg-introspection | Raw PG metadata                               |
 | **SemanticIR**    | Schema interpretation                 | Entities, fields, relations, enums, indexes   |
 | **hex**           | Query building + rendering            | `Query` objects (descriptor + AST methods)    |
-| **conjure**       | Generic AST building                  | TypeScript AST nodes, symbol tracking         |
-| **Plugins**       | Business logic                        | Symbol declarations + rendered bodies         |
+| **Conjure**       | AST building + symbol tracking        | TypeScript AST nodes, automatic registration  |
+| **Plugins**       | Business logic                        | Symbol declarations + rendered statements     |
 | **Emit**          | File writing                          | TypeScript/SQL source files                   |
 
 ## hex: The Query Expert
@@ -212,27 +177,6 @@ query.toTaggedTemplate("sql", {
 // → sql`SELECT ... ${params.id}`
 ```
 
-### From Ideas to Queries
-
-For plugins that work with `QueryIdea`, hex provides a convenience layer:
-
-```typescript
-// Convert idea to query
-const query = hex.fromIdea(ir, {
-  entity: "User",
-  operation: "findOne",
-  lookupFields: ["id"],
-})
-
-// Equivalent to building the spec manually
-const query = hex.select(ir, {
-  selects: [{ kind: "star", from: "users" }],
-  from: { kind: "table", table: "users" },
-  where: [{ kind: "equals", column: "id", value: { name: "id", pgType: "uuid" } }],
-  limit: 1,
-})
-```
-
 ### Smart Query Generation
 
 With hex knowing about IR, queries are intelligent:
@@ -243,77 +187,222 @@ With hex knowing about IR, queries are intelligent:
 4. **Aggregate awareness** - `COUNT(*)` returns `bigint`, not row type
 5. **Multiple output formats** - Same query → tagged template, parameterized call, or raw SQL
 
-## conjure: The AST Expert
+## Conjure: Contextual AST Building
 
-conjure provides generic AST building primitives. hex uses it internally; plugin authors use it for non-query code (schemas, types, custom logic).
+Conjure is an Effect service that provides AST building with automatic symbol tracking. Plugins access it via `yield* Conjure` to get a context-aware instance. The service uses FiberRef internally to track the current plugin context.
 
-### What conjure provides
+### The Magic
 
-```typescript
-import { conjure } from "pg-sourcerer"
+When you call `exp.const(...)` inside a plugin's render phase, conjure:
+1. Builds the AST node (pure computation)
+2. Extracts identifier references for cross-file import tracking
+3. Infers capability from current plugin context (via FiberRef)
+4. Registers the symbol with the orchestrator's registry
+5. Returns the statement for inclusion in the output
 
-// Chain builders
-conjure.id("z").method("string").method("uuid").build()
+**Plugin authors never see the registry.** They just write AST "templates" and the sorcery handles the rest.
 
-// Object/array literals  
-conjure.obj().prop("name", conjure.str("value")).build()
-conjure.arr(expr1, expr2).build()
-
-// Functions
-conjure.fn().param("id", ts.string()).body(stmt.return(...)).build()
-
-// TypeScript types
-conjure.ts.ref("User")
-conjure.ts.array(conjure.ts.ref("User"))
-conjure.ts.union(conjure.ts.string(), conjure.ts.null())
-
-// Statements
-conjure.stmt.const("x", expr)
-conjure.stmt.return(expr)
-
-// Template literals (generic, not SQL-specific)
-conjure.template(["hello ", "!"], nameExpr)
-conjure.taggedTemplate("sql", parts, exprs, typeParam?)
-
-// Symbol tracking for exports
-conjure.exp.interface("User", ctx, properties)
-conjure.exp.const("findUser", ctx, fnExpr)
-```
-
-### hex uses conjure internally
-
-hex's `.toTaggedTemplate()` method uses conjure's generic template building:
+### The Conjure Service
 
 ```typescript
-// Inside hex (implementation detail)
-toTaggedTemplate(tag, opts) {
-  const parts = this.templateParts
-  const exprs = parts.paramNames.map(name => 
-    opts?.paramExpr?.(name) ?? conjure.id(name).build()
-  )
-  return conjure.taggedTemplate(tag, parts.parts, exprs, opts?.typeParam)
+// Plugins access Conjure as an Effect service
+class Conjure extends Context.Tag("@pgsourcerer/Conjure")<
+  Conjure,
+  ConjureService
+>() {}
+
+interface ConjureService {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Tracked exports - these register symbols automatically
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  readonly exp: {
+    /** Export const: `export const name = init` */
+    const(name: string, init: n.Expression, opts?: ExpOpts): Effect<n.Statement>
+    
+    /** Export type alias: `export type Name = Type` */
+    type(name: string, type: n.TSType, opts?: ExpOpts): Effect<n.Statement>
+    
+    /** Export interface: `export interface Name { ... }` */
+    interface(name: string, props: InterfaceProp[], opts?: ExpOpts): Effect<n.Statement>
+    
+    /** Export function: `export function name(...) { ... }` */
+    fn(decl: n.FunctionDeclaration, opts?: ExpOpts): Effect<n.Statement>
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Cross-plugin references
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  /** Import a symbol from another plugin, returns handle for AST generation */
+  use(capability: string): SymbolHandle
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Pure AST builders - no tracking, just construction
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  /** Start chain from identifier */
+  id(name: string): ChainBuilder
+  
+  /** Start chain from expression */
+  chain(expr: n.Expression): ChainBuilder
+  
+  /** Object literal builder */
+  obj(): ObjBuilder
+  
+  /** Array literal builder */
+  arr(...elements: n.Expression[]): ArrBuilder
+  
+  /** Function builder */
+  fn(): FnBuilder
+  
+  /** Literals */
+  str(value: string): n.StringLiteral
+  num(value: number): n.NumericLiteral
+  bool(value: boolean): n.BooleanLiteral
+  
+  /** TypeScript types */
+  readonly ts: {
+    ref(name: string, typeParams?: n.TSType[]): n.TSTypeReference
+    array(elementType: n.TSType): n.TSArrayType
+    union(...types: n.TSType[]): n.TSUnionType
+    nullable(type: n.TSType): n.TSUnionType
+    // ... etc
+  }
+  
+  /** Statement builders */
+  readonly stmt: {
+    const(name: string, init: n.Expression): n.VariableDeclaration
+    return(expr?: n.Expression): n.ReturnStatement
+    // ... etc
+  }
+  
+  /** Parameter builders */
+  readonly param: {
+    typed(name: string, type: n.TSType): n.Identifier
+    pick(fields: string[], entityType: string): n.ObjectPattern
+    // ... etc
+  }
 }
 ```
 
-Plugin authors don't need to understand this split—they just call `query.toTaggedTemplate()`.
+### ExpOpts: Controlling Symbol Registration
+
+```typescript
+interface ExpOpts {
+  /** 
+   * Capability identifier for this symbol.
+   * If omitted, inferred from plugin provides + symbol name.
+   * Only needed for plugins that provide multiple capabilities.
+   */
+  capability?: string
+  
+  /** External package imports needed by this symbol */
+  imports?: ExternalImport[]
+  
+  /** 
+   * Consumer callback: how to use/validate through this symbol.
+   * Enables Liskov Substitution—consumers don't care if Zod or Effect Schema.
+   */
+  consume?: (input: n.Expression) => n.Expression
+  
+  /** Export style override (default: "named") */
+  exports?: "named" | "default" | false
+}
+```
+
+### Capability Inference
+
+Capabilities are inferred from plugin context by default, following Liskov Substitution Principle:
+
+```typescript
+// Zod plugin declares what it provides
+const zodPlugin: Plugin = {
+  name: "zod",
+  provides: ["schema"],  // Abstract capability
+  
+  render: Effect.gen(function* () {
+    const { exp } = yield* Conjure
+    
+    // Capability inferred as "schema:zod:User" from context
+    yield* exp.const("User", schemaExpr)
+    
+    // Explicit override for edge cases
+    yield* exp.const("UserInput", inputSchema, { 
+      capability: "schema:zod:User:input" 
+    })
+  })
+}
+
+// HTTP plugin consumes abstract "schema", doesn't care about implementation
+const httpPlugin: Plugin = {
+  name: "http",
+  consumes: ["schema"],  // Any schema provider works
+  
+  render: Effect.gen(function* () {
+    const { use } = yield* Conjure
+    
+    // Gets whatever schema plugin provided
+    const userSchema = use("schema:User")
+    
+    // consume() works regardless of Zod, Valibot, ArkType, etc.
+    const validated = userSchema.consume?.(inputExpr)
+  })
+}
+```
+
+### Plugin Authoring with Conjure
+
+```typescript
+render: Effect.gen(function* () {
+  const ir = yield* IR
+  const { exp, id, obj, ts, use } = yield* Conjure
+  
+  const statements: n.Statement[] = []
+  
+  for (const entity of ir.entities.values()) {
+    if (!isTableEntity(entity)) continue
+    
+    // Build schema expression (pure AST building)
+    const schemaExpr = id("z")
+      .method("object", [
+        obj().fromEntries(
+          entity.shapes.row.fields.map(f => [f.name, fieldToZodType(f)])
+        ).build()
+      ])
+      .build()
+    
+    // Emit with tracking (returns statement, registers symbol)
+    // Capability inferred as "schema:zod:User" from plugin context
+    statements.push(
+      yield* exp.const(entity.name, schemaExpr, {
+        imports: [{ from: "zod", names: ["z"] }],
+        consume: (input) => id(entity.name).method("parse", [input]).build()
+      })
+    )
+    
+    // Cross-plugin reference example
+    const typeHandle = use(`type:${entity.name}`)
+    const inferredType = ts.qualifiedRef("z", "infer", [ts.typeof(entity.name)])
+    
+    statements.push(
+      yield* exp.type(`${entity.name}Type`, inferredType)
+    )
+  }
+  
+  return statements
+})
+```
+
+### Why This Design?
+
+1. **No leaky abstractions** - Plugins return statements, not `RenderedSymbol` objects
+2. **One way to do things** - Always `yield* Conjure`, always `exp.*` for exports
+3. **Effect-native** - Services, context tracking, and dependency injection
+4. **Discoverable** - Destructure what you need: `{ exp, id, ts, use }`
+5. **Whimsical** - "Conjure" and "sorcery" fit the code generation theme
 
 ## Shared Types
-
-### QueryIdea
-
-Captures intent before SQL generation:
-
-```typescript
-interface QueryIdea {
-  entity: string
-  operation: "findOne" | "findMany" | "create" | "update" | "delete" | "upsert"
-  lookupFields?: string[]      // Which fields to query by
-  includeRelations?: string[]  // Relations to eager-load
-  pagination?: boolean         // Needs limit/offset params
-  rlsContext?: string          // RLS policy context
-  rationale?: string           // Why this query was suggested
-}
-```
 
 ### QueryDescriptor
 
@@ -356,8 +445,8 @@ interface Query {
   readonly descriptor: QueryDescriptor
   readonly templateParts: { parts: readonly string[]; paramNames: readonly string[] }
   
-  // For symbol declarations
-  toSignature(): SignatureDef
+  // For type generation
+  toSignature(): TSTypeKind  // (params) => Promise<ReturnType>
   
   // AST rendering
   toTaggedTemplate(tag: string, opts?: {
@@ -369,14 +458,33 @@ interface Query {
     typeParam?: n.TSType
     paramExpr?: (name: string) => n.Expression
   }): n.CallExpression
-  
-  toAnnotatedSql(opts?: {
-    name?: string
-    style?: "sqlc" | "pgtyped" | "custom"
-    annotations?: (descriptor: QueryDescriptor) => string[]
-  }): string
 }
 ```
+
+### QueryMethod (query-HTTP interface)
+
+The interface between query plugins and HTTP plugins:
+
+```typescript
+interface QueryMethod {
+  name: string                    // "findUserById"
+  kind: QueryMethodKind           // read/list/create/update/delete/lookup/function
+  params: QueryMethodParam[]      // { name, type, required, source }
+  returns: QueryMethodReturn      // { type, nullable, isArray }
+  lookupField?: string            // For lookup queries
+  callSignature?: CallSignature   // { style: "named"|"positional" }
+}
+
+interface QueryMethodParam {
+  name: string
+  type: string                    // TypeScript type
+  required: boolean
+  columnName?: string
+  source?: "pk" | "fk" | "lookup" | "body" | "pagination"
+}
+```
+
+Query plugins register methods via `EntityQueriesExtension`. HTTP plugins consume via `registry.getEntityMethods()`.
 
 ## Constraints (What Forced These Decisions)
 
@@ -389,7 +497,8 @@ interface Query {
 | Plugins generate queries dynamically          | Declarative specs over fluent chains               |
 | Multiple output formats from same query       | Query object with render methods, not raw SQL      |
 | Plugin authors shouldn't juggle two libraries | hex is primary interface, uses conjure internally  |
-| Downstream plugins need intent, not just SQL  | QueryIdea layer before QueryDescriptor             |
+| HTTP plugins need operation context           | QueryMethod includes kind, param sources           |
+| Symbol tracking must be invisible             | Conjure service handles registration automatically |
 
 ## Execution Flow
 
@@ -420,10 +529,13 @@ interface Query {
 
 6. RENDER PHASE (ordered)
    For each plugin:
-     Input:  { ir, config, deps, symbols, files, own }
-     Output: RenderedSymbol[]
+     - Orchestrator sets FiberRef with plugin context (name, provides)
+     - Plugin accesses Conjure service via `yield* Conjure`
+     - Conjure reads FiberRef to infer capabilities
+     Input:  { ir, config, deps, Conjure via FiberRef }
+     Output: n.Statement[]
 
-   Symbol handles track cross-references via .ref()/.call()
+   exp.* calls automatically register symbols with inferred capabilities, refs, imports.
 
 7. EMIT
    - Group symbols by file
@@ -446,37 +558,12 @@ interface Plugin<Config = unknown> {
   // Phase 1: Declare what symbols exist (Effect with services)
   declare: Effect<SymbolDeclaration[], PluginError, PluginServices>;
 
-  // Phase 2: Render symbol bodies (Effect with services + registry)
-  render: Effect<RenderedSymbol[], PluginError, PluginServices | SymbolRegistry>;
+  // Phase 2: Render symbol bodies (Effect with services + Conjure)
+  render: Effect<n.Statement[], PluginError, PluginServices | Conjure>;
 }
 
 // Services available to plugins via Effect context
 type PluginServices = IR | Inflection | TypeHints | PluginConfig;
-
-// Example using Effect.fn for automatic tracing
-const typesPlugin: Plugin = {
-  name: "types",
-  provides: ["types"],
-
-  declare: Effect.fn("types.declare")(function* () {
-    const ir = yield* IR;
-    const inflection = yield* Inflection;
-
-    return ir.entities.map(entity => ({
-      name: inflection.entityName(entity),
-      capability: `type:${entity.name}`,
-      kind: "type" as const,
-      entity: entity.name,
-    }));
-  }),
-
-  render: Effect.fn("types.render")(function* () {
-    const ir = yield* IR;
-    const registry = yield* SymbolRegistry;
-    // ... generate AST
-    return renderedSymbols;
-  }),
-};
 ```
 
 ### Effect Services
@@ -488,7 +575,7 @@ const typesPlugin: Plugin = {
 | `Inflection`     | Naming transforms (entity names, field names)  | Config                |
 | `TypeHints`      | User type overrides                            | Config                |
 | `PluginConfig`   | This plugin's parsed configuration             | Config, configSchema  |
-| `SymbolRegistry` | Resolve/import symbols (render phase only)     | Declare phase results |
+| `Conjure`        | AST building + symbol registration             | Registry (internal)   |
 
 ### Error Types
 
@@ -539,8 +626,7 @@ interface SymbolDeclaration {
   capability: Capability; // name + capability = unique identity
   kind: SymbolKind;
   entity?: string; // Associated entity (e.g., "User")
-  signature?: SignatureDef; // For functions
-  metadata?: unknown; // Plugin-specific, passed back in render
+  metadata?: unknown; // Plugin-specific (e.g., QueryMethod for queries)
 }
 
 // Services accessed via yield*
@@ -554,320 +640,223 @@ const config = yield* PluginConfig; // This plugin's config
 
 ### Phase 2: Render
 
-In addition to declare-phase services, plugins can access SymbolRegistry for cross-plugin references.
+Plugins access Conjure for AST building with automatic symbol tracking.
 
 ```typescript
-interface RenderedSymbol {
-  ref: SymbolRef; // { name, capability }
-  body: AST;
-  externalImports?: ImportSpec[]; // e.g., { from: "kysely", names: ["Kysely"] }
-}
+// Get the Conjure service
+const { exp, id, obj, ts, use } = yield* Conjure;
 
-// Additional service available in render phase
-const registry = yield* SymbolRegistry;
+// Build and emit symbols
+const statements: n.Statement[] = [];
 
-// Query other plugins' symbols
-const symbols = registry.query("types"); // All type symbols
-const user = registry.get({ name: "User", capability: "types" });
+statements.push(
+  yield* exp.const("findUserById", fnExpr, {
+    imports: [{ from: "@effect/sql", names: ["sql"] }],
+    metadata: { query: queryDescriptor }
+  })
+);
 
-// Get handle for import tracking
-const handle = registry.import("type:User");
-handle.ref(); // Returns AST identifier, tracks cross-reference
-handle.call(); // Returns AST call expression, tracks cross-reference
+return statements;
 ```
 
-### Dynamic Requests
+### Symbol Handles for Cross-Plugin References
 
-For on-demand parameterized generation, the registry supports dynamic requests:
-
-```typescript
-// In render phase, request a specific variant
-const insertSchema = yield* registry.request("schemas", {
-  entity: "User",
-  shape: "insert",
-  omitFields: ["id", "createdAt"],
-});
-```
-
-This complements static `provides`/`consumes`:
-
-- **Static declarations** → ordering, validation, cycle detection
-- **Dynamic requests** → consumer-driven generation, parameterization
-
-### Symbol Handles
-
-When querying the registry in render phase, you get `SymbolHandle` objects:
+The `use()` method returns a handle for referencing another plugin's symbols:
 
 ```typescript
-interface SymbolHandle extends SymbolDeclaration {
-  ref(): n.Identifier; // Returns AST, tracks reference
-  call(args: AST[]): n.CallExpression; // Returns call AST, tracks reference
-  typeRef(): n.TSTypeReference; // For type symbols
+interface SymbolHandle {
+  readonly name: string
+  readonly capability: Capability
+  readonly metadata?: unknown
+  
+  /** Use as identifier - tracks reference for imports */
+  ref(): n.Identifier
+  
+  /** Use as type reference - tracks reference for imports */
+  typeRef(): n.TSTypeReference
+  
+  /** Use as call expression - tracks reference for imports */
+  call(...args: n.Expression[]): n.CallExpression
+  
+  /** 
+   * Consume/validate input through this symbol.
+   * Returns AST that wraps the input with library-specific logic.
+   */
+  consume?(input: n.Expression): n.Expression
 }
 ```
 
-Calling `.ref()` or `.call()` records the cross-reference. Runtime uses this to auto-generate imports between files.
-
-## Plugin Authoring API
-
-Plugins primarily interact with `hex` for queries and `conjure` for everything else.
-
-### hex API Summary
+Example usage:
 
 ```typescript
-import { hex } from "pg-sourcerer";
+const { use, id } = yield* Conjure
 
-// Build queries with declarative specs
-const query = hex.select(ir, { selects, from, where, ... })
-const query = hex.mutate(ir, { kind: "insert", table, columns, ... })
+// Get handle to a schema from another plugin
+const userSchema = use("schema:zod:User")
 
-// Or from a query idea
-const query = hex.fromIdea(ir, idea)
+// Use in validation (schema plugin provides consume callback)
+const validated = userSchema.consume?.(id("input").build())
+// → UserSchema.parse(input)
 
-// Query object methods
-query.sql              // Parameterized SQL string
-query.descriptor       // Full QueryDescriptor
-query.templateParts    // { parts: string[], paramNames: string[] }
-query.toSignature()    // For symbol declarations
-
-// Render to AST
-query.toTaggedTemplate(tag, opts?)         // sql<T>`...${param}...`
-query.toParameterizedCall(obj, method, opts?)  // pool.query<T>("...", [...])
-query.toAnnotatedSql(opts?)                // For .sql file output
-```
-
-### conjure API Summary
-
-```typescript
-import { conjure } from "pg-sourcerer";
-
-// Chain/expression builders
-conjure.id("name")              // Start chain from identifier
-conjure.chain(expr)             // Start chain from expression
-conjure.call(obj, method, args) // Quick method call
-
-// Compound builders
-conjure.obj()                   // Object literal builder
-conjure.arr(...)                // Array literal builder
-conjure.fn()                    // Function builder
-
-// Literals
-conjure.str("value")
-conjure.num(42)
-conjure.bool(true)
-conjure.template(parts, ...exprs)
-conjure.taggedTemplate(tag, parts, exprs, typeParam?)
-
-// TypeScript types (conjure.ts.*)
-conjure.ts.ref("TypeName")
-conjure.ts.array(innerType)
-conjure.ts.union(...types)
-conjure.ts.nullable(type)
-conjure.ts.objectType(props)
-
-// Statements (conjure.stmt.*)
-conjure.stmt.const(name, init)
-conjure.stmt.return(expr)
-conjure.stmt.if(test, consequent, alternate?)
-
-// Exports with symbol tracking (conjure.exp.*)
-conjure.exp.interface(name, ctx, properties)
-conjure.exp.const(name, ctx, init)
-conjure.exp.type(name, ctx, type)
-```
-
-### Type Resolution
-
-```typescript
-// From IR fields
-types.fromField(field, ir): TypeRef
-types.fromPg(pgTypeName): TypeRef
-
-// Cross-plugin references
-types.ref(name, capability?): TypeRef
-
-// TypeRef resolves to AST at emit time and tracks cross-references
+// Use as type reference
+const returnType = userSchema.typeRef()
+// → z.infer<typeof UserSchema>
 ```
 
 ## Example Plugins
 
-### Query Ideation Plugin
-
-Analyzes schema and proposes query patterns:
+### Zod Schema Plugin
 
 ```typescript
-import { Effect, Array, pipe } from "effect";
-import type { Plugin, QueryIdea } from "pg-sourcerer";
-import { IR } from "pg-sourcerer/services";
+import { Effect } from "effect";
+import type { Plugin } from "pg-sourcerer";
+import { IR, Conjure } from "pg-sourcerer/services";
+import { isTableEntity, isEnumEntity } from "pg-sourcerer/ir";
 
-export const queryIdeation: Plugin = {
-  name: "query-ideation",
-  provides: ["query-ideas"],
-
-  declare: Effect.fn("query-ideation.declare")(function* () {
+export const zodPlugin: Plugin = {
+  name: "zod",
+  provides: ["schema"],
+  
+  declare: Effect.gen(function* () {
     const ir = yield* IR;
-
-    return pipe(
-      Array.fromIterable(ir.entities.values()),
-      Array.filter(e => e.kind === "table"),
-      Array.flatMap(entity => {
-        const ideas: QueryIdea[] = [];
-        
-        // Every table with PK gets findById
-        if (entity.primaryKey) {
-          ideas.push({
-            kind: "query-idea",
-            entity: entity.name,
-            operation: "findOne",
-            lookupFields: entity.primaryKey.fields,
-            rationale: "primary key lookup",
-          });
-        }
-        
-        // Unique indexes suggest additional lookups
-        for (const index of entity.indexes.filter(i => i.isUnique)) {
-          ideas.push({
-            kind: "query-idea",
-            entity: entity.name,
-            operation: "findOne", 
-            lookupFields: index.columns,
-            rationale: `unique index: ${index.name}`,
-          });
-        }
-        
-        // All tables get basic CRUD
-        ideas.push(
-          { kind: "query-idea", entity: entity.name, operation: "findMany", pagination: true },
-          { kind: "query-idea", entity: entity.name, operation: "create" },
-          { kind: "query-idea", entity: entity.name, operation: "update" },
-          { kind: "query-idea", entity: entity.name, operation: "delete" },
+    const declarations = [];
+    
+    for (const entity of ir.entities.values()) {
+      if (isEnumEntity(entity)) {
+        declarations.push({
+          name: entity.name,
+          capability: `schema:zod:${entity.name}`,
+        });
+      }
+      if (isTableEntity(entity)) {
+        declarations.push(
+          { name: entity.name, capability: `schema:zod:${entity.name}` },
+          { name: `${entity.name}Insert`, capability: `schema:zod:${entity.name}:insert` },
         );
-        
-        return ideas;
-      }),
-    );
+      }
+    }
+    
+    return declarations;
   }),
-};
-```
-
-### Query Materialization Plugin
-
-Converts ideas to actual queries with multiple output formats:
-
-```typescript
-import { Effect, Array, pipe } from "effect";
-import { hex, type Plugin } from "pg-sourcerer";
-import { IR, Inflection, SymbolRegistry } from "pg-sourcerer/services";
-
-export const sqlQueries: Plugin = {
-  name: "sql-queries",
-  provides: ["queries"],
-  consumes: ["query-ideas", "types"],
-
-  declare: Effect.fn("sql-queries.declare")(function* () {
+  
+  render: Effect.gen(function* () {
     const ir = yield* IR;
-    const inflection = yield* Inflection;
-    const registry = yield* SymbolRegistry;
-    const ideas = registry.query("query-ideas");
-
-    return ideas.map(idea => {
-      const query = hex.fromIdea(ir, idea);
+    const { exp, id, obj, arr, ts } = yield* Conjure;
+    
+    const statements = [];
+    
+    // Enum schemas
+    for (const entity of ir.entities.values()) {
+      if (!isEnumEntity(entity)) continue;
       
-      return {
-        name: inflection.queryName(idea),
-        capability: "queries",
-        kind: "function",
-        entity: idea.entity,
-        signature: query.toSignature(),
-        metadata: { query, idea },
-      };
-    });
-  }),
-
-  render: Effect.fn("sql-queries.render")(function* () {
-    const registry = yield* SymbolRegistry;
-    const own = registry.own();
-
-    return own.map(decl => {
-      const { query } = decl.metadata;
-      const entityType = registry.get({ name: decl.entity, capability: "types" });
-
-      return {
-        ref: decl,
-        body: query.toTaggedTemplate("sql", {
-          typeParam: entityType.typeRef(),
-        }),
-        externalImports: [{ from: "@effect/sql", names: ["sql"] }],
-      };
-    });
+      const schemaExpr = id("z")
+        .method("enum", [arr(...entity.values.map(v => str(v))).build()])
+        .build();
+      
+      statements.push(
+        yield* exp.const(entity.name, schemaExpr, {
+          imports: [{ from: "zod", names: ["z"] }],
+          metadata: {
+            consume: (input) => id(entity.name).method("parse", [input]).build()
+          }
+        })
+      );
+    }
+    
+    // Table schemas
+    for (const entity of ir.entities.values()) {
+      if (!isTableEntity(entity)) continue;
+      
+      const schemaExpr = id("z")
+        .method("object", [
+          obj().fromEntries(
+            entity.shapes.row.fields.map(f => [f.name, fieldToZodType(f)])
+          ).build()
+        ])
+        .build();
+      
+      statements.push(
+        yield* exp.const(entity.name, schemaExpr, {
+          imports: [{ from: "zod", names: ["z"] }],
+          metadata: {
+            consume: (input) => id(entity.name).method("parse", [input]).build()
+          }
+        })
+      );
+    }
+    
+    return statements;
   }),
 };
 ```
 
 ### HTTP Routes Plugin
 
-Consumes queries to generate API endpoints:
-
 ```typescript
 import { Effect } from "effect";
-import { conjure, type Plugin } from "pg-sourcerer";
-import { IR, Inflection, SymbolRegistry } from "pg-sourcerer/services";
+import type { Plugin } from "pg-sourcerer";
+import { IR, Inflection, Conjure } from "pg-sourcerer/services";
 
 export const httpRoutes: Plugin = {
   name: "http-routes",
   provides: ["http-routes"],
-  consumes: ["queries", "schemas"],
+  consumes: ["queries", "schema"],
 
-  declare: Effect.fn("http-routes.declare")(function* () {
-    const registry = yield* SymbolRegistry;
-    const queries = registry.query("queries");
+  declare: Effect.gen(function* () {
+    const { use } = yield* Conjure;
+    const queries = use("queries"); // Get all query symbols
     const inflection = yield* Inflection;
 
-    return queries.map(q => {
-      const { idea } = q.metadata;
-      const method = idea.operation === "findOne" || idea.operation === "findMany" 
-        ? "GET" 
-        : idea.operation === "create" ? "POST"
-        : idea.operation === "update" ? "PATCH"
-        : "DELETE";
-      
-      return {
-        name: inflection.routeName(idea),
-        capability: "http-routes",
-        entity: idea.entity,
-        metadata: {
-          query: q,
-          method,
-          path: inflection.routePath(idea),
-        },
-      };
-    });
+    return queries.map(q => ({
+      name: inflection.routeName(q.metadata.idea),
+      capability: "http-routes",
+      entity: q.metadata.idea.entity,
+      metadata: {
+        query: q,
+        method: operationToMethod(q.metadata.idea.operation),
+        path: inflection.routePath(q.metadata.idea),
+      },
+    }));
   }),
 
-  render: Effect.fn("http-routes.render")(function* () {
-    const registry = yield* SymbolRegistry;
-    const own = registry.own();
+  render: Effect.gen(function* () {
+    const { exp, id, fn, use } = yield* Conjure;
+    const own = yield* ownDeclarations(); // Helper to get this plugin's declarations
     
-    return own.map(decl => {
+    const statements = [];
+    
+    for (const decl of own) {
       const { query, method, path } = decl.metadata;
-      const queryFn = registry.get({ name: query.name, capability: "queries" });
-      const inputSchema = registry.get({ name: `${decl.entity}Input`, capability: "schemas" });
-
-      // Generate Hono route handler
-      return {
-        ref: decl,
-        body: conjure.fn()
-          .param("c", conjure.ts.ref("Context"))
-          .async()
-          .body(
-            // const input = inputSchema.parse(await c.req.json())
-            // const result = await queryFn(input)
-            // return c.json(result)
-          )
-          .build(),
-        externalImports: [{ from: "hono", names: ["Context"] }],
-      };
-    });
+      
+      // Get handles to consumed symbols
+      const queryFn = use(query.capability);
+      const inputSchema = use(`schema:${decl.entity}:insert`);
+      
+      // Build route handler
+      const handler = fn()
+        .async()
+        .arrow()
+        .param("c", ts.ref("Context"))
+        .body(
+          // const input = Schema.parse(await c.req.json())
+          stmt.const("input", inputSchema.consume(
+            id("c").prop("req").method("json").build()
+          )),
+          // const result = await queryFn(input)
+          stmt.const("result", await_(queryFn.call(id("input").build()))),
+          // return c.json(result)
+          stmt.return(id("c").method("json", [id("result").build()]).build())
+        )
+        .build();
+      
+      statements.push(
+        yield* exp.const(decl.name, handler, {
+          imports: [{ from: "hono", names: ["Context"] }]
+        })
+      );
+    }
+    
+    return statements;
   }),
 };
 ```
@@ -914,38 +903,6 @@ interface SymbolRef {
 
 This allows multiple plugins to produce symbols with the same name (e.g., `User` type vs `User` Zod schema).
 
-## Cross-Plugin References
-
-### In Signatures (Declare Phase)
-
-Use `types.ref()` for symbolic references:
-
-```typescript
-returns.single(types.ref("User", "types"), { nullable: true });
-```
-
-`types.ref()` returns a `TypeRef` that:
-
-- Carries the symbol reference
-- Resolves to AST at emit time
-- Triggers import generation automatically
-
-### In Bodies (Render Phase)
-
-Use symbol handles from registry:
-
-```typescript
-render(input) {
-  const userType = input.symbols.get({ name: "User", capability: "types" })
-
-  return [{
-    ref: { name: "createUser", capability: "queries" },
-    body: b.fn([b.param("data", userType.typeRef())], /* ... */),
-    //                         ↑ tracks reference, generates import
-  }]
-}
-```
-
 ## Validation
 
 After all `declare()` runs, before `render()`:
@@ -959,120 +916,74 @@ Errors are actionable:
 - "Plugin `http-hono` consumes `queries` but no plugin provides it"
 - "Collision: `User` in capability `types` declared by both `types` and `custom-types`"
 
-## Comparison to Current System
+## Design Summary
 
-| Aspect            | Current                            | New                                        |
-| ----------------- | ---------------------------------- | ------------------------------------------ |
-| Plugin API        | Effect-based, mutates shared state | Effect-based, returns immutable data       |
-| Effect usage      | Implicit, tied to runtime          | Explicit services, `Effect.fn` for tracing |
-| Execution         | Single pass                        | Two phases (declare → render)              |
-| Cross-plugin refs | Runtime lookup by name             | Explicit handles with reference tracking   |
-| File paths        | Plugin decides                     | Config decides                             |
-| Validation        | During execution                   | Between phases                             |
-| Import resolution | Manual                             | Automatic from handle usage                |
-| Query building    | Inline in plugins                  | hex produces QueryDescriptor               |
-| Error handling    | Mixed                              | Typed errors with `Data.TaggedError`       |
-| Tracing           | Manual spans                       | Automatic via `Effect.fn`                  |
-
-## Supersedes
-
-This design supersedes:
-
-- **ep-f39a14** (Plugin Coordination Refactor) - ResourceProvider model was more abstract but less powerful
-- **ep-933e05** (v0.4 Pull-Based Interop) - Core ideas preserved, but implementation approach changed
-
-Key differences from ResourceProvider:
-
-- Symbols as universal currency vs opaque resources
-- Two explicit phases vs single provide() with request()
-- hex as SQL layer vs plugins building SQL inline
+| Aspect            | Approach                                                    |
+| ----------------- | ----------------------------------------------------------- |
+| Plugin API        | Effect-based, returns `n.Statement[]`                       |
+| Symbol tracking   | Automatic via Conjure service + FiberRef                    |
+| Cross-plugin refs | `use()` method on Conjure                                   |
+| Capability inference | From plugin provides, explicit override available        |
+| Effect usage      | Explicit services, `Effect.fn` for tracing                  |
+| Execution         | Two phases: declare → validate → render                     |
+| File paths        | Config decides, not plugins                                 |
+| Validation        | Between declare and render phases                           |
+| Import resolution | Automatic from `use()` and `exp.*`                          |
+| Query building    | hex produces `Query` objects with multiple output formats   |
+| Error handling    | Typed errors with `Data.TaggedError`                        |
+| Tracing           | Automatic via `Effect.fn`                                   |
 
 ## Implementation Plan
 
-### Current State (as of review)
+### Phase 1: Conjure Service
 
-**Already implemented:**
-- Runtime types: `Plugin`, `SymbolDeclaration`, `RenderedSymbol`, `SymbolHandle`
-- SymbolRegistry: register, resolve, import, reference tracking
-- Orchestrator: two-phase execution (declare → validate → assign → render)
-- conjure/types: Type AST builders (`types.fromField`, `types.ref`, etc.)
-- conjure/signature: `param`, `returns`, `sig` for function signatures
-- hex: Declarative query builder returning `QueryDescriptor`
-- IR: `SemanticIR` with entities, shapes, fields
-- File assignment and emit infrastructure
+Goal: Implement the Conjure Effect service with `exp.*` helpers.
 
-### Phase 1: Core Primitives (Minimum Viable Plugin)
+1. **Create Conjure service tag**
+   - `packages/pg-sourcerer/src/services/conjure.ts`
+   - Context.Tag with ConjureService interface
+   - FiberRef for plugin context (name, provides)
+   
+2. **Implement exp.* methods**
+   - `exp.const()`, `exp.type()`, `exp.interface()`, `exp.fn()`
+   - Each returns `Effect<n.Statement>` 
+   - Reads FiberRef for capability inference
+   - Internally registers with provided registry
+   - Extracts refs via `extractIdentifierRefs()`
 
-Goal: Get a simple `types` plugin working end-to-end to validate the architecture.
+3. **Implement use() for cross-plugin refs**
+   - Returns SymbolHandle with ref(), typeRef(), call(), consume()
+   - Tracks cross-references for import generation
 
-1. **Add SymbolHandle.consume() support**
-   - Extend `SymbolHandle` interface with optional `consume?: (input: Expression) => Expression`
-   - Update `createSymbolHandle` to accept consume callback
-   - Schema/query plugins will provide their own consume implementations
+4. **Update orchestrator**
+   - Set FiberRef before each plugin runs
+   - Provide Conjure service layer
+   - Collect registered symbols after render
 
-2. **Add conjure expression builders**
-   - `conjure.id(name)` - identifier
-   - `conjure.prop(obj, name)` - property access
-   - `conjure.call(callee, args)` - call expression
-   - `conjure.taggedTemplate(tag, parts, exprs, typeParam?)` - tagged template literal
-   - `conjure.exportConst(name, init)` - export const declaration
-   - `conjure.exportInterface(name, properties)` - export interface declaration
+### Phase 2: Migrate Plugins
 
-3. **Write minimal types plugin**
-   - Declares `type:EntityName` for each table entity
-   - Renders TypeScript interfaces from IR shapes
-   - Validates: declare → render → emit flow works
+Goal: Update existing plugins to use new Conjure service.
 
-4. **Add integration test**
-   - Load example DB IR
-   - Run types plugin through orchestrator
-   - Verify emitted TypeScript compiles
+5. **Migrate zod plugin**
+   - Change render return type to `n.Statement[]`
+   - Use `yield* Conjure` and `exp.*` helpers
+   - Remove manual RenderedSymbol construction
 
-### Phase 2: Query Plugin Pattern
+6. **Migrate remaining plugins**
+   - valibot, arktype, kysely, sql-queries
+   - HTTP plugins
+   - Effect schema plugin
 
-Goal: Validate hex → Query → AST flow with consumer callbacks.
+### Phase 3: Cleanup
 
-5. **Wrap hex in Query object**
-   - `hex.select()` returns `Query` instead of raw `QueryDescriptor`
-   - Add `.toTaggedTemplate(tag, opts)` returning AST
-   - Add `.toParameterizedCall(obj, method, opts)` returning AST
-   - Add `.descriptor` for raw access
-   - Add `.consume(params)` for execution wrapper (e.g., `.execute()`)
+7. **Remove old patterns**
+   - Remove `getConjureMeta` and metadata injection (in progress)
+   - Simplify RenderedSymbol (internal only)
+   - Update tests
 
-6. **Write sql-queries plugin**
-   - Consumes IR, produces query functions
-   - Uses hex to build queries
-   - Provides `consume()` callback that wraps with execution
-
-7. **Write zod plugin**
-   - Consumes shapes, produces Zod schemas
-   - Provides `consume()` callback: `(input) => z.parse(Schema, input)`
-
-### Phase 3: Cross-Plugin Composition
-
-Goal: Validate plugin → plugin consumption via registry.
-
-8. **Write HTTP routes plugin**
-   - Consumes: query functions (via registry)
-   - Consumes: schemas (via registry, uses `consume()` for validation)
-   - Produces: route handler functions
-
-9. **Integration test: full pipeline**
-   - IR → types → queries → schemas → HTTP routes
-   - Verify all cross-references resolve
-   - Verify imports are generated correctly
-
-### Phase 4: Polish and CLI
-
-10. **Update CLI and generate.ts**
-    - Wire up new orchestrator
-    - Plugin discovery/loading
-    - Config-driven plugin selection
-
-11. **Documentation and examples**
-    - Plugin authoring guide
-    - Example plugins
-    - Migration guide from old API
+8. **Documentation**
+   - Plugin authoring guide
+   - Migration examples
 
 ## Related Documents
 
@@ -1091,3 +1002,31 @@ Goal: Validate plugin → plugin consumption via registry.
 7. **Postgres features inform generation** - Indexes suggest queries, RLS informs access patterns
 8. **Ecosystem composability** - Plugins can consume and extend each other's output
 9. **Full-stack scaffolding path** - From DB → queries → schemas → HTTP → SDK → UI
+
+## Future Considerations
+
+### Query Ideation Layer
+
+A potential enhancement: an "ideation" layer between schema analysis and query generation. Currently query plugins generate `QueryMethod` directly from IR. An ideation layer could:
+
+```typescript
+interface QueryIdea {
+  entity: string
+  operation: "findOne" | "findMany" | "create" | "update" | "delete" | "upsert"
+  lookupFields?: string[]      // ["id"] or ["email"] - indexes suggest these
+  includeRelations?: string[]  // eager load related data
+  pagination?: boolean         // needs limit/offset
+  rlsContext?: string          // which RLS policy applies
+  rationale?: string           // "unique index on email suggests lookup"
+}
+```
+
+**Benefits**:
+- **Different ideation strategies** (conservative, aggressive, custom)
+- **Schema-aware materialization** (knows about shapes, types)
+- **Inspectable intent** (see why queries were generated)
+
+**Current status**: Not implemented. Query plugins work well generating methods directly. Consider adding if:
+- Users want more control over which queries are generated
+- Smart query suggestions become a feature
+- RLS-aware query generation is needed

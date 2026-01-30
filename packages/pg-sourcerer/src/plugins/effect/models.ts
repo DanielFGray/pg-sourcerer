@@ -158,7 +158,7 @@ export function effectModels(): Plugin {
             capability,
             node: classDecl,
             exports: "named",
-            externalImports: [
+            imports: [
               { from: "@effect/sql", names: ["Model"] },
               { from: "effect", names: ["Schema as S"] },
             ],

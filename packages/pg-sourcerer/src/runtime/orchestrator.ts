@@ -151,8 +151,36 @@ export const runPlugins = (config: OrchestratorConfig) =>
 
       const rendered = yield* plugin.render.pipe(Effect.provide(renderLayer));
 
-      // Store rendered output and metadata for consumers
+      // If conjure attached metadata with referenced identifiers (refs),
+      // record cross-file references by importing the corresponding schema
+      // capabilities. This allows conjure-created `typeof X` usages to be
+      // attributed to the proper capability without plugins calling
+      // registry.import(...) themselves.
       for (const symbol of rendered) {
+        try {
+          // Use refs field directly from RenderedSymbol (no metadata extraction needed)
+          if (symbol.refs && Array.isArray(symbol.refs)) {
+            for (const refName of symbol.refs) {
+              try {
+                // Scope to this specific rendered symbol so the recorded
+                // cross-reference is attributed only to this capability.
+                registry.forSymbol(symbol.capability, () => {
+                  try {
+                    registry.import(`schema:${refName}`).ref();
+                  } catch (e) {
+                    // ignore missing capabilities
+                  }
+                });
+              } catch (e) {
+                // ignore
+              }
+            }
+          }
+        } catch (e) {
+          // Non-fatal: continue processing other symbols
+        }
+
+        // Store rendered output and metadata for consumers
         registry.setRendered(symbol.capability, symbol.node, symbol.metadata);
       }
 

@@ -226,6 +226,9 @@ export class SymbolRegistryImpl {
 
   /**
    * Store rendered output for a symbol. Called during render phase.
+   * 
+   * Note: Cross-file reference tracking via symbol.refs is now handled
+   * by the orchestrator before calling this method.
    */
   setRendered(capability: Capability, node: unknown, metadata?: unknown): void {
     this.rendered.set(capability, { node, metadata });
@@ -284,9 +287,13 @@ export class SymbolRegistryImpl {
   /**
    * Resolve a generic capability to implementation-specific.
    *
+   * Categories like "schema" use Standard Schema API and are interchangeable,
+   * so we don't inject provider names. Other categories like "queries" may need
+   * implementation-specific resolution.
+   *
    * Examples:
    * - "queries:User:findById" → "queries:kysely:User:findById" (if kysely provides queries)
-   * - "schema:UserInsert" → "schema:zod:UserInsert" (if zod provides schema)
+   * - "schema:UserInsert" → "schema:UserInsert" (unchanged - Standard Schema is interchangeable)
    * - "queries:kysely:User:findById" → unchanged (already specific)
    * - "type:User" → unchanged (no category provider needed)
    */
@@ -299,6 +306,11 @@ export class SymbolRegistryImpl {
 
     const provider = this.categoryProviders.get(category);
     if (!provider) return capability; // No provider for this category
+
+    // Schema and type capabilities use the Standard Schema API - all implementations
+    // are interchangeable. Do NOT inject provider name for these categories so
+    // declarations remain stable across providers.
+    if (category === "schema" || category === "type") return capability;
 
     // Check if rest already starts with the provider name (already specific)
     if (rest.startsWith(`${provider}:`)) return capability;

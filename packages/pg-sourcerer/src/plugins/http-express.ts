@@ -329,7 +329,7 @@ function generateExpressRoutes(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
 
@@ -398,14 +398,14 @@ function generateExpressRoutes(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = [
+  const imports: ExternalImport[] = [
     { from: "express", names: ["Router"] },
     ...schemaImports,
   ];
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -457,17 +457,17 @@ function generateAggregator(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { statements: [], imports: [] };
   }
 
   let chainExpr: n.Expression = b.callExpression(b.identifier("Router"), []);
 
-  const externalImports: ExternalImport[] = [{ from: "express", names: ["Router"] }];
+  const imports: ExternalImport[] = [{ from: "express", names: ["Router"] }];
 
   for (const [entityName, queries] of entityEntries) {
     const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
@@ -487,7 +487,7 @@ function generateAggregator(
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -579,32 +579,32 @@ export function express(config?: HttpExpressConfig): Plugin {
 
         const capability = `http-routes:express:${entityName}`;
 
-        const { statements, externalImports } = registry.forSymbol(capability, () =>
+        const { statements, imports } = registry.forSymbol(capability, () =>
           generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
           name: `${inflect.uncapitalize(entityName)}Routes`,
           capability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 
       if (entityQueries.size > 0) {
         const appCapability = "http-routes:express:app";
 
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
+        const { statements, imports } = registry.forSymbol(appCapability, () =>
           generateAggregator(entityQueries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
           name: "api",
           capability: appCapability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 

@@ -8,7 +8,6 @@
  * 4. Applies formatting (blank lines before exports, header comments)
  */
 import path from "node:path";
-import type { SymbolStatement } from "../conjure/index.js";
 import recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
@@ -18,34 +17,9 @@ import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import type { AssignedSymbol } from "./file-assignment.js";
 import { ExportCollisionError } from "../errors.js";
 import { type UserModuleRef, isUserModuleRef } from "../user-module.js";
+import conjure from "../conjure/index.js";
 
 const b = recast.types.builders;
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/**
- * Check if a node is a SymbolStatement (from conjure exp.* helpers).
- */
-function isSymbolStatement(node: unknown): node is SymbolStatement {
-  return (
-    typeof node === "object" &&
-    node !== null &&
-    "_tag" in node &&
-    (node as { _tag?: string })._tag === "SymbolStatement"
-  );
-}
-
-/**
- * Unwrap a SymbolStatement to get the underlying statement, or return as-is.
- */
-function unwrapNode(node: unknown): unknown {
-  if (isSymbolStatement(node)) {
-    return node.node;
-  }
-  return node;
-}
 
 // =============================================================================
 // Types
@@ -75,25 +49,6 @@ export interface ExternalImport {
   readonly default?: string;
   /** Namespace import (import * as X) */
   readonly namespace?: string;
-}
-
-/**
- * Extended RenderedSymbol with external imports.
- * Plugins can specify external dependencies via this interface.
- */
-export interface RenderedSymbolWithImports extends RenderedSymbol {
-  /** External imports needed by this symbol */
-  readonly externalImports?: readonly ExternalImport[];
-  /**
-   * User module imports for this symbol.
-   * These are resolved relative to the config file and converted to
-   * correct relative paths for each output file at emit time.
-   */
-  readonly userImports?: readonly UserModuleRef[];
-  /**
-   * @deprecated Use `userImports` instead. Raw code to prepend to the file.
-   */
-  readonly fileHeader?: string;
 }
 
 // =============================================================================
@@ -284,14 +239,10 @@ function generateUserModuleImport(
   configDir: string,
   outputDir: string,
 ): n.ImportDeclaration {
-  const importPath = computeUserModuleImportPath(
-    outputFilePath,
-    ref.path,
-    configDir,
-    outputDir,
-  );
+  const importPath = computeUserModuleImportPath(outputFilePath, ref.path, configDir, outputDir);
 
-  const specifiers: (n.ImportSpecifier | n.ImportDefaultSpecifier | n.ImportNamespaceSpecifier)[] = [];
+  const specifiers: (n.ImportSpecifier | n.ImportDefaultSpecifier | n.ImportNamespaceSpecifier)[] =
+    [];
 
   // Default import: import db from "..."
   if (ref.default) {
@@ -340,7 +291,7 @@ function wrapWithExport(node: unknown, exports: RenderedSymbol["exports"]): Stat
 
   // For named exports, we need to add 'export' keyword
   // The node should already be a declaration (type alias, const, function, etc.)
-  if (exports === "named" || exports === true) {
+  if (exports === "named") {
     // Recast handles this - we need to wrap in export named declaration
     return b.exportNamedDeclaration(stmt as unknown as DeclarationKind, []);
   }
@@ -350,22 +301,6 @@ function wrapWithExport(node: unknown, exports: RenderedSymbol["exports"]): Stat
   }
 
   return stmt;
-}
-
-/**
- * Format output code:
- * - Ensure blank lines before exports
- */
-function formatCode(code: string): string {
-  return code
-    .split("\n")
-    .reduce<string[]>((acc, line) => {
-      const prevLine = acc[acc.length - 1];
-      const needsBlankLine =
-        line.startsWith("export ") && prevLine !== undefined && prevLine !== "";
-      return needsBlankLine ? [...acc, "", line] : [...acc, line];
-    }, [])
-    .join("\n");
 }
 
 /**
@@ -439,16 +374,28 @@ function areKindsCompatible(kind1: DeclKind, kind2: DeclKind): boolean {
 /**
  * Track export collisions for a single file.
  * Returns the collected statements or throws on collision.
+ *
+ * Symbols are emitted in the order they appear in the rendered array,
+ * preserving the plugin's intended ordering (e.g., enums before tables).
  */
 function collectStatementsWithCollisionDetection(
   filePath: string,
   symbols: readonly AssignedSymbol[],
   capToRendered: Map<Capability, RenderedSymbol>,
+  renderedOrder: ReadonlyMap<Capability, number>,
 ): StatementKind[] {
   const seenExports = new Map<string, { kind: DeclKind; capability: Capability }>();
   const bodyStatements: StatementKind[] = [];
 
-  for (const sym of symbols) {
+  // Sort symbols by their position in the rendered array
+  // This ensures enums come before tables if the plugin rendered them first
+  const sortedSymbols = [...symbols].sort((a, b) => {
+    const orderA = renderedOrder.get(a.declaration.capability) ?? Number.MAX_SAFE_INTEGER;
+    const orderB = renderedOrder.get(b.declaration.capability) ?? Number.MAX_SAFE_INTEGER;
+    return orderA - orderB;
+  });
+
+  for (const sym of sortedSymbols) {
     const r = capToRendered.get(sym.declaration.capability);
     if (!r) continue;
 
@@ -496,8 +443,11 @@ export function emitFiles(
 
   // Build a map: capability -> rendered symbol for lookup
   const capToRendered = new Map<Capability, RenderedSymbol>();
-  for (const r of rendered) {
+  const renderedOrder = new Map<Capability, number>();
+  for (let i = 0; i < rendered.length; i++) {
+    const r = rendered[i]!;
     capToRendered.set(r.capability, r);
+    renderedOrder.set(r.capability, i);
   }
 
   // Process each file
@@ -516,15 +466,15 @@ export function emitFiles(
     const externalImportStatements: n.ImportDeclaration[] = [];
     const seenValueImports = new Map<string, Set<string>>();
     const seenTypeImports = new Map<string, Set<string>>();
+    const seenNamespaceImports = new Map<string, string>(); // source -> namespace name
+    const seenDefaultImports = new Map<string, string>(); // source -> default name
     const fileHeaders: string[] = [];
     const userModuleImports: n.ImportDeclaration[] = [];
     // Track user module refs by their resolved path to dedupe
     const seenUserModulePaths = new Set<string>();
 
     for (const sym of symbols) {
-      const r = capToRendered.get(sym.declaration.capability) as
-        | RenderedSymbolWithImports
-        | undefined;
+      const r = capToRendered.get(sym.declaration.capability) as RenderedSymbol | undefined;
       if (!r) continue;
 
       // Collect file headers (deduplicated) - deprecated, but still supported
@@ -545,15 +495,23 @@ export function emitFiles(
           if (!seenUserModulePaths.has(key)) {
             seenUserModulePaths.add(key);
             userModuleImports.push(
-              generateUserModuleImport(ref, filePath, config.configDir, config.outputDir)
+              generateUserModuleImport(ref, filePath, config.configDir, config.outputDir),
             );
           }
         }
       }
 
-      if (!r.externalImports) continue;
+      if (!r.imports) continue;
 
-      for (const ext of r.externalImports) {
+      for (const ext of r.imports) {
+        // Collect namespace imports
+        if (ext.namespace) {
+          seenNamespaceImports.set(ext.from, ext.namespace);
+        }
+        // Collect default imports
+        if (ext.default) {
+          seenDefaultImports.set(ext.from, ext.default);
+        }
         // Collect value imports
         if (ext.names) {
           if (!seenValueImports.has(ext.from)) {
@@ -580,9 +538,7 @@ export function emitFiles(
       // - End in .ts/.js (could be "db.ts" or "foo/bar.ts")
       // External packages: "elysia", "@effect/schema", "kysely", etc.
       const isInternalPath =
-        source.startsWith("./") ||
-        source.startsWith("../") ||
-        /\.(ts|js)$/.test(source);
+        source.startsWith("./") || source.startsWith("../") || /\.(ts|js)$/.test(source);
 
       if (isInternalPath) {
         // Normalize: strip leading "./" if present, convert .js to .ts for path computation
@@ -598,10 +554,29 @@ export function emitFiles(
         const specifiers = Array.from(types).map(name =>
           b.importSpecifier(b.identifier(name), b.identifier(name)),
         );
-        const importDecl = b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source)));
+        const importDecl = b.importDeclaration(
+          specifiers,
+          b.stringLiteral(resolveImportSource(source)),
+        );
         importDecl.importKind = "type";
         externalImportStatements.push(importDecl);
       }
+    }
+
+    // Build namespace import statements
+    for (const [source, namespace] of seenNamespaceImports) {
+      const specifiers = [b.importNamespaceSpecifier(b.identifier(namespace))];
+      externalImportStatements.push(
+        b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
+      );
+    }
+
+    // Build default import statements
+    for (const [source, defaultName] of seenDefaultImports) {
+      const specifiers = [b.importDefaultSpecifier(b.identifier(defaultName))];
+      externalImportStatements.push(
+        b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
+      );
     }
 
     // Build value import statements
@@ -610,7 +585,9 @@ export function emitFiles(
         const specifiers = Array.from(names).map(name =>
           b.importSpecifier(b.identifier(name), b.identifier(name)),
         );
-        externalImportStatements.push(b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))));
+        externalImportStatements.push(
+          b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
+        );
       }
     }
 
@@ -620,6 +597,7 @@ export function emitFiles(
       filePath,
       symbols,
       capToRendered,
+      renderedOrder,
     );
 
     // Skip files with no body content (provider-only symbols)
@@ -631,10 +609,7 @@ export function emitFiles(
     const program = b.program([...allImports, ...bodyStatements]);
 
     // Serialize to code
-    let code = recast.print(program).code;
-
-    // Format
-    code = formatCode(code);
+    let code = conjure.print(program);
 
     // Add file-specific headers from plugins (e.g., custom imports)
     if (fileHeaders.length > 0) {

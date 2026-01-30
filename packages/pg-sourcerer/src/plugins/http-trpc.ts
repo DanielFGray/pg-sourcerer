@@ -28,7 +28,8 @@ import type {
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
 import type { SchemaBuilder, SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
-import type { ExternalImport, RenderedSymbolWithImports } from "../runtime/emit.js";
+import type { RenderedSymbol } from "../runtime/types.js";
+import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
 import {
@@ -271,14 +272,14 @@ function buildProcedure(
 ): {
   procedureExpr: n.Expression;
   bodySchemaName: string | null;
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const procedureType = kindToProcedureType(method.kind);
 
   // Start with base procedure
   let chainExpr: n.Expression = b.identifier(baseProcedure);
 
-  const externalImports: ExternalImport[] = [];
+  const imports: ExternalImport[] = [];
   const bodySchemaName = getBodySchemaName(method, entityName);
   const bodySchema =
     bodySchemaName && registry.has(`schema:${bodySchemaName}`)
@@ -295,7 +296,7 @@ function buildProcedure(
       : undefined;
 
   if (paramSchema) {
-    externalImports.push(toExternalImport(paramSchema.importSpec));
+    imports.push(toExternalImport(paramSchema.importSpec));
   }
 
   const hasBody = method.params.some(p => p.source === "body");
@@ -334,7 +335,7 @@ function buildProcedure(
     [handler],
   );
 
-  return { procedureExpr: chainExpr, bodySchemaName, externalImports };
+  return { procedureExpr: chainExpr, bodySchemaName, imports };
 }
 
 /**
@@ -388,7 +389,7 @@ function generateTrpcRouter(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const routerName = inflection.variableName(entityName, "Router");
   const schemaImports: ExternalImport[] = [];
@@ -407,7 +408,7 @@ function generateTrpcRouter(
     )}`;
     const queryHandle = registry.import(methodCapability);
 
-    const { procedureExpr, bodySchemaName, externalImports } = buildProcedure(
+    const { procedureExpr, bodySchemaName, imports } = buildProcedure(
       method,
       entityName,
       config.baseProcedure,
@@ -425,7 +426,7 @@ function generateTrpcRouter(
       }
     }
 
-    schemaImports.push(...externalImports);
+    schemaImports.push(...imports);
 
     routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
   }
@@ -440,11 +441,11 @@ function generateTrpcRouter(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = schemaImports;
+  const imports: ExternalImport[] = schemaImports;
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -458,12 +459,12 @@ function generateAggregator(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { statements: [], imports: [] };
   }
 
   // Build: router({ user: userRouter, post: postRouter, ... })
@@ -501,7 +502,7 @@ function generateAggregator(
 
   return {
     statements: [variableDeclaration as n.Statement, typeExport as n.Statement],
-    externalImports: [],
+    imports: [],
   };
 }
 
@@ -599,7 +600,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      const rendered: RenderedSymbolWithImports[] = [];
+      const rendered: RenderedSymbol[] = [];
 
       // Query the registry for all entity query capabilities
       const entityQueries = new Map<string, EntityQueriesExtension>();
@@ -629,16 +630,16 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         const capability = `http-routes:trpc:${entityName}`;
 
         // Scope cross-references to this specific capability
-        const { statements, externalImports } = registry.forSymbol(capability, () =>
+        const { statements, imports } = registry.forSymbol(capability, () =>
           generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
           name: inflection.variableName(entityName, "Router"),
           capability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
           userImports: trpcUserImports,
         });
       }
@@ -647,7 +648,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         const appCapability = "http-routes:trpc:app";
 
         // Scope cross-references to the app capability
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
+        const { statements, imports } = registry.forSymbol(appCapability, () =>
           generateAggregator(entityQueries, resolvedConfig, registry, inflection),
         );
 
@@ -656,9 +657,9 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         rendered.push({
           name: resolvedConfig.aggregatorName,
           capability: appCapability,
-          node: statements[0], // The const declaration
+          node: statements[0] ?? null, // The const declaration
           exports: "named",
-          externalImports,
+          imports,
           userImports: trpcUserImports,
         });
 

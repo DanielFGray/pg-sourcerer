@@ -185,7 +185,6 @@ export {
   type EmittedFile,
   type EmitConfig,
   type ExternalImport,
-  type RenderedSymbolWithImports,
 } from "./runtime/emit.js";
 
 // Plugin Types (for custom plugin authors)
@@ -197,6 +196,14 @@ export type {
   RenderedSymbol,
   SymbolHandle,
 } from "./runtime/types.js";
+
+// Symbol Factory Functions
+export {
+  symbol,
+  virtualSymbol,
+  type SymbolInput,
+  type VirtualSymbolInput,
+} from "./runtime/symbol.js";
 
 // =============================================================================
 // Plugins

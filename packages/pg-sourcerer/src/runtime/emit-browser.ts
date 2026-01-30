@@ -4,7 +4,6 @@
  * Identical to emit.ts but avoids Node path utilities and userModule imports.
  */
 
-import type { SymbolStatement } from "../conjure/index";
 import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
@@ -14,34 +13,9 @@ import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types";
 import type { AssignedSymbol } from "./file-assignment";
 import { ExportCollisionError } from "../errors";
 import type { UserModuleRef } from "../user-module";
+import conjure from "../conjure";
 
 const b = recast.types.builders;
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/**
- * Check if a node is a SymbolStatement (from conjure exp.* helpers).
- */
-function isSymbolStatement(node: unknown): node is SymbolStatement {
-  return (
-    typeof node === "object" &&
-    node !== null &&
-    "_tag" in node &&
-    (node as { _tag?: string })._tag === "SymbolStatement"
-  );
-}
-
-/**
- * Unwrap a SymbolStatement to get the underlying statement, or return as-is.
- */
-function unwrapNode(node: unknown): unknown {
-  if (isSymbolStatement(node)) {
-    return node.node;
-  }
-  return node;
-}
 
 // =============================================================================
 // Types
@@ -71,25 +45,6 @@ export interface ExternalImport {
   readonly default?: string;
   /** Namespace import (import * as X) */
   readonly namespace?: string;
-}
-
-/**
- * Extended RenderedSymbol with external imports.
- * Plugins can specify external dependencies via this interface.
- */
-export interface RenderedSymbolWithImports extends RenderedSymbol {
-  /** External imports needed by this symbol */
-  readonly externalImports?: readonly ExternalImport[];
-  /**
-   * User module imports for this symbol.
-   *
-   * Browser emit ignores these.
-   */
-  readonly userImports?: readonly UserModuleRef[];
-  /**
-   * @deprecated Use `userImports` instead. Raw code to prepend to the file.
-   */
-  readonly fileHeader?: string;
 }
 
 // =============================================================================
@@ -233,7 +188,7 @@ function wrapWithExport(node: unknown, exports: RenderedSymbol["exports"]): Stat
     return stmt;
   }
 
-  if (exports === "named" || exports === true) {
+  if (exports === "named") {
     return b.exportNamedDeclaration(stmt as unknown as DeclarationKind, []);
   }
 
@@ -353,8 +308,7 @@ function collectStatementsWithCollisionDetection(
 
     seenExports.set(r.name, { kind, capability: sym.declaration.capability });
 
-    const unwrapped = unwrapNode(wrapped) as StatementKind;
-    bodyStatements.push(unwrapped);
+    bodyStatements.push(wrapped);
   }
 
   return bodyStatements;
@@ -390,18 +344,16 @@ export function emitFiles(
     const fileHeaders: string[] = [];
 
     for (const sym of symbols) {
-      const r = capToRendered.get(sym.declaration.capability) as
-        | RenderedSymbolWithImports
-        | undefined;
+      const r = capToRendered.get(sym.declaration.capability) as RenderedSymbol | undefined;
       if (!r) continue;
 
       if (r.fileHeader && !fileHeaders.includes(r.fileHeader)) {
         fileHeaders.push(r.fileHeader);
       }
 
-      if (!r.externalImports) continue;
+      if (!r.imports) continue;
 
-      for (const ext of r.externalImports) {
+      for (const ext of r.imports) {
         if (ext.names) {
           if (!seenValueImports.has(ext.from)) {
             seenValueImports.set(ext.from, new Set());
@@ -419,9 +371,7 @@ export function emitFiles(
 
     const resolveImportSource = (source: string): string => {
       const isInternalPath =
-        source.startsWith("./") ||
-        source.startsWith("../") ||
-        /\.(ts|js)$/.test(source);
+        source.startsWith("./") || source.startsWith("../") || /\.(ts|js)$/.test(source);
 
       if (isInternalPath) {
         const normalized = source.replace(/^\.\//, "").replace(/\.js$/, ".ts");
@@ -435,7 +385,10 @@ export function emitFiles(
         const specifiers = Array.from(types).map(name =>
           b.importSpecifier(b.identifier(name), b.identifier(name)),
         );
-        const importDecl = b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source)));
+        const importDecl = b.importDeclaration(
+          specifiers,
+          b.stringLiteral(resolveImportSource(source)),
+        );
         importDecl.importKind = "type";
         externalImportStatements.push(importDecl);
       }
@@ -446,7 +399,9 @@ export function emitFiles(
         const specifiers = Array.from(names).map(name =>
           b.importSpecifier(b.identifier(name), b.identifier(name)),
         );
-        externalImportStatements.push(b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))));
+        externalImportStatements.push(
+          b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
+        );
       }
     }
 
@@ -461,8 +416,7 @@ export function emitFiles(
     const allImports = [...externalImportStatements, ...crossImports];
     const program = b.program([...allImports, ...bodyStatements]);
 
-    let code = recast.print(program).code;
-    code = formatCode(code);
+    let code = conjure.print(program);
 
     if (fileHeaders.length > 0) {
       code = fileHeaders.join("\n") + "\n\n" + code;

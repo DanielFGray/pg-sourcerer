@@ -1,6 +1,7 @@
 export const defaultSchemaSql = `create extension if not exists pgcrypto;
 create extension if not exists citext;
 
+drop schema if exists app_public cascade;
 create schema if not exists app_public;
 
 do $$
@@ -31,7 +32,7 @@ create index on app_public.users (created_at desc);
 grant
   select,
   update(username)
-  on app_public.users to :DATABASE_VISITOR;
+  on app_public.users to app_visitor;
 `;
 
 export const defaultConfigSource = `import {
@@ -44,6 +45,7 @@ export const defaultConfigSource = `import {
 
 export default defineConfig({
   connectionString: "pglite://",
+  role: "app_visitor",
   schemas: ["app_public"],
   outputDir: "./generated",
   plugins: [

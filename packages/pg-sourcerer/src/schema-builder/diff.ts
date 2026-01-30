@@ -30,17 +30,23 @@ function fieldToColumnSpec(field: Field): ColumnSpec {
   const baseType = isArray ? typeName.slice(1) : typeName;
 
   // Check for identity column
-  const attidentity = (field.pgAttribute as any).attidentity;
+  function getPgAttrIdentity(attr: typeof field.pgAttribute): string | undefined {
+    return (attr as unknown as { attidentity?: string }).attidentity;
+  }
+
+  const attidentity = getPgAttrIdentity(field.pgAttribute);
   const isIdentityCol = attidentity === "a" || attidentity === "d";
   const generationKind = attidentity === "a" ? "always" : "by default";
 
-  // Get default value
-  let defaultValue: string | undefined;
-  if (field.hasDefault) {
-    // Get default from pg_attrdef via the attribute
-    const attrDef = (field.pgAttribute as any).getDefault?.();
-    defaultValue = attrDef?.adsrc;
-  }
+    // Get default value
+    let defaultValue: string | undefined;
+    if (field.hasDefault) {
+      // Get default from pg_attrdef via the attribute - pg-introspection may
+      // expose a getDefault() helper; narrow its shape safely.
+      const maybeGetDefault = (field.pgAttribute as unknown as { getDefault?: () => { adsrc?: string } | undefined }).getDefault;
+      const attrDef = typeof maybeGetDefault === "function" ? maybeGetDefault.call(field.pgAttribute) : undefined;
+      defaultValue = attrDef?.adsrc;
+    }
 
   return {
     name: field.columnName,

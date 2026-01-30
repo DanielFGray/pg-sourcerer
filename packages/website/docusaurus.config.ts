@@ -42,14 +42,8 @@ export default {
                 __dirname,
                 "../pg-sourcerer/src/browser.ts",
               ),
-              "@codemirror/state": path.resolve(
-                __dirname,
-                "../../node_modules/@codemirror/state",
-              ),
-              "@codemirror/view": path.resolve(
-                __dirname,
-                "../../node_modules/@codemirror/view",
-              ),
+              "@codemirror/state": path.resolve(__dirname, "../../node_modules/@codemirror/state"),
+              "@codemirror/view": path.resolve(__dirname, "../../node_modules/@codemirror/view"),
               "@codemirror/language": path.resolve(
                 __dirname,
                 "../../node_modules/@codemirror/language",
@@ -101,7 +95,11 @@ export default {
   projectName: "docusaurus", // Usually your repo name.
 
   onBrokenLinks: "throw",
-  onBrokenMarkdownLinks: "warn",
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: "warn",
+    },
+  },
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -121,15 +119,15 @@ export default {
           sidebarPath: "./sidebars.ts",
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
-          editUrl:
-            "https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/",
+          // editUrl:
+          //   "https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/",
         },
         blog: {
           showReadingTime: true,
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
-          editUrl:
-            "https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/",
+          // editUrl:
+          //   "https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/",
         },
         theme: {
           customCss: "./src/css/custom.css",
@@ -137,7 +135,6 @@ export default {
       } satisfies Preset.Options,
     ],
   ],
-
 
   themeConfig: {
     // Replace with your project's social card
@@ -157,7 +154,7 @@ export default {
         },
         { to: "/blog", label: "Blog", position: "left" },
         {
-          href: "https://github.com/facebook/docusaurus",
+          href: "https://github.com/DanielFGray/pg-sourcerer",
           label: "GitHub",
           position: "right",
         },
@@ -201,7 +198,7 @@ export default {
             },
             {
               label: "GitHub",
-              href: "https://github.com/facebook/docusaurus",
+              href: "https://github.com/DanielFGray/pg-sourcerer",
             },
           ],
         },

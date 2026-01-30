@@ -230,6 +230,9 @@ export interface TableEntity extends EntityBase {
   /** Indexes on this entity */
   readonly indexes: readonly IndexDef[];
 
+  /** CHECK constraints on this table */
+  readonly checkConstraints: readonly CheckConstraint[];
+
   /** Shapes for this entity */
   readonly shapes: {
     /** Base shape (row) - always present */
@@ -275,6 +278,18 @@ export interface DomainConstraint {
   readonly name: string;
   /** Raw constraint expression (from pg_constraint.conbin decompiled) */
   readonly expression?: string;
+}
+
+/**
+ * A CHECK constraint on a table
+ */
+export interface CheckConstraint {
+  /** Constraint name */
+  readonly name: string;
+  /** Human-readable constraint definition (from pg_get_constraintdef) */
+  readonly definition: string;
+  /** Column names involved in this constraint (empty for multi-column constraints) */
+  readonly columns: readonly string[];
 }
 
 /**

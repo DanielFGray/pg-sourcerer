@@ -366,7 +366,7 @@ function generateHonoRoutes(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
   needsSValidator: boolean;
 } {
   const routesVarName = inflection.variableName(entityName, "HonoRoutes");
@@ -412,7 +412,7 @@ function generateHonoRoutes(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
+  const imports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
   const needsSValidator =
     schemaCapabilities.length > 0 ||
     queries.methods.some(m =>
@@ -427,7 +427,7 @@ function generateHonoRoutes(
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
     needsSValidator,
   };
 }
@@ -482,12 +482,12 @@ function generateAggregator(
   inflection: CoreInflection,
 ): {
   statements: n.Statement[];
-  externalImports: ExternalImport[];
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { statements: [], imports: [] };
   }
 
   let chainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
@@ -500,7 +500,7 @@ function generateAggregator(
     );
   }
 
-  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }];
+  const imports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }];
 
   for (const [entityName] of entityEntries) {
     const routesVarName = inflection.variableName(entityName, "HonoRoutes");
@@ -522,7 +522,7 @@ function generateAggregator(
 
   return {
     statements: [variableDeclaration as n.Statement],
-    externalImports,
+    imports,
   };
 }
 
@@ -616,7 +616,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
 
         const capability = `http-routes:hono:${entityName}`;
 
-        const { statements, externalImports, needsSValidator } = registry.forSymbol(
+        const { statements, imports, needsSValidator } = registry.forSymbol(
           capability,
           () => generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
@@ -628,25 +628,25 @@ export function hono(config?: HttpHonoConfig): Plugin {
         rendered.push({
           name: inflection.variableName(entityName, "HonoRoutes"),
           capability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 
       if (entityQueries.size > 0) {
         const appCapability = "http-routes:hono:app";
 
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
+        const { statements, imports } = registry.forSymbol(appCapability, () =>
           generateAggregator(entityQueries, resolvedConfig, registry, inflection),
         );
 
         rendered.push({
           name: "honoApp",
           capability: appCapability,
-          node: statements[0],
+          node: statements[0] ?? null,
           exports: "named",
-          externalImports,
+          imports,
         });
       }
 
@@ -654,12 +654,12 @@ export function hono(config?: HttpHonoConfig): Plugin {
         const needsSValidator = allNeedsSValidator.has(r.capability);
         return {
           ...r,
-          externalImports: needsSValidator
+          imports: needsSValidator
             ? [
-                ...(r.externalImports ?? []),
+                ...(r.imports ?? []),
                 { from: "@hono/standard-validator", names: ["sValidator"] },
               ]
-            : r.externalImports,
+            : r.imports,
         };
       });
     }),

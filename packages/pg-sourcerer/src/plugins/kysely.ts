@@ -12,8 +12,8 @@ import { Effect } from "effect";
 import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
-import type { RenderedSymbolWithImports, ExternalImport } from "../runtime/emit.js";
+import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { ExternalImport } from "../runtime/emit.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
@@ -32,7 +32,7 @@ import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queri
 import { type UserModuleRef } from "../user-module.js";
 import { getPgType, pgTypeToTsType, resolveFieldTypeInfo } from "./shared/pg-types.js";
 
-const { fn, stmt, ts, param, str, exp, b, chain, arrExpr } = conjure;
+const { fn, stmt, ts, param, str, b, chain, arrExpr } = conjure;
 
 const createQueryConsume = (method: QueryMethod) => (input: unknown): n.Expression => {
   const args = input == null ? [] : [cast.toExpr(input as n.Expression)];
@@ -431,11 +431,10 @@ function buildFieldType(field: Field, kyselyType: KyselyType, needsGenerated: bo
  * Generate enum type alias: `export type Status = "active" | "inactive"`
  */
 function generateEnumType(enumEntity: EnumEntity): n.Statement {
-  return exp.typeAlias(
+  return conjure.export.type(
     enumEntity.name,
-    { capability: "types:kysely", entity: enumEntity.name },
     ts.union(...enumEntity.values.map(v => ts.literal(v))),
-  ).node;
+  );
 }
 
 /**
@@ -450,7 +449,7 @@ function generateCompositeInterface(composite: CompositeEntity, ctx: TypeContext
     properties.push({ name: field.name, type: fieldType });
   }
 
-  return exp.interface(composite.name, { capability: "types:kysely", entity: composite.name }, properties).node;
+  return conjure.export.interface(composite.name, properties);
 }
 
 /**
@@ -469,7 +468,7 @@ function generateTableInterface(entity: TableEntity, ctx: TypeContext): n.Statem
     properties.push({ name: field.name, type: fieldType });
   }
 
-  return exp.interface(entity.name, { capability: "types:kysely", entity: entity.name }, properties).node;
+  return conjure.export.interface(entity.name, properties);
 }
 
 /**
@@ -490,7 +489,7 @@ function generateDBInterface(entities: readonly TableEntity[], defaultSchemas: r
   // Sort by key for stable output
   properties.sort((a, b) => a.name.localeCompare(b.name));
 
-  return exp.interface("DB", { capability: "types:kysely", entity: "DB" }, properties).node;
+  return conjure.export.interface("DB", properties);
 }
 
 /**
@@ -875,7 +874,7 @@ export function kysely(config?: KyselyConfig): Plugin {
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const inflection = yield* Inflection;
-      const symbols: RenderedSymbolWithImports[] = [];
+      const symbols: RenderedSymbol[] = [];
 
       const enumEntities = getEnumEntities(ir);
       const compositeEntities = getCompositeEntities(ir).filter(e => e.tags.omit !== true);
@@ -908,7 +907,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           capability: `types:kysely:${enumEntity.name}`,
           node: generateEnumType(enumEntity),
           exports: "named",
-          externalImports: typesExternalImports,
+          imports: typesExternalImports,
           fileHeader: typesHeader,
         });
       }
@@ -920,7 +919,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           capability: `types:kysely:${composite.name}`,
           node: generateCompositeInterface(composite, typeCtx),
           exports: "named",
-          externalImports: typesExternalImports,
+          imports: typesExternalImports,
           fileHeader: typesHeader,
         });
       }
@@ -932,7 +931,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           capability: `types:kysely:${entity.name}`,
           node: generateTableInterface(entity, typeCtx),
           exports: "named",
-          externalImports: typesExternalImports,
+          imports: typesExternalImports,
           fileHeader: typesHeader,
         });
       }
@@ -943,7 +942,7 @@ export function kysely(config?: KyselyConfig): Plugin {
         capability: "types:kysely:DB",
         node: generateDBInterface(tableEntities, defaultSchemas),
         exports: "named",
-        externalImports: typesExternalImports,
+        imports: typesExternalImports,
         fileHeader: typesHeader,
       });
 
@@ -998,10 +997,10 @@ export function kysely(config?: KyselyConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:kysely:${entityName}:findById`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
+              imports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
             });
           }
@@ -1135,10 +1134,10 @@ export function kysely(config?: KyselyConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:kysely:${entityName}:listBy${pascalColumn}`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
+              imports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
             });
           }
@@ -1175,10 +1174,10 @@ export function kysely(config?: KyselyConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:kysely:${entityName}:create`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: [
+              imports: [
                 {
                   from: "kysely",
                   names: resolvedConfig.dbAsParameter ? ["Kysely"] : [],
@@ -1245,10 +1244,10 @@ export function kysely(config?: KyselyConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:kysely:${entityName}:update`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: [
+              imports: [
                 {
                   from: "kysely",
                   names: resolvedConfig.dbAsParameter ? ["Kysely"] : [],
@@ -1302,10 +1301,10 @@ export function kysely(config?: KyselyConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:kysely:${entityName}:delete`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
+              imports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
               userImports: queryUserImports,
             });
           }
@@ -1361,10 +1360,10 @@ export function kysely(config?: KyselyConfig): Plugin {
               symbols.push({
                 name: method.name,
                 capability: `queries:kysely:${entityName}:findBy${pascalColumn}`,
-                node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+                node: conjure.export.const(method.name, fnExpr),
                 metadata: { consume: createQueryConsume(method) },
                 exports: "named",
-                externalImports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
+                imports: resolvedConfig.dbAsParameter ? [{ from: "kysely", names: ["Kysely"] }] : [],
                 userImports: queryUserImports,
               });
             }

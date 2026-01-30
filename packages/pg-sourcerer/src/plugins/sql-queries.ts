@@ -8,7 +8,7 @@ import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
-import type { RenderedSymbolWithImports } from "../runtime/emit.js";
+import type { RenderedSymbol } from "../runtime/types.js";
 import type { FileNaming } from "../runtime/file-assignment.js";
 import { normalizeFileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
@@ -24,7 +24,7 @@ import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queri
 import { type UserModuleRef } from "../user-module.js";
 import { getPgType, pgTypeToTsType, resolveFieldTypeInfo } from "./shared/pg-types.js";
 
-const { fn, ts, param, b, exp } = conjure;
+const { fn, ts, param, b } = conjure;
 
 const createQueryConsume =
   (method: QueryMethod) =>
@@ -379,7 +379,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const inflection = yield* Inflection;
-      const symbols: RenderedSymbolWithImports[] = [];
+      const symbols: RenderedSymbol[] = [];
 
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
       const defaultSchemas = ir.schemas;
@@ -443,7 +443,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:sql:${entityName}:findById`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
               userImports: queryUserImports,
@@ -492,10 +492,10 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:sql:${entityName}:create`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: [
+              imports: [
                 {
                   from: queriesFilePath,
                   types: [entityName],
@@ -559,10 +559,10 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:sql:${entityName}:update`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
-              externalImports: [
+              imports: [
                 {
                   from: queriesFilePath,
                   types: [entityName],
@@ -606,7 +606,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:sql:${entityName}:delete`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               metadata: { consume: createQueryConsume(method) },
               exports: "named",
               userImports: queryUserImports,
@@ -658,7 +658,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               symbols.push({
                 name: method.name,
                 capability: `queries:sql:${entityName}:findBy${pascalColumn}`,
-                node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+                node: conjure.export.const(method.name, fnExpr),
                 metadata: { consume: createQueryConsume(method) },
                 exports: "named",
                 userImports: queryUserImports,
@@ -741,7 +741,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
             symbols.push({
               name: method.name,
               capability: `queries:sql:${entityName}:listBy${pascalColumn}`,
-              node: exp.const(method.name, { capability: "", entity: entityName }, fnExpr).node,
+              node: conjure.export.const(method.name, fnExpr),
               exports: "named",
               userImports: queryUserImports,
             });

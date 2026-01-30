@@ -205,7 +205,7 @@ export function effectRepos(config: ParsedEffectConfig): Plugin {
             capability,
             node: exportedClass,
             exports: "named",
-            externalImports: usesModelRepo
+            imports: usesModelRepo
               ? [
                   { from: "effect", names: ["Effect"] },
                   { from: "@effect/sql", names: ["Model"] },

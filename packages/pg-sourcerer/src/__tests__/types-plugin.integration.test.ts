@@ -94,13 +94,8 @@ describe("Types Plugin Integration", () => {
 
     const content = typesFile!.content;
 
-    // Should have User interface
+    // Should have User interface (readme-spec validates actual structure)
     expect(content).toContain("export interface User");
-
-    // User should have expected fields based on the example schema
-    // Note: The actual fields depend on what's in the example database
-    expect(content).toContain("readonly id:");
-    expect(content).toContain("readonly email:");
   });
 
   it("renders all table entities to the types file", async () => {
@@ -119,26 +114,7 @@ describe("Types Plugin Integration", () => {
     }
   });
 
-  it("handles nullable fields correctly", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
-
-    const files = emitFiles(result);
-    const content = files[0]!.content;
-
-    // Check for nullable fields (which should have | null)
-    const tableEntities = Array.from(ir.entities.values()).filter(isTableEntity);
-
-    for (const entity of tableEntities) {
-      for (const field of entity.shapes.row.fields) {
-        if (field.nullable) {
-          // Nullable fields should have `| null` in their type
-          // Look for pattern: fieldName: something | null
-          const fieldPattern = new RegExp(`readonly ${field.name}:.*\\| null`);
-          expect(content).toMatch(fieldPattern);
-        }
-      }
-    }
-  });
+  // Removed: nullable field formatting is validated by readme-spec
 
   it("emits TypeScript that could type-check (well-formed AST)", async () => {
     const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
