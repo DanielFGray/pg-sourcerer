@@ -1,0 +1,8 @@
+{
+  "label": "Conjure API",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "Conjure is pg-sourcerer's fluent AST builder for generating TypeScript code. Learn how to use it to build plugins."
+  }
+}
