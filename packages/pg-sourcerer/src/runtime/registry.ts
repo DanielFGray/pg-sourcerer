@@ -54,7 +54,7 @@ export class CategoryConflict extends Schema.TaggedError<CategoryConflict>()("Ca
  * Schema plugins use this to provide validation wrappers.
  */
 interface ConsumeableMetadata {
-  consume?: (input: unknown) => unknown;
+  consume?: (input: recast.types.ASTNode) => recast.types.ASTNode;
   [key: string]: unknown;
 }
 
@@ -89,7 +89,7 @@ export function createSymbolHandle(
       );
     },
     consume: consumeFn
-      ? (input: unknown) => {
+      ? (input: recast.types.ASTNode) => {
           onReference?.(decl.capability);
           return consumeFn(input);
         }

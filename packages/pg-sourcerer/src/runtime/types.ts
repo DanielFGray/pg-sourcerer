@@ -127,11 +127,11 @@ export interface SymbolHandle {
   /** Plugin-specific metadata (e.g., QueryDescriptor for query symbols) */
   readonly metadata?: unknown;
 
-  /** Use as type reference - returns AST node and tracks reference */
-  ref: () => unknown;
+  /** Use as identifier - returns AST node and tracks reference */
+  ref: () => recast.types.ASTNode;
 
   /** Use as call expression - returns AST node and tracks reference */
-  call: (...args: unknown[]) => unknown;
+  call: (...args: recast.types.ASTNode[]) => recast.types.ASTNode;
 
   /**
    * Consume/validate input through this symbol.
@@ -146,7 +146,7 @@ export interface SymbolHandle {
    *
    * Returns undefined if this symbol doesn't support consumption (e.g., types).
    */
-  consume?: (input: unknown) => unknown;
+  consume?: (input: recast.types.ASTNode) => recast.types.ASTNode;
 }
 
 // =============================================================================

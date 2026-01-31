@@ -7,39 +7,20 @@ import {
   Conjure,
   makeConjureService,
   CurrentPluginContext,
-  type ConjureRegistry,
   type PluginContext,
-  type SymbolHandle,
 } from "../services/conjure.js";
+import { SymbolRegistryImpl } from "../runtime/registry.js";
 import { conjure } from "../conjure/index.js";
 
-// Mock registry for testing
-class MockRegistry implements ConjureRegistry {
-  public rendered = new Map<string, { node: unknown; metadata?: unknown }>();
-  public handles = new Map<string, SymbolHandle>();
-
-  setRendered(capability: string, node: unknown, metadata?: unknown): void {
-    this.rendered.set(capability, { node, metadata });
-  }
-
-  import(capability: string): SymbolHandle {
-    const existing = this.handles.get(capability);
-    if (existing) return existing;
-
-    const handle: SymbolHandle = {
-      name: capability.split(":").pop() || capability,
-      capability,
-    };
-    this.handles.set(capability, handle);
-    return handle;
-  }
-}
-
 describe("Conjure Service", () => {
-  it.effect("exp.const registers symbol and returns statement", () =>
+  it.effect("exp.const registers symbol that can be imported", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       const ctx: PluginContext = {
         pluginName: "zod",
@@ -48,6 +29,7 @@ describe("Conjure Service", () => {
 
       yield* FiberRef.set(CurrentPluginContext, ctx);
 
+      // Act: Call exp.const which should register + setRendered
       const stmt = yield* service.exp.const(
         "User",
         conjure.id("z").method("string").build(),
@@ -59,17 +41,21 @@ describe("Conjure Service", () => {
       // Should return a statement
       expect(stmt.type).toBe("ExportNamedDeclaration");
 
-      // Should register with inferred capability
-      const rendered = registry.rendered.get("schema:zod:User");
-      expect(rendered).toBeDefined();
-      expect(rendered?.node).toBe(stmt);
+      // Assert behavior: symbol should now be importable
+      const handle = service.use("schema:zod:User");
+      expect(handle.name).toBe("User");
+      expect(handle.capability).toBe("schema:zod:User");
     }),
   );
 
   it.effect("exp.type infers capability from context", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       const ctx: PluginContext = {
         pluginName: "kysely",
@@ -80,15 +66,21 @@ describe("Conjure Service", () => {
 
       yield* service.exp.type("User", conjure.ts.ref("UserRow"));
 
-      // Should infer "type:kysely:User"
-      expect(registry.rendered.has("type:kysely:User")).toBe(true);
+      // Verify capability was correctly inferred and symbol is importable
+      const handle = service.use("type:kysely:User");
+      expect(handle.name).toBe("User");
+      expect(handle.capability).toBe("type:kysely:User");
     }),
   );
 
   it.effect("exp.const stores consume callback in metadata", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       const ctx: PluginContext = {
         pluginName: "zod",
@@ -104,28 +96,41 @@ describe("Conjure Service", () => {
         consume: consumeFn,
       });
 
-      const rendered = registry.rendered.get("schema:zod:User");
-      expect(rendered?.metadata).toBeDefined();
-      expect(typeof (rendered?.metadata as any)?.consume).toBe("function");
+      // Verify consume callback is accessible via the handle
+      const handle = service.use("schema:zod:User");
+      expect(handle.consume).toBeDefined();
+      expect(typeof handle.consume).toBe("function");
     }),
   );
 
-  it.effect("use() returns handle from registry", () =>
+  it.effect("use() returns handle for already-registered symbol", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
-      const handle = yield* service.use("schema:User");
+      // First register a symbol via exp.const
+      yield* FiberRef.set(CurrentPluginContext, { pluginName: "zod", provides: ["schema"] });
+      yield* service.exp.const("User", conjure.id("z").method("string").build());
 
+      // Then use() should return a handle to it
+      const handle = service.use("schema:zod:User");
       expect(handle.name).toBe("User");
-      expect(handle.capability).toBe("schema:User");
+      expect(handle.capability).toBe("schema:zod:User");
     }),
   );
 
   it.effect("pure AST builders work without context", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       // Pure builders don't need context
       const id = service.id("foo").build();
@@ -139,8 +144,12 @@ describe("Conjure Service", () => {
 
   it.effect("exp.const with explicit capability overrides inference", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       const ctx: PluginContext = {
         pluginName: "zod",
@@ -154,15 +163,22 @@ describe("Conjure Service", () => {
       });
 
       // Should use explicit capability, not inferred
-      expect(registry.rendered.has("schema:zod:User:input")).toBe(true);
-      expect(registry.rendered.has("schema:zod:UserInput")).toBe(false);
+      const handle = service.use("schema:zod:User:input");
+      expect(handle.name).toBe("UserInput");
+      
+      // The inferred capability should NOT exist
+      expect(() => service.use("schema:zod:UserInput")).toThrow();
     }),
   );
 
   it.effect("throws when no context for capability inference", () =>
     Effect.gen(function* () {
-      const registry = new MockRegistry();
-      const service = makeConjureService(registry);
+      const registry = new SymbolRegistryImpl();
+      const service = makeConjureService({
+        register: (decl) => registry.register(decl),
+        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        import: (cap) => registry.import(cap),
+      });
 
       // No context set
       yield* FiberRef.set(CurrentPluginContext, null);

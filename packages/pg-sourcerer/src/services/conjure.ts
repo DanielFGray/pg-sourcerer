@@ -7,8 +7,9 @@
 import { Context, Effect, FiberRef } from "effect";
 import type { namedTypes as n } from "ast-types";
 import { conjure as conjureApi, extractIdentifierRefs } from "../conjure/index.js";
-import type { RenderedSymbol } from "../runtime/types.js";
+import type { RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import type { ExternalImport } from "../runtime/emit.js";
+import { SymbolCollision } from "../runtime/registry.js";
 
 // =============================================================================
 // Types
@@ -57,15 +58,6 @@ export interface InterfaceProp {
 }
 
 /**
- * Symbol handle for cross-plugin references
- */
-export interface SymbolHandle {
-  name: string;
-  capability: string;
-  consume?: (input: n.Expression) => n.Expression;
-}
-
-/**
  * Plugin context tracked via FiberRef
  */
 export interface PluginContext {
@@ -78,8 +70,14 @@ export interface PluginContext {
  * (Simplified interface that Conjure needs from SymbolRegistry)
  */
 export interface ConjureRegistry {
+  /** Register a symbol declaration (makes it findable) */
+  register(decl: { name: string; capability: string }): Effect.Effect<void, SymbolCollision>;
+  
+  /** Store rendered output for a symbol */
   setRendered(capability: string, node: unknown, metadata?: unknown): void;
-  import(capability: string): SymbolHandle;
+  
+  /** Get a handle to an already-registered symbol */
+  import(capability: string): SymbolHandle; // Returns runtime SymbolHandle with ref/call/consume
 }
 
 // =============================================================================
@@ -90,23 +88,23 @@ export interface ConjureService {
   // ═══════════════════════════════════════════════════════════════════════════
   // Tracked exports - these register symbols automatically
   // ═══════════════════════════════════════════════════════════════════════════
-
+  
   readonly exp: {
     /** Export const: `export const name = init` */
-    const(name: string, init: n.Expression, opts?: ExpOpts): Effect.Effect<n.Statement>;
-
+    const(name: string, init: n.Expression, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
+    
     /** Export type alias: `export type Name = Type` */
-    type(name: string, type: n.TSType, opts?: ExpOpts): Effect.Effect<n.Statement>;
-
+    type(name: string, type: n.TSType, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
+    
     /** Export interface: `export interface Name { ... }` */
     interface(
       name: string,
       props: InterfaceProp[],
       opts?: ExpOpts,
-    ): Effect.Effect<n.Statement>;
-
+    ): Effect.Effect<n.Statement, SymbolCollision>;
+    
     /** Export function: `export function name(...) { ... }` */
-    fn(decl: n.FunctionDeclaration, opts?: ExpOpts): Effect.Effect<n.Statement>;
+    fn(decl: n.FunctionDeclaration, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -114,7 +112,7 @@ export interface ConjureService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /** Import a symbol from another plugin, returns handle for AST generation */
-  use(capability: string): Effect.Effect<SymbolHandle>;
+  use(capability: string): SymbolHandle;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Pure AST builders - delegates to conjure API (no tracking)
@@ -200,6 +198,10 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         const ctx = yield* FiberRef.get(CurrentPluginContext);
         const capability = inferCapability(ctx, name, opts?.capability);
 
+        // Register the declaration (makes symbol findable by other plugins)
+        yield* registry.register({ name, capability });
+
+        // Build the AST node
         const node = conjureApi.export.const(name, init);
         const refs = extractIdentifierRefs(node);
 
@@ -211,7 +213,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
             }
           : undefined;
 
-        // Register with the registry
+        // Store rendered output
         registry.setRendered(capability, node, metadata);
 
         return node;
@@ -222,6 +224,10 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         const ctx = yield* FiberRef.get(CurrentPluginContext);
         const capability = inferCapability(ctx, name, opts?.capability);
 
+        // Register the declaration
+        yield* registry.register({ name, capability });
+
+        // Build the AST node
         const node = conjureApi.export.type(name, type);
         const refs = extractIdentifierRefs(node);
 
@@ -241,6 +247,10 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         const ctx = yield* FiberRef.get(CurrentPluginContext);
         const capability = inferCapability(ctx, name, opts?.capability);
 
+        // Register the declaration
+        yield* registry.register({ name, capability });
+
+        // Build the AST node
         const node = conjureApi.export.interface(name, props);
         const refs = extractIdentifierRefs(node);
 
@@ -268,6 +278,10 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
 
         const capability = inferCapability(ctx, name, opts?.capability);
 
+        // Register the declaration
+        yield* registry.register({ name, capability });
+
+        // Build the AST node
         const node = conjureApi.export.fn(decl);
         const refs = extractIdentifierRefs(node);
 
@@ -283,10 +297,9 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
       }),
   };
 
-  const use = (capability: string) =>
-    Effect.sync(() => {
-      return registry.import(capability);
-    });
+  const use = (capability: string) => {
+    return registry.import(capability);
+  };
 
   return {
     exp,

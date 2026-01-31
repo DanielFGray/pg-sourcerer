@@ -47,7 +47,7 @@ export function toExternalImport(spec: SchemaImportSpec): ExternalImport {
 export function buildQueryInvocation(handle: SymbolHandle, args: n.Expression[]): n.Expression {
   if (handle.consume && args.length <= 1) {
     const input = args.length === 0 ? undefined : args[0];
-    return handle.consume(input as unknown) as n.Expression;
+    return handle.consume(input as any) as n.Expression;
   }
   return handle.call(...args) as n.Expression;
 }

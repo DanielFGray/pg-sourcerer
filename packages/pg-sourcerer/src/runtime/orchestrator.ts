@@ -1,4 +1,4 @@
-import { Effect, Layer, Array } from "effect";
+import { Effect, Layer, Array, FiberRef } from "effect";
 import type { Plugin, SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import { SymbolRegistry, SymbolRegistryImpl } from "./registry.js";
 import { validateAll } from "./validation.js";
@@ -8,6 +8,7 @@ import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { TypeHints, type TypeHintRegistry } from "../services/type-hints.js";
 import type { SemanticIR } from "../ir/semantic-ir.js";
+import { Conjure, CurrentPluginContext, makeConjureService } from "../services/conjure.js";
 
 /**
  * Result of running the orchestrator.
@@ -124,9 +125,18 @@ export const runPlugins = (config: OrchestratorConfig) =>
     const assigned = assignSymbolsToFiles(allDeclarations, fileAssignment);
     const fileGroups = groupByFile(assigned);
 
-    // Phase 4: Render - add SymbolRegistry service
+    // Phase 4: Render - add SymbolRegistry and Conjure services
     const registryLayer = Layer.succeed(SymbolRegistry, registry.toService());
-    const renderLayer = Layer.merge(declareLayer, registryLayer);
+    
+    // Create Conjure service with the registry
+    const conjureService = makeConjureService({
+      register: (decl) => registry.register(decl),
+      setRendered: (capability, node, metadata) => registry.setRendered(capability, node, metadata),
+      import: (capability) => registry.import(capability),
+    });
+    const conjureLayer = Layer.succeed(Conjure, conjureService);
+    
+    const renderLayer = Layer.mergeAll(declareLayer, registryLayer, conjureLayer);
 
     const allRendered: RenderedSymbol[] = [];
     for (const plugin of plugins) {
@@ -148,6 +158,12 @@ export const runPlugins = (config: OrchestratorConfig) =>
           registry.import(cap).ref(); // Call ref() to record the reference
         }
       }
+
+      // Set plugin context in FiberRef for Conjure service capability inference
+      yield* FiberRef.set(CurrentPluginContext, {
+        pluginName: plugin.name,
+        provides: plugin.provides,
+      });
 
       const rendered = yield* plugin.render.pipe(Effect.provide(renderLayer));
 
@@ -186,6 +202,8 @@ export const runPlugins = (config: OrchestratorConfig) =>
 
       allRendered.push(...rendered);
 
+      // Clear plugin context after render
+      yield* FiberRef.set(CurrentPluginContext, null);
       registry.clearCurrentCapabilities();
     }
 
