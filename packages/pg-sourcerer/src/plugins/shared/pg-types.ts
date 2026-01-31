@@ -69,11 +69,10 @@ export function resolveFieldTypeInfo(field: Field): FieldTypeInfo | undefined {
     return { typeName: field.elementTypeName ?? "unknown", typeInfo: pgType };
   }
 
-  if (pgType.typtype === "d" && field.domainBaseType) {
-    return {
-      typeName: field.domainBaseType.typeName,
-      typeInfo: { typcategory: field.domainBaseType.category },
-    };
+  // For domain types, return the domain's type name (not the base type)
+  // This allows plugins to detect and reference the domain type
+  if (pgType.typtype === "d") {
+    return { typeName: pgType.typname, typeInfo: pgType };
   }
 
   return { typeName: pgType.typname, typeInfo: pgType };

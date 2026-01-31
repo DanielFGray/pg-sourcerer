@@ -324,10 +324,8 @@ function domainToZodSchema(domain: DomainEntity): n.Expression {
     }
   }
 
-  // Apply nullable if domain doesn't have NOT NULL
-  if (!domain.notNull) {
-    schema = conjure.chain(schema).method("nullable").build();
-  }
+  // Note: Domain types themselves are never nullable.
+  // Nullability is determined by the column using the domain, not the domain itself.
 
   return schema;
 }
@@ -495,9 +493,14 @@ export function zod(config?: ZodConfig): Plugin {
       }
 
       for (const entity of enums) {
+        // Create the enum array with 'as const' for proper type inference
+        const enumArray = conjure.asConst(
+          conjure.arr(...entity.values.map(v => conjure.str(v))).build(),
+        );
+        
         const schemaNode = conjure
           .id("z")
-          .method("enum", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
+          .method("enum", [enumArray])
           .build();
 
         const schemaDecl = conjure.export.const(entity.name, schemaNode);

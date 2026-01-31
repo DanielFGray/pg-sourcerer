@@ -169,7 +169,7 @@ const passes: ReadonlyArray<{
           validate: false,
         },
       }),
-      zod({ exportTypes: false }),
+      zod(), // exportTypes defaults to true
       orpc(),
     ],
   },

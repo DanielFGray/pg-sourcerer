@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(prog context:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(prog learn:*)",
+      "Bash(prog concepts:*)"
+    ]
+  }
+}

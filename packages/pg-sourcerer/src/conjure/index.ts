@@ -1348,6 +1348,7 @@ export interface ConjureApi {
   param: typeof param;
   await: (expr: n.Expression) => n.AwaitExpression;
   nonNull: (expr: n.Expression) => n.TSNonNullExpression;
+  asConst: (expr: n.Expression) => n.TSAsExpression;
   spread: (expr: n.Expression) => n.SpreadElement;
   print: (node: n.Node) => string;
   program: (...statements: n.Statement[]) => n.Program;
@@ -1548,6 +1549,10 @@ export const conjure: ConjureApi = {
 
   /** Non-null assertion: `expr!` */
   nonNull: (expr: n.Expression) => b.tsNonNullExpression(toExpr(expr)),
+
+  /** Type assertion: `expr as const` */
+  asConst: (expr: n.Expression) =>
+    b.tsAsExpression(toExpr(expr), b.tsTypeReference(b.identifier("const"))),
 
   /** Spread expression (for use in arrays/calls) */
   spread: (expr: n.Expression) => b.spreadElement(toExpr(expr)),
