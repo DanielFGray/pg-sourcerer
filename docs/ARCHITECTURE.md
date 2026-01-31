@@ -1,15 +1,12 @@
-# Plugin Architecture Redesign
+# pg-sourcerer Architecture
 
 ## Overview
 
-A ground-up redesign of the plugin system based on first principles. Plugins become pure-ish functions that declare symbols and render bodies in two distinct phases.
+Plugins are pure-ish Effect functions that declare symbols and render bodies in two distinct phases.
 
 **Scope**: Postgres-first, full-stack from query to UI. We leverage rich introspection (types, indexes, constraints, RLS) as a feature, while maintaining abstractions that enable other data sources. See [Data Source Agnosticism](./DATA_SOURCE_AGNOSTICISM.md) for the capability-based approach.
 
 **Vision**: An ecosystem of composable plugins that scaffold a complete web application from database introspection—queries, schemas, HTTP routes, client SDKs, and eventually UI components.
-
-**Branch**: `feature/symbols-conjure-redesign`
-**Exploration branch** (for reference): `explore/conjure-registry-v1`
 
 ## Core Principles
 

@@ -1915,7 +1915,7 @@ export const myPlugin = definePlugin({
       ctx
         .file(`${config.outputDir}/${name}.ts`)
         .header("// Auto-generated\n")
-        .ast(conjure.symbolProgram(statement))
+        .ast(conjure.program(statement))
         .emit();
     });
   },

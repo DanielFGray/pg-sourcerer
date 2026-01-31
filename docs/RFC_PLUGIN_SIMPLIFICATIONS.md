@@ -627,7 +627,7 @@ export default {
 
 ## References
 
-- `docs/SYMBOLS_CONJURE_REDESIGN.md` - Current architecture
+- `docs/ARCHITECTURE.md` - Current architecture
 - `docs/QUERY_PATTERNS_PLAN.md` - Related query pattern heuristics
 - `src/runtime/orchestrator.ts` - Current phase implementation
 - `src/runtime/types.ts` - Plugin interface

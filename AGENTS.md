@@ -301,6 +301,42 @@ import { Array, HashMap, Option } from "effect"
 import { Array as A } from "effect"  // NO
 ```
 
+## ⚠️ Documentation Protocol
+
+**Website docs are the source of truth** for API documentation. The `packages/website/` contains comprehensive docs built with Docusaurus.
+
+### Before Modifying Plugins
+
+Read the relevant Conjure documentation at `packages/website/docs/conjure/`:
+
+| File | When to Read |
+|------|--------------|
+| `intro.md` | First time working with Conjure |
+| `expressions.md` | Building any AST expressions |
+| `functions.md` | Generating function declarations |
+| `statements.md` | Control flow, variable declarations |
+| `typescript-types.md` | Type annotations |
+| `symbols.md` | Understanding RenderedSymbol, cross-file refs |
+| `plugin-guide.md` | Writing or modifying plugins |
+| `reference.md` | Quick lookup of any API |
+
+### After Making Changes
+
+If you modified any API that's documented:
+
+1. **Update the website docs** - Keep them in sync with source
+2. **Verify the build** - Run `cd packages/website && bun run build`
+3. **Check for broken links** - Build will fail on broken internal links
+
+### Key Documentation Locations
+
+| Topic | Location |
+|-------|----------|
+| Architecture & Design | `./docs/ARCHITECTURE.md` |
+| Effect Style Guide | `./docs/EFFECT_STYLE.md` |
+| Conjure API | `packages/website/docs/conjure/` |
+| Design Decisions | `./docs/DECISIONS.md` |
+
 ## Reminders
 
 1. **Stub first** - Get the wiring right before implementing logic
@@ -308,8 +344,9 @@ import { Array as A } from "effect"  // NO
 3. **Think functionally** - Data transformations, not imperative steps
 4. **Test with @effect/vitest** - Use `it.effect` and `layer()`
 5. **Check ./docs/ARCHITECTURE.md** - For design decisions and open questions
-6. **Query Context7** - For Effect-ts API questions
-7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
+6. **Read Conjure docs before plugin work** - `packages/website/docs/conjure/`
+7. **Query Context7** - For Effect-ts API questions
+8. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
 
 ## ⚠️ CRITICAL: Git Safety
 
@@ -485,3 +522,19 @@ Good learnings are **stable facts** that won't change with our code.
 | **P4**   | Nice-to-have cleanup                      | Experimental plugins               |
 
 When choosing between same-priority core vs plugin → Pick core.
+
+## Task Tracking
+
+This project uses **prog** for cross-session task management.
+Run `prog prime` for workflow context, or configure hooks for auto-injection.
+
+**Quick reference:**
+```
+prog ready              # Find unblocked work
+prog add "Title" -p X   # Create task
+prog start <id>         # Claim work
+prog log <id> "msg"     # Log progress
+prog done <id>          # Complete work
+```
+
+For full workflow: `prog prime`

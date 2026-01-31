@@ -174,15 +174,28 @@ conjure.op.new(callee, [args])
 ```typescript
 // Basic program
 conjure.program(...statements)
-
-// Symbol program (extracts metadata)
-conjure.symbolProgram(...statements)
 ```
 
 ## Printing
 
 ```typescript
 const code = conjure.print(astNode);
+```
+
+## Cast (Recast Interop)
+
+```typescript
+// Cast to recast Expression
+const expr = conjure.cast.toExpr(node);
+
+// Cast to array element (Expression | SpreadElement)
+const elem = conjure.cast.asArrayElem(node);
+
+// Cast to recast Statement
+const stmt = conjure.cast.toStmt(node);
+
+// Cast to TypeScript type node
+const type = conjure.cast.toTSType(node);
 ```
 
 ## Complete Example

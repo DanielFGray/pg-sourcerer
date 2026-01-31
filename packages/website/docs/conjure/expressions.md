@@ -55,6 +55,16 @@ conjure.taggedTemplate(
 conjure.id("myVar")  // myVar
 ```
 
+### Starting from Existing Expressions
+
+```typescript
+// Start a chain from an existing expression
+conjure.chain(someExpr).method("foo").build()
+// someExpr.method("foo")
+```
+
+Useful when you have an expression from another source and want to add method calls or property access.
+
 ### Method Chains
 
 ```typescript

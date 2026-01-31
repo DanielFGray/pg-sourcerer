@@ -62,4 +62,4 @@ All builders are **immutable** - each method returns a new builder.
 - [Statements](./statements) - Build declarations and control flow
 - [TypeScript Types](./typescript-types) - Type annotations and interfaces
 - [Functions](./functions) - Build function expressions
-- [Exports](./exports) - Export declarations with symbol tracking
+- [Imports & Exports](./imports-exports) - Export declarations with symbol tracking

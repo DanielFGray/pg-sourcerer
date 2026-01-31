@@ -1,6 +1,6 @@
 # Design Decisions
 
-Resolved architectural decisions with rationale. These emerged from design discussions in SYMBOLS_CONJURE_REDESIGN.md and DATA_SOURCE_AGNOSTICISM.md.
+Resolved architectural decisions with rationale. These emerged from design discussions in ARCHITECTURE.md and DATA_SOURCE_AGNOSTICISM.md.
 
 ## Plugin System
 

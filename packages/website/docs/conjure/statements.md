@@ -188,7 +188,7 @@ conjure.stmt.block(
 Quick helper for async functions:
 
 ```typescript
-conjure.stmt.asyncFn(
+conjure.asyncFn(
   "fetchUser",
   [conjure.param.typed("id", conjure.ts.string())],
   [
