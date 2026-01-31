@@ -20,9 +20,11 @@ import { IR } from "../services/ir.js";
 import {
   isTableEntity,
   isEnumEntity,
+  isDomainEntity,
   type TableEntity,
   type Field,
   type EnumEntity,
+  type DomainEntity,
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {

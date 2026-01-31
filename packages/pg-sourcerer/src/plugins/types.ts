@@ -16,7 +16,9 @@ import { IR } from "../services/ir.js";
 import {
   isEnumEntity,
   isTableEntity,
+  isDomainEntity,
   type EnumEntity,
+  type DomainEntity,
   type Field,
   type Shape,
   type TableEntity,
@@ -34,7 +36,31 @@ const b = conjure.b;
 /**
  * Convert a Field to a TSPropertySignature for interface generation.
  */
-function fieldToTsType(field: Field, enumMap: Map<string, string>): TSTypeKind {
+function fieldToTsType(
+  field: Field,
+  enumMap: Map<string, string>,
+  domainMap: Map<string, string>,
+): TSTypeKind {
+  const pgType = field.pgAttribute.getType();
+  
+  // Check if this field uses a domain type
+  const isDomain = pgType?.typtype === "d";
+  if (isDomain && pgType) {
+    const domainTypeName = domainMap.get(pgType.typname);
+    if (domainTypeName) {
+      let resultType = types.ref(domainTypeName);
+      
+      if (field.isArray) {
+        resultType = types.array(resultType);
+      }
+      if (field.nullable) {
+        resultType = types.nullable(resultType);
+      }
+      
+      return resultType;
+    }
+  }
+
   const resolved = resolveFieldTypeInfo(field);
   const typeName = resolved?.typeName ?? "unknown";
   const typeInfo = resolved?.typeInfo;
@@ -59,10 +85,11 @@ function fieldToTsType(field: Field, enumMap: Map<string, string>): TSTypeKind {
 function fieldToPropertySignature(
   field: Field,
   enumMap: Map<string, string>,
+  domainMap: Map<string, string>,
   readonly: boolean,
 ): n.TSPropertySignature {
   const propName = b.identifier(field.name);
-  const tsType = fieldToTsType(field, enumMap);
+  const tsType = fieldToTsType(field, enumMap, domainMap);
 
   const sig = b.tsPropertySignature(propName, b.tsTypeAnnotation(tsType));
   sig.optional = field.optional;
@@ -89,15 +116,26 @@ function fieldToPropertySignature(
 function shapeToInterface(
   shape: Shape,
   enumMap: Map<string, string>,
+  domainMap: Map<string, string>,
   readonly: boolean,
 ): n.TSInterfaceDeclaration {
-  const members = shape.fields.map(field => fieldToPropertySignature(field, enumMap, readonly));
+  const members = shape.fields.map(field => fieldToPropertySignature(field, enumMap, domainMap, readonly));
   return b.tsInterfaceDeclaration(b.identifier(shape.name), b.tsInterfaceBody(members));
 }
 
 function enumToTypeAlias(entity: EnumEntity): n.TSTypeAliasDeclaration {
   const union = b.tsUnionType(entity.values.map(value => b.tsLiteralType(b.stringLiteral(value))));
   return b.tsTypeAliasDeclaration(b.identifier(entity.name), union);
+}
+
+/**
+ * Convert a domain entity to a type alias.
+ * Domains are branded types in the database, but in TypeScript we just alias to the base type.
+ */
+function domainToTypeAlias(entity: DomainEntity): n.TSTypeAliasDeclaration {
+  // Map domain base type to TypeScript type
+  const tsType = types.fromPg(entity.baseTypeName);
+  return b.tsTypeAliasDeclaration(b.identifier(entity.name), tsType);
 }
 
 // =============================================================================
@@ -140,12 +178,21 @@ export function typesPlugin(): Plugin {
       // entity.name is already inflected by the IR builder
       const declarations: SymbolDeclaration[] = [];
 
+      // Declare enum types
       for (const entity of ir.entities.values()) {
         if (isEnumEntity(entity)) {
           declarations.push({ name: entity.name, capability: `type:${entity.name}` });
         }
       }
 
+      // Declare domain types
+      for (const entity of ir.entities.values()) {
+        if (isDomainEntity(entity)) {
+          declarations.push({ name: entity.name, capability: `type:${entity.name}` });
+        }
+      }
+
+      // Declare table shapes
       for (const entity of ir.entities.values()) {
         if (!isTableEntity(entity)) continue;
 
@@ -166,10 +213,13 @@ export function typesPlugin(): Plugin {
 
       // entity.name is already inflected by the IR builder
       const enumEntities = [...ir.entities.values()].filter(isEnumEntity);
+      const domainEntities = [...ir.entities.values()].filter(isDomainEntity);
       const enumMap = new Map(enumEntities.map(entity => [entity.pgType.typname, entity.name]));
+      const domainMap = new Map(domainEntities.map(entity => [entity.pgType.typname, entity.name]));
 
       const rendered: RenderedSymbol[] = [];
 
+      // Render enum types first (domains may reference them, tables reference both)
       for (const entity of enumEntities) {
         rendered.push({
           name: entity.name,
@@ -179,6 +229,17 @@ export function typesPlugin(): Plugin {
         });
       }
 
+      // Render domain types (tables reference these)
+      for (const entity of domainEntities) {
+        rendered.push({
+          name: entity.name,
+          capability: `type:${entity.name}`,
+          node: domainToTypeAlias(entity),
+          exports: "named",
+        });
+      }
+
+      // Render table interfaces
       for (const entity of ir.entities.values()) {
         if (!isTableEntity(entity)) continue;
 
@@ -190,7 +251,7 @@ export function typesPlugin(): Plugin {
           rendered.push({
             name: shape.name,
             capability: `type:${shape.name}`,
-            node: shapeToInterface(shape, enumMap, shape.kind === "row"),
+            node: shapeToInterface(shape, enumMap, domainMap, shape.kind === "row"),
             exports: "named",
           });
         }

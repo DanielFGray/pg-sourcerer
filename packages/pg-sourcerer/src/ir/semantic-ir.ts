@@ -270,14 +270,25 @@ export interface EnumEntity extends EntityBase {
 // Domain Entity
 // ============================================================================
 
+/** Parsed validation from domain CHECK constraint */
+export type DomainValidation =
+  | { readonly kind: "minLength"; readonly value: number }
+  | { readonly kind: "maxLength"; readonly value: number }
+  | { readonly kind: "regex"; readonly pattern: string; readonly caseInsensitive?: boolean }
+  | { readonly kind: "min"; readonly value: number }
+  | { readonly kind: "max"; readonly value: number }
+  | { readonly kind: "unknown"; readonly raw: string };
+
 /**
  * A CHECK constraint on a domain type
  */
 export interface DomainConstraint {
   /** Constraint name */
   readonly name: string;
-  /** Raw constraint expression (from pg_constraint.conbin decompiled) */
+  /** Raw constraint expression (from pg_get_constraintdef) */
   readonly expression?: string;
+  /** Parsed validations from expression */
+  readonly validations: readonly DomainValidation[];
 }
 
 /**

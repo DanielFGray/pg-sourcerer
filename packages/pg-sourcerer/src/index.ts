@@ -64,6 +64,7 @@ export {
   type EnumEntity,
   type DomainEntity,
   type DomainConstraint,
+  type DomainValidation,
   type CompositeEntity,
   type Shape,
   type Field,
@@ -179,6 +180,11 @@ export {
   parseCapabilityInfo,
 } from "./runtime/file-assignment.js";
 
+// Constraint Parsers
+export {
+  parseDomainExpression,
+} from "./lib/domain-constraint-parser.js";
+
 // Runtime Emit
 export {
   emitFiles,
@@ -204,6 +210,26 @@ export {
   type SymbolInput,
   type VirtualSymbolInput,
 } from "./runtime/symbol.js";
+
+// =============================================================================
+// Conjure - AST Builder DSL for Plugin Authors
+// =============================================================================
+
+export {
+  // Main API
+  conjure,
+  // Casting utilities for recast interop
+  cast,
+  // Ref extraction for cross-file import tracking
+  extractIdentifierRefs,
+  // Types (ExternalImport and RenderedSymbol exported from runtime modules above)
+  type ConjureApi,
+  type SymbolOpts,
+  type ChainBuilder,
+  type ObjBuilder,
+  type ArrBuilder,
+  type FnBuilder,
+} from "./conjure/index.js";
 
 // =============================================================================
 // Plugins

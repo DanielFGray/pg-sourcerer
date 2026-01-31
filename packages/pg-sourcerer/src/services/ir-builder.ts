@@ -6,6 +6,7 @@
  * relations, and enums.
  */
 import { Context, Effect, Layer, pipe, Array as Arr, Option, Console } from "effect";
+import { parseDomainExpression } from "../lib/domain-constraint-parser.js";
 import type {
   Introspection,
   PgAttribute,
@@ -779,8 +780,12 @@ function getDomainConstraints(
   return introspection.constraints
     .filter(c => c.contypid === domainOid && c.contype === "c") // CHECK constraints
     .map(c => {
+      // Parse validations from the constraint expression
+      const validations = c.condef ? parseDomainExpression(c.condef) : [];
+
       const constraint: DomainConstraint = {
         name: c.conname,
+        validations,
       };
       // Add expression only if present (exactOptionalPropertyTypes)
       // Use condef which contains the output from pg_get_constraintdef()
