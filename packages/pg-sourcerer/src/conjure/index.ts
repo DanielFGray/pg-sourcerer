@@ -1327,6 +1327,7 @@ export interface ConjureApi {
   bool: (value: boolean) => n.BooleanLiteral;
   null: () => n.NullLiteral;
   undefined: () => n.Identifier;
+  regex: (pattern: string, flags?: string) => n.RegExpLiteral;
   template: (quasis: string[], ...expressions: n.Expression[]) => n.TemplateLiteral;
   taggedTemplate: (
     tag: string | n.Expression,
@@ -1440,6 +1441,26 @@ export const conjure: ConjureApi = {
 
   /** undefined */
   undefined: () => b.identifier("undefined"),
+
+  /**
+   * Regular expression literal
+   * 
+   * Note: Uses recast.parse() instead of b.regExpLiteral() because the latter
+   * has a bug where it prints `/undefined/` instead of the actual pattern.
+   * 
+   * @example
+   * ```ts @import.meta.vitest
+   * const node = conjure.regex("^test$", "i");
+   * expect(conjure.print(node)).toBe('/^test$/i');
+   * ```
+   */
+  regex: (pattern: string, flags = "") => {
+    // Escape forward slashes in the pattern for the regex literal
+    const escapedPattern = pattern.replace(/\//g, "\\/");
+    const code = `/${escapedPattern}/${flags}`;
+    const parsed = recast.parse(code);
+    return parsed.program.body[0].expression as n.RegExpLiteral;
+  },
 
   /** Template literal */
   template: (quasis: string[], ...expressions: n.Expression[]) => {

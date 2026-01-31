@@ -314,7 +314,7 @@ function domainToZodSchema(domain: DomainEntity): n.Expression {
           const flags = validation.caseInsensitive ? "i" : "";
           schema = conjure
             .chain(schema)
-            .method("regex", [b.regExpLiteral(validation.pattern, flags)])
+            .method("regex", [conjure.regex(validation.pattern, flags)])
             .build();
           break;
         case "unknown":
