@@ -1418,7 +1418,15 @@ export const conjure: ConjureApi = {
 
   // === Literals ===
 
-  /** String literal */
+  /**
+   * String literal
+   *
+   * @example
+   * ```ts @import.meta.vitest
+   * const node = conjure.str("hello");
+   * expect(conjure.print(node)).toBe('"hello"');
+   * ```
+   */
   str: (value: string) => b.stringLiteral(value),
 
   /** Numeric literal */
