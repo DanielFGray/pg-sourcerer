@@ -369,14 +369,17 @@ function domainToArktypeString(domain: DomainEntity): string {
 
   // Apply domain constraints as refinements
   const constraints: string[] = [];
+  let minLen: number | null = null;
+  let maxLen: number | null = null;
+
   for (const constraint of domain.constraints) {
     for (const validation of constraint.validations) {
       switch (validation.kind) {
         case "minLength":
-          constraints.push(`minLength: ${validation.value}`);
+          minLen = validation.value;
           break;
         case "maxLength":
-          constraints.push(`maxLength: ${validation.value}`);
+          maxLen = validation.value;
           break;
         case "min":
           constraints.push(`>= ${validation.value}`);
@@ -385,8 +388,9 @@ function domainToArktypeString(domain: DomainEntity): string {
           constraints.push(`<= ${validation.value}`);
           break;
         case "regex":
-          // Escape backslashes and quotes for arktype regex pattern
-          const escapedPattern = validation.pattern.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+          // Pattern is already properly escaped from PostgreSQL
+          // Escape forward slashes for regex literal
+          const escapedPattern = validation.pattern.replace(/\//g, "\\/");
           constraints.push(`/${escapedPattern}/${validation.caseInsensitive ? "i" : ""}`);
           break;
         case "unknown":
@@ -396,9 +400,18 @@ function domainToArktypeString(domain: DomainEntity): string {
     }
   }
 
-  // Combine base type with constraints
+  // For string length, arktype uses >= min <= max syntax
+  if (minLen !== null && maxLen !== null) {
+    schema = `${schema} >= ${minLen} <= ${maxLen}`;
+  } else if (minLen !== null) {
+    schema = `${schema} >= ${minLen}`;
+  } else if (maxLen !== null) {
+    schema = `${schema} <= ${maxLen}`;
+  }
+
+  // Combine with other constraints
   if (constraints.length > 0) {
-    return `${schema} & ${constraints.join(" & ")}`;
+    return schema ? `${schema} & ${constraints.join(" & ")}` : constraints.join(" & ");
   }
   
   return schema;
@@ -537,6 +550,21 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
       const declarations: SymbolDeclaration[] = [];
 
+      // Declare domains FIRST (so they can be referenced by tables)
+      for (const entity of ir.entities.values()) {
+        if (isDomainEntity(entity)) {
+          declarations.push({
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}`,
+          });
+          declarations.push({
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}:type`,
+          });
+        }
+      }
+
+      // Then declare tables and enums
       for (const entity of ir.entities.values()) {
         if (isTableEntity(entity)) {
           declarations.push(...buildShapeDeclarations(entity, "schema:arktype"));
