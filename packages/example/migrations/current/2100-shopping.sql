@@ -4,7 +4,7 @@
  */
 
 create table app_public.products (
-  id uuid primary key default gen_random_uuid(),
+  id uuid primary key default uuidv7(),
   name text not null check(length(name) > 0 and length(name) <= 100),
   sku text not null check(sku ~ '^[A-Z]{3}-[0-9]{4}$'),
   price numeric(10,2) not null check(price >= 0),
