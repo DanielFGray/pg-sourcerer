@@ -11,6 +11,7 @@
  * Users can configure file naming via functions that receive entity info:
  * { pattern: "type:", fileNaming: ({ name, schema }) => `${name.toLowerCase()}.ts` }
  */
+import { pipe, Array as Arr, Option } from "effect";
 import type { SymbolDeclaration, Capability } from "./types.js";
 import type { CoreInflection } from "../services/inflection.js";
 
@@ -146,15 +147,10 @@ export function mergeFileRules(
 ): readonly FileRule[] {
   const overridePatterns = new Set(userOverrides.map((o) => o.pattern));
 
-  const merged = pluginDefaults
-    .filter((rule) => !overridePatterns.has(rule.pattern))
-    .map((rule) => rule);
-
-  for (const override of userOverrides) {
-    merged.push(normalizeFileRule(override));
-  }
-
-  return merged;
+  return [
+    ...pluginDefaults.filter((rule) => !overridePatterns.has(rule.pattern)),
+    ...userOverrides.map(normalizeFileRule),
+  ];
 }
 
 /**
@@ -189,29 +185,29 @@ export function parseCapabilityInfo(capability: Capability): {
     "elysia", "hono", "fastify", "express", "trpc",
   ]);
 
-  // Find the first part that looks like an entity name (PascalCase, not a known prefix/provider)
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
-    const partLower = part.toLowerCase();
+  const isKnownPart = (part: string): boolean => {
+    const lower = part.toLowerCase();
+    return knownCategories.has(lower) || knownProviders.has(lower);
+  };
 
-    // Skip known categories and providers
-    if (knownCategories.has(partLower) || knownProviders.has(partLower)) {
-      continue;
-    }
-
-    // Check if part contains a schema qualifier (e.g., "public.User")
-    if (part.includes(".")) {
-      const [schemaPart, entityNamePart] = part.split(".");
-      return { entityName: entityNamePart ?? part, schema: schemaPart ?? "public" };
-    }
-
-    // This looks like an entity name (first char uppercase = PascalCase)
-    // If not PascalCase but we're past known prefixes, still use it
-    return { entityName: part, schema: "public" };
-  }
-
-  // Fallback: use the last part
-  return { entityName: parts[parts.length - 1] ?? capability, schema: "public" };
+  // Find the first part that looks like an entity name (not a known prefix/provider)
+  return pipe(
+    parts,
+    Arr.findFirst(part => !isKnownPart(part)),
+    Option.map(part => {
+      // Check if part contains a schema qualifier (e.g., "public.User")
+      if (part.includes(".")) {
+        const [schemaPart, entityNamePart] = part.split(".");
+        return { entityName: entityNamePart ?? part, schema: schemaPart ?? "public" };
+      }
+      return { entityName: part, schema: "public" };
+    }),
+    // Fallback: use the last part
+    Option.getOrElse(() => ({
+      entityName: parts[parts.length - 1] ?? capability,
+      schema: "public",
+    })),
+  );
 }
 
 /**
@@ -243,18 +239,61 @@ export function assignSymbolsToFiles(
 export function groupByFile(
   assigned: readonly AssignedSymbol[],
 ): ReadonlyMap<string, readonly AssignedSymbol[]> {
-  const map = new Map<string, AssignedSymbol[]>();
+  return pipe(
+    assigned,
+    Arr.groupBy(item => item.filePath),
+    groups => new Map(Object.entries(groups)),
+  );
+}
 
-  for (const item of assigned) {
-    const existing = map.get(item.filePath);
-    if (existing) {
-      existing.push(item);
-    } else {
-      map.set(item.filePath, [item]);
-    }
+/** Info resolved from registry or capability for file assignment */
+interface ResolvedEntityInfo {
+  readonly entityName: string;
+  readonly baseEntityName: string;
+  readonly variant: string | undefined;
+  readonly schema: string;
+}
+
+/**
+ * Resolve entity info from registry or capability parsing.
+ */
+function resolveEntityInfo(
+  declaration: SymbolDeclaration,
+  inflection: CoreInflection,
+): ResolvedEntityInfo {
+  // Try to get entity info from registry first (most accurate)
+  const registryInfo = inflection.registry.lookup(declaration.name);
+
+  if (registryInfo) {
+    // Registry has accurate info
+    const parsed = parseCapabilityInfo(declaration.capability);
+    return {
+      baseEntityName: registryInfo.baseEntity,
+      variant: registryInfo.variant !== "entity" ? registryInfo.variant : undefined,
+      entityName: parsed.entityName,
+      schema: parsed.schema,
+    };
   }
 
-  return map;
+  if (declaration.baseEntityName) {
+    // Declaration has explicit baseEntityName - use it for both
+    const parsed = parseCapabilityInfo(declaration.capability);
+    return {
+      baseEntityName: declaration.baseEntityName,
+      entityName: declaration.baseEntityName,
+      variant: undefined,
+      schema: parsed.schema,
+    };
+  }
+
+  // Fallback: parse from capability (legacy behavior)
+  const parsed = parseCapabilityInfo(declaration.capability);
+  return {
+    entityName: parsed.entityName,
+    baseEntityName: parsed.entityName,
+    variant: undefined,
+    schema: parsed.schema,
+  };
 }
 
 /**
@@ -274,64 +313,37 @@ export function getFileForCapability(
     return declaration.outputPath;
   }
 
-  // Try to get entity info from registry first (most accurate)
-  const registryInfo = config.inflection.registry.lookup(declaration.name);
-
-  let entityName: string;
-  let baseEntityName: string;
-  let variant: string | undefined;
-  let schema: string;
-
-  if (registryInfo) {
-    // Registry has accurate info
-    baseEntityName = registryInfo.baseEntity;
-    variant = registryInfo.variant !== "entity" ? registryInfo.variant : undefined;
-    // For entityName in context, use the name from capability parsing for backwards compat
-    const parsed = parseCapabilityInfo(declaration.capability);
-    entityName = parsed.entityName;
-    schema = parsed.schema;
-  } else if (declaration.baseEntityName) {
-    // Declaration has explicit baseEntityName - use it for both
-    // This is the canonical source when plugins set it explicitly
-    baseEntityName = declaration.baseEntityName;
-    entityName = declaration.baseEntityName;
-    const parsed = parseCapabilityInfo(declaration.capability);
-    schema = parsed.schema;
-  } else {
-    // Fallback: parse from capability (legacy behavior)
-    const parsed = parseCapabilityInfo(declaration.capability);
-    entityName = parsed.entityName;
-    baseEntityName = parsed.entityName;
-    schema = parsed.schema;
-  }
+  const { entityName, baseEntityName, variant, schema } = resolveEntityInfo(
+    declaration,
+    config.inflection,
+  );
 
   // Compute folderName via inflection
   const folderName = config.inflection.folderName(baseEntityName);
 
-  for (const rule of config.rules) {
-    if (declaration.capability.startsWith(rule.pattern)) {
-      const fileName = rule.fileNaming({
-        name: declaration.name,
-        entityName,
-        baseEntityName,
-        folderName,
-        variant,
-        schema,
-        capability: declaration.capability,
-      });
+  const context: FileNamingContext = {
+    name: declaration.name,
+    entityName,
+    baseEntityName,
+    folderName,
+    variant,
+    schema,
+    capability: declaration.capability,
+  };
+
+  return pipe(
+    config.rules,
+    Arr.findFirst(rule => declaration.capability.startsWith(rule.pattern)),
+    Option.map(rule => {
+      const fileName = rule.fileNaming(context);
       const baseDir = rule.outputDir ?? "";
-      if (baseDir) {
-        return `${baseDir}/${fileName}`;
-      }
-      return fileName;
-    }
-  }
-
-  if (config.defaultFile) {
-    return config.defaultFile;
-  }
-
-  throw new Error(
-    `No file rule matches capability "${declaration.capability}" and no default file is configured`,
+      return baseDir ? `${baseDir}/${fileName}` : fileName;
+    }),
+    Option.orElse(() => Option.fromNullable(config.defaultFile)),
+    Option.getOrElse(() => {
+      throw new Error(
+        `No file rule matches capability "${declaration.capability}" and no default file is configured`,
+      );
+    }),
   );
 }

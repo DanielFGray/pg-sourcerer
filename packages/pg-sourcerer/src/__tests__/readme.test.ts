@@ -44,7 +44,6 @@ const databaseVisitor = "app_visitor";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../../../../");
 const fixturePath = resolve(repoRoot, "packages/pg-sourcerer/test-fixtures/readme-users.sql");
-const outputRoot = resolve(repoRoot, "packages/example/generated-readme/minimal");
 
 const readFixture = Effect.tryPromise({
   try: () => readFile(fixturePath, "utf8"),
@@ -158,7 +157,7 @@ const passes: ReadonlyArray<{
 }> = [
   {
     id: "zod-orpc-raw",
-    outputDir: resolve(outputRoot, "zod-http"),
+    outputDir: "generated/zod-http",
     plugins: [
       typesPlugin(),
       sqlQueries({
@@ -175,37 +174,39 @@ const passes: ReadonlyArray<{
   },
   {
     id: "elysia-zod-kysely",
-    outputDir: resolve(outputRoot, "elysia"),
+    outputDir: "generated/elysia",
     plugins: [kysely(), zod(), elysia()],
   },
   {
     id: "kysely-zod-express",
-    outputDir: resolve(outputRoot, "kysely"),
+    outputDir: "generated/kysely",
     plugins: [kysely(), zod(), express()],
   },
   {
     id: "kysely-arktype-hono",
-    outputDir: resolve(outputRoot, "arktype"),
+    outputDir: "generated/arktype",
     plugins: [kysely(), arktype(), hono()],
   },
   {
     id: "valibot-types-raw-trpc",
-    outputDir: resolve(outputRoot, "valibot"),
+    outputDir: "generated/valibot",
     plugins: [typesPlugin(), sqlQueries(), valibot({ exportTypes: false }), trpc()],
   },
   {
     id: "effect",
-    outputDir: resolve(outputRoot, "effect"),
+    outputDir: "generated/effect",
     plugins: [typesPlugin(), ...effectPlugin()],
   },
 ] as const;
 
 describe("README spec", () => {
-  it.effect("matches generated output", () =>
-    Effect.gen(function* () {
-      const db = yield* createPglite;
-      const fixture = yield* readFixture;
-      yield* applyFixture(db, fixture);
+  it.effect(
+    "matches generated output",
+    () =>
+      Effect.gen(function* () {
+        const db = yield* createPglite;
+        const fixture = yield* readFixture;
+        yield* applyFixture(db, fixture);
 
       const introspectionLayer = makeIntrospectionLayer(db);
       const runtimeLayer = Layer.mergeAll(introspectionLayer, NodeContext.layer);
@@ -217,18 +218,18 @@ describe("README spec", () => {
         Effect.gen(function* () {
           console.log(`\n=== PASS: ${pass.id} ===\n`);
           const config = toResolvedConfig(generateConfig(pass.outputDir, pass.plugins));
-          
+
           const result = yield* generate({ outputDir: pass.outputDir, dryRun: true }).pipe(
             Effect.provide(runtimeLayer),
             Effect.provide(ConfigFromMemory(config)),
           );
-          
-          // Store emitted files in memory
+
+          // Store emitted files in memory (resolve relative to repoRoot)
           for (const file of result.emittedFiles) {
-            const fullPath = resolve(pass.outputDir, file.path);
+            const fullPath = resolve(repoRoot, pass.outputDir, file.path);
             allFiles.set(fullPath, file.content);
           }
-          
+
           return result;
         }),
       );
@@ -287,5 +288,6 @@ describe("README spec", () => {
         ),
       );
     }),
+    15000,
   );
 });

@@ -1,7 +1,7 @@
 import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Schema, pipe, Array as Arr } from "effect";
 import type { Capability, SymbolDeclaration, SymbolRef, SymbolHandle } from "./types.js";
 
 const b = recast.types.builders;
@@ -326,9 +326,11 @@ export class SymbolRegistryImpl {
       // assume it's already specific. Simple heuristic: no uppercase, short.
       if (possibleProvider.length <= 15 && possibleProvider === possibleProvider.toLowerCase()) {
         // Check if we have this registered as ANY category provider
-        for (const [, p] of this.categoryProviders) {
-          if (p === possibleProvider) return capability; // Already specific
-        }
+        const isKnownProvider = pipe(
+          Arr.fromIterable(this.categoryProviders.values()),
+          Arr.some(p => p === possibleProvider),
+        );
+        if (isKnownProvider) return capability; // Already specific
       }
     }
 
@@ -515,13 +517,16 @@ export class SymbolRegistryImpl {
    * Called internally when SymbolHandle.ref() or .call() is invoked.
    */
   private recordReference(target: Capability): void {
-    for (const source of this.currentCapabilities) {
-      if (source === target) continue;
-      if (!this.references.has(source)) {
-        this.references.set(source, new Set());
-      }
-      this.references.get(source)!.add(target);
-    }
+    pipe(
+      this.currentCapabilities,
+      Arr.filter(source => source !== target),
+      Arr.forEach(source => {
+        if (!this.references.has(source)) {
+          this.references.set(source, new Set());
+        }
+        this.references.get(source)!.add(target);
+      }),
+    );
   }
 
   /**
@@ -537,11 +542,13 @@ export class SymbolRegistryImpl {
    * Maps: source capability -> capabilities it references
    */
   getAllReferences(): ReadonlyMap<Capability, readonly Capability[]> {
-    const result = new Map<Capability, readonly Capability[]>();
-    for (const [source, targets] of this.references) {
-      result.set(source, Array.from(targets));
-    }
-    return result;
+    return pipe(
+      Arr.fromIterable(this.references.entries()),
+      Arr.reduce(new Map<Capability, readonly Capability[]>(), (result, [source, targets]) => {
+        result.set(source, Arr.fromIterable(targets));
+        return result;
+      }),
+    );
   }
 
   /**

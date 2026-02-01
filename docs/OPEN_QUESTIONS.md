@@ -44,7 +44,7 @@ See also: [DECISIONS.md](./DECISIONS.md) for resolved questions.
 A) **Conservative**: Only PK lookups + basic CRUD. User opts into more.
 
 B) **Moderate**: PK + unique indexes + obvious relations. Skip ambiguous cases.
-   
+
 C) **Aggressive**: Generate everything indexes suggest. User prunes.
 
 **Status**: Needs user feedback. Different users have different preferences. Possibly a config option.

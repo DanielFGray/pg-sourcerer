@@ -5,6 +5,7 @@
  * It represents semantic intent, not code.
  */
 import type { PgAttribute, PgClass, PgType, PgProc } from "@danielfgray/pg-introspection";
+import { Array as Arr, Option, pipe } from "effect";
 import type { SmartTags, ShapeKind } from "./smart-tags.js";
 
 /**
@@ -613,31 +614,29 @@ export function getReverseRelations(
   ir: SemanticIR,
   entityName: string,
 ): readonly ReverseRelation[] {
-  const results: ReverseRelation[] = [];
-
-  for (const entity of ir.entities.values()) {
-    if (!isTableEntity(entity)) continue;
-
-    for (const relation of entity.relations) {
-      if (relation.targetEntity === entityName && relation.kind === "belongsTo") {
-        results.push({
-          // Default to hasMany; could be hasOne if unique constraint on FK
-          // TODO: detect unique constraint on FK columns for hasOne
-          kind: "hasMany",
-          sourceEntity: entity.name,
-          constraintName: relation.constraintName,
-          // Swap local/foreign perspective
-          columns: relation.columns.map(col => ({
-            local: col.foreign, // Referenced column becomes "local"
-            foreign: col.local, // FK column becomes "foreign"
-          })),
-          originalRelation: relation,
-        });
-      }
-    }
-  }
-
-  return results;
+  return pipe(
+    Arr.fromIterable(ir.entities.values()),
+    Arr.filter(isTableEntity),
+    Arr.flatMap(entity =>
+      entity.relations
+        .filter(rel => rel.targetEntity === entityName && rel.kind === "belongsTo")
+        .map(
+          (relation): ReverseRelation => ({
+            // Default to hasMany; could be hasOne if unique constraint on FK
+            // TODO: detect unique constraint on FK columns for hasOne
+            kind: "hasMany",
+            sourceEntity: entity.name,
+            constraintName: relation.constraintName,
+            // Swap local/foreign perspective
+            columns: relation.columns.map(col => ({
+              local: col.foreign, // Referenced column becomes "local"
+              foreign: col.local, // FK column becomes "foreign"
+            })),
+            originalRelation: relation,
+          }),
+        ),
+    ),
+  );
 }
 
 /**
@@ -691,38 +690,37 @@ export interface CursorPaginationCandidate {
  * - Entity has a single-column primary key (for tiebreaker)
  */
 export function getCursorPaginationCandidates(entity: TableEntity): readonly CursorPaginationCandidate[] {
-  const candidates: CursorPaginationCandidate[] = [];
-
-  if (!entity.permissions.canSelect) return candidates;
+  if (!entity.permissions.canSelect) return [];
 
   const pk = entity.primaryKey;
-  if (!pk || pk.columns.length !== 1) return candidates;
+  if (!pk || pk.columns.length !== 1) return [];
 
   const pkColumnName = pk.columns[0];
   const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumnName);
-  if (!pkField) return candidates;
+  if (!pkField) return [];
 
-  for (const index of entity.indexes) {
-    if (index.method !== "btree") continue;
-    if (index.isPartial) continue;
-    if (index.hasExpressions) continue;
-    if (index.columns.length === 0) continue;
+  return pipe(
+    entity.indexes,
+    Arr.filterMap(index => {
+      if (index.method !== "btree") return Option.none();
+      if (index.isPartial) return Option.none();
+      if (index.hasExpressions) return Option.none();
+      if (index.columns.length === 0) return Option.none();
 
-    const firstColumnName = index.columnNames[0];
-    const firstField = entity.shapes.row.fields.find(f => f.columnName === firstColumnName);
-    if (!firstField) continue;
+      const firstColumnName = index.columnNames[0];
+      const firstField = entity.shapes.row.fields.find(f => f.columnName === firstColumnName);
+      if (!firstField) return Option.none();
 
-    const pgType = firstField.pgAttribute.getType();
-    if (!pgType || pgType.typname !== "timestamptz") continue;
+      const pgType = firstField.pgAttribute.getType();
+      if (!pgType || pgType.typname !== "timestamptz") return Option.none();
 
-    candidates.push({
-      cursorColumn: firstField.name,
-      cursorColumnName: firstField.columnName,
-      desc: index.sortOptions[0]?.desc ?? false,
-      pkColumn: pkField.name,
-      pkColumnName: pkField.columnName,
-    });
-  }
-
-  return candidates;
+      return Option.some({
+        cursorColumn: firstField.name,
+        cursorColumnName: firstField.columnName,
+        desc: index.sortOptions[0]?.desc ?? false,
+        pkColumn: pkField.name,
+        pkColumnName: pkField.columnName,
+      });
+    }),
+  );
 }

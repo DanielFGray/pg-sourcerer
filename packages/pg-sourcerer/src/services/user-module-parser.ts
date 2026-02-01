@@ -5,7 +5,7 @@
  * Used to validate that userModule() references point to valid exports.
  */
 import { parse, type ParserPlugin } from "@babel/parser";
-import { Context, Effect, Layer, pipe, Array as Arr } from "effect";
+import { Context, Effect, Layer, pipe, Array as Arr, Option } from "effect";
 import { FileSystem } from "@effect/platform";
 import {
   UserModuleParseError,
@@ -109,70 +109,93 @@ function normalizeFilePath(filePath: string): string[] {
 }
 
 /**
+ * Extract named exports from a declaration node.
+ */
+function extractNamedFromDeclaration(decl: { type: string; id?: { name: string } | null; declarations?: Array<{ id: { type: string; name?: string } }> }): readonly string[] {
+  if (decl.type === "VariableDeclaration" && decl.declarations) {
+    return decl.declarations
+      .filter(d => d.id.type === "Identifier" && d.id.name)
+      .map(d => (d.id as { name: string }).name);
+  }
+  if (
+    (decl.type === "FunctionDeclaration" ||
+      decl.type === "ClassDeclaration" ||
+      decl.type === "TSTypeAliasDeclaration" ||
+      decl.type === "TSInterfaceDeclaration" ||
+      decl.type === "TSEnumDeclaration") &&
+    decl.id
+  ) {
+    return [decl.id.name];
+  }
+  return [];
+}
+
+/**
  * Extract export names from parsed AST.
  */
-function extractExports(
-  ast: ReturnType<typeof parse>
-): UserModuleExports {
-  const named: string[] = [];
-  let hasDefault = false;
+function extractExports(ast: ReturnType<typeof parse>): UserModuleExports {
+  return pipe(
+    ast.program.body,
+    Arr.reduce({ named: [] as string[], hasDefault: false as boolean }, (acc, node) => {
+      if (node.type === "ExportDefaultDeclaration") {
+        return { ...acc, hasDefault: true };
+      }
 
-  for (const node of ast.program.body) {
-    switch (node.type) {
-      case "ExportNamedDeclaration": {
+      if (node.type === "ExportNamedDeclaration") {
         // export const foo = ..., export function bar() {}, export class Baz {}
-        if (node.declaration) {
-          const decl = node.declaration;
-          if (
-            decl.type === "VariableDeclaration"
-          ) {
-            for (const d of decl.declarations) {
-              if (d.id.type === "Identifier") {
-                named.push(d.id.name);
-              }
-            }
-          } else if (
-            decl.type === "FunctionDeclaration" ||
-            decl.type === "ClassDeclaration" ||
-            decl.type === "TSTypeAliasDeclaration" ||
-            decl.type === "TSInterfaceDeclaration" ||
-            decl.type === "TSEnumDeclaration"
-          ) {
-            if (decl.id) {
-              named.push(decl.id.name);
-            }
-          }
-        }
+        const declExports = node.declaration
+          ? extractNamedFromDeclaration(node.declaration as Parameters<typeof extractNamedFromDeclaration>[0])
+          : [];
+
         // export { foo, bar } or export { foo, bar } from "./other"
-        if (node.specifiers) {
-          for (const spec of node.specifiers) {
-            if (spec.type === "ExportSpecifier") {
-              // Use the exported name (could be renamed: export { foo as bar })
-              const exportedName =
-                spec.exported.type === "Identifier"
-                  ? spec.exported.name
-                  : spec.exported.value;
-              named.push(exportedName);
-            }
-          }
-        }
-        break;
+        const specifierExports = (node.specifiers ?? [])
+          .filter((spec): spec is typeof spec & { type: "ExportSpecifier" } => spec.type === "ExportSpecifier")
+          .map(spec =>
+            spec.exported.type === "Identifier" ? spec.exported.name : (spec.exported as { value: string }).value,
+          );
+
+        return { ...acc, named: [...acc.named, ...declExports, ...specifierExports] };
       }
-      case "ExportDefaultDeclaration": {
-        hasDefault = true;
-        break;
-      }
+
       // Note: We explicitly don't follow ExportAllDeclaration (export * from "./other")
       // as per design decision to only check direct exports
-    }
-  }
-
-  return { named, hasDefault };
+      return acc;
+    }),
+  );
 }
 
 /**
  * Create a UserModuleParser implementation.
  */
+/**
+ * Try to read a file at the given path, returning Option.some with content if found.
+ */
+function tryReadFile(
+  fs: FileSystem.FileSystem,
+  tryPath: string,
+): Effect.Effect<Option.Option<{ path: string; content: string }>, UserModuleParseError> {
+  return pipe(
+    fs.exists(tryPath),
+    Effect.orElseSucceed(() => false),
+    Effect.flatMap(exists =>
+      exists
+        ? pipe(
+            fs.readFileString(tryPath),
+            Effect.map(content => Option.some({ path: tryPath, content })),
+            Effect.mapError(
+              cause =>
+                new UserModuleParseError({
+                  message: `Failed to read file: ${tryPath}`,
+                  path: tryPath,
+                  cause,
+                }),
+            ),
+          )
+        : Effect.succeed(Option.none()),
+    ),
+  );
+}
+
 export function createUserModuleParser(): UserModuleParser {
   return {
     parseExports: absolutePath =>
@@ -181,61 +204,44 @@ export function createUserModuleParser(): UserModuleParser {
 
         // Try normalized paths (.ts first, then .js)
         const pathsToTry = normalizeFilePath(absolutePath);
-        let content: string | null = null;
-        let resolvedPath: string = absolutePath;
 
-        for (const tryPath of pathsToTry) {
-          const exists = yield* pipe(
-            fs.exists(tryPath),
-            Effect.orElseSucceed(() => false)
-          );
-          if (exists) {
-            content = yield* pipe(
-              fs.readFileString(tryPath),
-              Effect.mapError(
-                cause =>
-                  new UserModuleParseError({
-                    message: `Failed to read file: ${tryPath}`,
-                    path: tryPath,
-                    cause,
-                  })
-              )
-            );
-            resolvedPath = tryPath;
-            break;
-          }
-        }
+        // Find first existing file
+        const found = yield* pipe(
+          Effect.forEach(pathsToTry, path => tryReadFile(fs, path)),
+          Effect.map(Arr.findFirst(Option.isSome)),
+          Effect.map(Option.flatten),
+        );
 
-        if (content === null) {
+        if (Option.isNone(found)) {
           return yield* Effect.fail(
             new UserModuleNotFoundError({
               message: `User module not found: ${absolutePath}`,
               configPath: absolutePath,
               resolvedPath: pathsToTry[0] ?? absolutePath,
-            })
+            }),
           );
         }
 
+        const { path: resolvedPath, content } = found.value;
+
         // Parse the file
-        let ast: ReturnType<typeof parse>;
-        try {
-          ast = parse(content, {
-            sourceType: "module",
-            plugins: getParserPlugins(resolvedPath),
-            // Be lenient with parsing errors for better UX
-            errorRecovery: true,
-          });
-        } catch (error) {
-          return yield* Effect.fail(
+        const ast = Effect.try({
+          try: () =>
+            parse(content, {
+              sourceType: "module",
+              plugins: getParserPlugins(resolvedPath),
+              // Be lenient with parsing errors for better UX
+              errorRecovery: true,
+            }),
+          catch: error =>
             new UserModuleParseError({
               message: `Failed to parse TypeScript/JavaScript: ${error instanceof Error ? error.message : String(error)}`,
               path: resolvedPath,
               cause: error,
-            })
-          );
-        }
+            }),
+        });
 
-        return extractExports(ast);
+        return extractExports(yield* ast);
       }),
 
     validateImports: (absolutePath, ref) =>

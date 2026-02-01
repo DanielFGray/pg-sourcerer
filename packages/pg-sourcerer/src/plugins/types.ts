@@ -7,7 +7,7 @@
  *
  * Other plugins can consume these types via the SymbolRegistry.
  */
-import { Effect } from "effect";
+import { Effect, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { TSTypeKind } from "ast-types/lib/gen/kinds.js";
@@ -48,16 +48,11 @@ function fieldToTsType(
   if (isDomain && pgType) {
     const domainTypeName = domainMap.get(pgType.typname);
     if (domainTypeName) {
-      let resultType = types.ref(domainTypeName);
-      
-      if (field.isArray) {
-        resultType = types.array(resultType);
-      }
-      if (field.nullable) {
-        resultType = types.nullable(resultType);
-      }
-      
-      return resultType;
+      return pipe(
+        types.ref(domainTypeName),
+        t => (field.isArray ? types.array(t) : t),
+        t => (field.nullable ? types.nullable(t) : t),
+      );
     }
   }
 
@@ -67,19 +62,11 @@ function fieldToTsType(
 
   const isEnum = typeInfo?.typtype === "e" || typeInfo?.typcategory === "E";
 
-  let resultType = isEnum
-    ? types.ref(enumMap.get(typeName) ?? typeName)
-    : types.fromPg(typeName);
-
-  if (field.isArray) {
-    resultType = types.array(resultType);
-  }
-
-  if (field.nullable) {
-    resultType = types.nullable(resultType);
-  }
-
-  return resultType;
+  return pipe(
+    isEnum ? types.ref(enumMap.get(typeName) ?? typeName) : types.fromPg(typeName),
+    t => (field.isArray ? types.array(t) : t),
+    t => (field.nullable ? types.nullable(t) : t),
+  );
 }
 
 function fieldToPropertySignature(
@@ -174,90 +161,72 @@ export function typesPlugin(): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
+      const entities = [...ir.entities.values()];
 
-      // entity.name is already inflected by the IR builder
-      const declarations: SymbolDeclaration[] = [];
+      const enumDeclarations = entities
+        .filter(isEnumEntity)
+        .map(entity => ({ name: entity.name, capability: `type:${entity.name}` }));
 
-      // Declare enum types
-      for (const entity of ir.entities.values()) {
-        if (isEnumEntity(entity)) {
-          declarations.push({ name: entity.name, capability: `type:${entity.name}` });
-        }
-      }
+      const domainDeclarations = entities
+        .filter(isDomainEntity)
+        .map(entity => ({ name: entity.name, capability: `type:${entity.name}` }));
 
-      // Declare domain types
-      for (const entity of ir.entities.values()) {
-        if (isDomainEntity(entity)) {
-          declarations.push({ name: entity.name, capability: `type:${entity.name}` });
-        }
-      }
+      const getEntityShapes = (entity: TableEntity): Shape[] =>
+        [entity.shapes.row, entity.shapes.update, entity.shapes.insert].filter(Boolean) as Shape[];
 
-      // Declare table shapes
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
+      const tableDeclarations = entities
+        .filter(isTableEntity)
+        .flatMap(entity =>
+          getEntityShapes(entity).map(shape => ({
+            name: shape.name,
+            capability: `type:${shape.name}`,
+          })),
+        );
 
-        const shapes: Shape[] = [entity.shapes.row];
-        if (entity.shapes.update) shapes.push(entity.shapes.update);
-        if (entity.shapes.insert) shapes.push(entity.shapes.insert);
-
-        for (const shape of shapes) {
-          declarations.push({ name: shape.name, capability: `type:${shape.name}` });
-        }
-      }
-
-      return declarations;
+      return [...enumDeclarations, ...domainDeclarations, ...tableDeclarations];
     }),
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const entities = [...ir.entities.values()];
 
-      // entity.name is already inflected by the IR builder
-      const enumEntities = [...ir.entities.values()].filter(isEnumEntity);
-      const domainEntities = [...ir.entities.values()].filter(isDomainEntity);
+      const enumEntities = entities.filter(isEnumEntity);
+      const domainEntities = entities.filter(isDomainEntity);
+      const tableEntities = entities.filter(isTableEntity);
+
       const enumMap = new Map(enumEntities.map(entity => [entity.pgType.typname, entity.name]));
       const domainMap = new Map(domainEntities.map(entity => [entity.pgType.typname, entity.name]));
 
-      const rendered: RenderedSymbol[] = [];
-
       // Render enum types first (domains may reference them, tables reference both)
-      for (const entity of enumEntities) {
-        rendered.push({
-          name: entity.name,
-          capability: `type:${entity.name}`,
-          node: enumToTypeAlias(entity),
-          exports: "named",
-        });
-      }
+      const enumSymbols: RenderedSymbol[] = enumEntities.map(entity => ({
+        name: entity.name,
+        capability: `type:${entity.name}`,
+        node: enumToTypeAlias(entity),
+        exports: "named",
+      }));
 
       // Render domain types (tables reference these)
-      for (const entity of domainEntities) {
-        rendered.push({
-          name: entity.name,
-          capability: `type:${entity.name}`,
-          node: domainToTypeAlias(entity),
-          exports: "named",
-        });
-      }
+      const domainSymbols: RenderedSymbol[] = domainEntities.map(entity => ({
+        name: entity.name,
+        capability: `type:${entity.name}`,
+        node: domainToTypeAlias(entity),
+        exports: "named",
+      }));
 
       // Render table interfaces
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
+      const getEntityShapes = (entity: TableEntity): Shape[] =>
+        [entity.shapes.row, entity.shapes.update, entity.shapes.insert].filter(Boolean) as Shape[];
 
-        const shapes: Shape[] = [entity.shapes.row];
-        if (entity.shapes.update) shapes.push(entity.shapes.update);
-        if (entity.shapes.insert) shapes.push(entity.shapes.insert);
+      const tableSymbols: RenderedSymbol[] = tableEntities.flatMap(entity =>
+        getEntityShapes(entity).map(shape => ({
+          name: shape.name,
+          capability: `type:${shape.name}`,
+          node: shapeToInterface(shape, enumMap, domainMap, shape.kind === "row"),
+          exports: "named" as const,
+        })),
+      );
 
-        for (const shape of shapes) {
-          rendered.push({
-            name: shape.name,
-            capability: `type:${shape.name}`,
-            node: shapeToInterface(shape, enumMap, domainMap, shape.kind === "row"),
-            exports: "named",
-          });
-        }
-      }
-
-      return rendered;
+      return [...enumSymbols, ...domainSymbols, ...tableSymbols];
     }),
   };
 }

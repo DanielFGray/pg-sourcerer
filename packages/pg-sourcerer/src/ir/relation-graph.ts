@@ -86,23 +86,23 @@ export function buildRelationGraph(ir: SemanticIR): RelationGraph {
     );
 
     // Add edges for all belongsTo relations
-    for (const entity of tableEntities) {
+    tableEntities.forEach(entity => {
       const fromIdx = nodeIndices.get(entity.name);
-      if (fromIdx === undefined) continue;
+      if (fromIdx === undefined) return;
 
-      for (const rel of entity.relations) {
-        if (rel.kind !== "belongsTo") continue;
+      entity.relations
+        .filter(rel => rel.kind === "belongsTo")
+        .forEach(rel => {
+          const toIdx = nodeIndices.get(rel.targetEntity);
+          if (toIdx === undefined) return; // Skip broken refs
 
-        const toIdx = nodeIndices.get(rel.targetEntity);
-        if (toIdx === undefined) continue; // Skip broken refs
-
-        Graph.addEdge(mutable, fromIdx, toIdx, {
-          constraintName: rel.constraintName,
-          columns: rel.columns,
-          fkHolder: entity.name,
+          Graph.addEdge(mutable, fromIdx, toIdx, {
+            constraintName: rel.constraintName,
+            columns: rel.columns,
+            fkHolder: entity.name,
+          });
         });
-      }
-    }
+    });
   });
 }
 

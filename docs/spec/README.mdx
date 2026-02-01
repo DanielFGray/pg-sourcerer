@@ -110,7 +110,7 @@ Each plugin generates different artifacts:
 ### !!claim types-plugin `typesPlugin` -- TypeScript Interfaces
 !plugin typesPlugin
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/zod-http/types.ts
+!file generated/zod-http/types.ts
 
 ```typescript !expected
 export type UserRole = "admin" | "moderator" | "user";
@@ -142,7 +142,7 @@ export interface UserUpdate {
 ### !!claim zod-plugin `zodPlugin` -- Zod Schemas
 !plugin zod
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/zod-http/schemas.ts
+!file generated/zod-http/schemas.ts
 
 ```typescript !expected
 import { z } from "zod";
@@ -186,7 +186,7 @@ export type UserUpdate = z.infer<typeof UserUpdate>;
 ### !!claim arktype-plugin `arktypePlugin` -- ArkType Validators
 !plugin arktype
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/arktype/schemas.ts
+!file generated/arktype/schemas.ts
 
 ```typescript !expected
 import { type } from "arktype";
@@ -230,7 +230,7 @@ export type UserUpdate = typeof UserUpdate.infer;
 ### !!claim valibot-plugin `valibotPlugin` -- Valibot Schemas
 !plugin valibot
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/valibot/schemas.ts
+!file generated/valibot/schemas.ts
 
 ```typescript !expected
 import * as v from "valibot";
@@ -279,7 +279,7 @@ export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 ### !!claim kysely-plugin `kysely` -- Kysely Types + Query Builders
 !plugin kysely
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/kysely/DB.ts
+!file generated/kysely/DB.ts
 
 The unified `kysely` plugin generates both type definitions and query functions:
 
@@ -312,7 +312,7 @@ export interface DB {
 ### !!claim kysely-queries `kysely` -- Kysely Query Functions
 !plugin kysely
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/kysely/queries.ts
+!file generated/kysely/queries.ts
 
 Kysely also generates type-safe query builder functions:
 
@@ -375,7 +375,7 @@ export const userFindByUsername = (
 ### !!claim sql-queries-plugin `sqlQueries` -- Raw SQL Query Functions
 !plugin sqlQueries
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/zod-http/queries.ts
+!file generated/zod-http/queries.ts
 
 with `sqlQueries({ sqlStyle: "tag" })`
 
@@ -412,7 +412,7 @@ not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string
 ### !!claim effect-plugin `effect` -- Effect SQL Models + Repositories
 !plugin effect
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/effect/user.ts
+!file generated/effect/user.ts
 
 The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
 
@@ -520,7 +520,7 @@ export const UserApiLive = HttpApiBuilder.api(UserApi).pipe(Layer.provide(UserAp
 ### !!claim http-elysia `httpElysia` -- Elysia REST Routes
 !plugin httpElysia
 !source #what-gets-generated
-!file packages/example/generated-readme/minimal/elysia/routes.ts
+!file generated/elysia/routes.ts
 
 ```typescript !expected
 import { Elysia } from "elysia";

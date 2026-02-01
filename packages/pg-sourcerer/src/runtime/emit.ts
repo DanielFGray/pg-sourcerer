@@ -11,7 +11,7 @@ import path from "node:path";
 import recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
-import { Array as Arr, pipe } from "effect";
+import { Array as Arr, pipe, Option, Match } from "effect";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import type { AssignedSymbol } from "./file-assignment.js";
@@ -93,57 +93,47 @@ function generateCrossFileImports(
   allDeclarations: readonly SymbolDeclaration[],
 ): n.ImportDeclaration[] {
   // Build a map: capability -> { name, file }
-  const capToLocation = new Map<Capability, { name: string; file: string }>();
-  for (const [file, symbols] of fileGroups) {
-    for (const sym of symbols) {
-      capToLocation.set(sym.declaration.capability, {
-        name: sym.declaration.name,
-        file,
-      });
-    }
-  }
+  const capToLocation = pipe(
+    Arr.fromIterable(fileGroups.entries()),
+    Arr.flatMap(([file, symbols]) =>
+      symbols.map(sym => [sym.declaration.capability, { name: sym.declaration.name, file }] as const),
+    ),
+    entries => new Map<Capability, { name: string; file: string }>(entries),
+  );
 
-  // Collect all capabilities in this file
-  const capsInThisFile = new Set(symbolsInFile.map(s => s.declaration.capability));
-
-  // Find all cross-file references from symbols in this file
-  // Group by source file
-  const importsBySource = new Map<string, Set<string>>();
-
-  for (const sym of symbolsInFile) {
-    const refs = references.get(sym.declaration.capability);
-    if (!refs) continue;
-
-    for (const refCap of refs) {
-      const location = capToLocation.get(refCap);
-      if (!location) continue;
-
-      // Skip if reference is in the same file
-      if (location.file === forFile) continue;
-
-      // Add to imports
-      if (!importsBySource.has(location.file)) {
-        importsBySource.set(location.file, new Set());
-      }
-      importsBySource.get(location.file)!.add(location.name);
-    }
-  }
+  // Find all cross-file references from symbols in this file, grouped by source file
+  const importsBySource = pipe(
+    symbolsInFile,
+    Arr.flatMap(sym => {
+      const refs = references.get(sym.declaration.capability);
+      if (!refs) return [];
+      return pipe(
+        refs,
+        Arr.filterMap(refCap => {
+          const location = capToLocation.get(refCap);
+          if (!location || location.file === forFile) return Option.none();
+          return Option.some({ file: location.file, name: location.name });
+        }),
+      );
+    }),
+    Arr.reduce(new Map<string, Set<string>>(), (map, { file, name }) => {
+      if (!map.has(file)) map.set(file, new Set());
+      map.get(file)!.add(name);
+      return map;
+    }),
+  );
 
   // Generate import declarations
-  const imports: n.ImportDeclaration[] = [];
-
-  for (const [sourceFile, names] of importsBySource) {
-    // Compute relative path from forFile to sourceFile
-    const relativePath = computeRelativePath(forFile, sourceFile);
-
-    const specifiers = Array.from(names).map(name =>
-      b.importSpecifier(b.identifier(name), b.identifier(name)),
-    );
-
-    imports.push(b.importDeclaration(specifiers, b.stringLiteral(relativePath)));
-  }
-
-  return imports;
+  return pipe(
+    Arr.fromIterable(importsBySource.entries()),
+    Arr.map(([sourceFile, names]) => {
+      const relativePath = computeRelativePath(forFile, sourceFile);
+      const specifiers = Arr.fromIterable(names).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      return b.importDeclaration(specifiers, b.stringLiteral(relativePath));
+    }),
+  );
 }
 
 /**
@@ -151,39 +141,26 @@ function generateCrossFileImports(
  * Both paths should be relative to the same base (outputDir).
  */
 function computeRelativePath(fromFile: string, toFile: string): string {
-  // Simple case: same directory
   const fromParts = fromFile.split("/");
   const toParts = toFile.split("/");
 
   fromParts.pop(); // Remove filename
   const toFileName = toParts.pop()!; // Get filename
 
-  // Find common prefix
-  let commonLen = 0;
-  while (
-    commonLen < fromParts.length &&
-    commonLen < toParts.length &&
-    fromParts[commonLen] === toParts[commonLen]
-  ) {
-    commonLen++;
-  }
+  // Find common prefix length using zip
+  const commonLen = pipe(
+    Arr.zip(fromParts, toParts),
+    Arr.takeWhile(([a, b]) => a === b),
+    Arr.length,
+  );
 
-  // Build relative path
-  const upCount = fromParts.length - commonLen;
+  // Build relative path: ".." for each remaining fromPart, then remaining toParts
+  const upParts = Arr.replicate("..", fromParts.length - commonLen);
   const downParts = toParts.slice(commonLen);
+  const parts = [...upParts, ...downParts, toFileName.replace(/\.ts$/, ".js")];
 
-  const parts: string[] = [];
-  for (let i = 0; i < upCount; i++) {
-    parts.push("..");
-  }
-  parts.push(...downParts);
-  parts.push(toFileName.replace(/\.ts$/, ".js"));
-
-  if (parts[0] !== "..") {
-    parts.unshift(".");
-  }
-
-  return parts.join("/");
+  // Ensure relative path starts with ./ if not already ../
+  return parts[0] !== ".." ? ["..", ...parts].join("/").replace(/^\.\.\//, "./") : parts.join("/");
 }
 
 /**
@@ -214,20 +191,15 @@ function computeUserModuleImportPath(
   const outputFileDir = path.dirname(outputFileAbsolute);
 
   // Compute relative path from output file directory to user module
-  let relativePath = path.relative(outputFileDir, userModuleAbsolute);
-
-  // Normalize to forward slashes (for Windows compatibility)
-  relativePath = relativePath.split(path.sep).join("/");
-
-  // Ensure .js extension for imports
-  relativePath = relativePath.replace(/\.ts$/, ".js");
-
-  // Ensure it starts with ./ or ../
-  if (!relativePath.startsWith(".")) {
-    relativePath = "./" + relativePath;
-  }
-
-  return relativePath;
+  return pipe(
+    path.relative(outputFileDir, userModuleAbsolute),
+    // Normalize to forward slashes (for Windows compatibility)
+    p => p.split(path.sep).join("/"),
+    // Ensure .js extension for imports
+    p => p.replace(/\.ts$/, ".js"),
+    // Ensure it starts with ./ or ../
+    p => (p.startsWith(".") ? p : "./" + p),
+  );
 }
 
 /**
@@ -241,25 +213,14 @@ function generateUserModuleImport(
 ): n.ImportDeclaration {
   const importPath = computeUserModuleImportPath(outputFilePath, ref.path, configDir, outputDir);
 
-  const specifiers: (n.ImportSpecifier | n.ImportDefaultSpecifier | n.ImportNamespaceSpecifier)[] =
-    [];
-
-  // Default import: import db from "..."
-  if (ref.default) {
-    specifiers.push(b.importDefaultSpecifier(b.identifier(ref.default)));
-  }
-
-  // Namespace import: import * as Db from "..."
-  if (ref.namespace) {
-    specifiers.push(b.importNamespaceSpecifier(b.identifier(ref.namespace)));
-  }
-
-  // Named imports: import { foo, bar } from "..."
-  if (ref.named) {
-    for (const name of ref.named) {
-      specifiers.push(b.importSpecifier(b.identifier(name), b.identifier(name)));
-    }
-  }
+  const specifiers: (n.ImportSpecifier | n.ImportDefaultSpecifier | n.ImportNamespaceSpecifier)[] = [
+    // Default import: import db from "..."
+    ...(ref.default ? [b.importDefaultSpecifier(b.identifier(ref.default))] : []),
+    // Namespace import: import * as Db from "..."
+    ...(ref.namespace ? [b.importNamespaceSpecifier(b.identifier(ref.namespace))] : []),
+    // Named imports: import { foo, bar } from "..."
+    ...(ref.named ?? []).map(name => b.importSpecifier(b.identifier(name), b.identifier(name))),
+  ];
 
   return b.importDeclaration(specifiers, b.stringLiteral(importPath));
 }
@@ -322,6 +283,18 @@ type DeclKind =
   | "export"
   | "other";
 
+/** Map of AST node types to declaration kinds */
+const DeclKindMap: Record<string, DeclKind> = {
+  FunctionDeclaration: "function",
+  ClassDeclaration: "class",
+  TSInterfaceDeclaration: "interface",
+  TSTypeAliasDeclaration: "type",
+  TSEnumDeclaration: "enum",
+  TSModuleDeclaration: "module",
+  TSNamespaceExportDeclaration: "namespace",
+  ImportDeclaration: "import",
+};
+
 /**
  * Extract the declaration kind from an AST node.
  * This is used to detect conflicting declarations.
@@ -333,33 +306,25 @@ type DeclKind =
 function getDeclarationKind(node: unknown): DeclKind {
   if (!node || typeof node !== "object") return "other";
 
-  const n = node as { type?: string; declaration?: unknown };
+  const n = node as { type?: string; declaration?: unknown; kind?: string };
 
   // For export declarations, look inside to get the actual declaration kind
   if (n.type === "ExportNamedDeclaration" || n.type === "ExportDefaultDeclaration") {
-    if (n.declaration) {
-      return getDeclarationKind(n.declaration);
-    }
-    return "export";
+    return n.declaration ? getDeclarationKind(n.declaration) : "export";
   }
 
-  // Direct declaration types
+  // Variable declarations need special handling for let/var/const
   if (n.type === "VariableDeclaration") {
-    const varNode = node as { kind?: string };
-    if (varNode.kind === "let") return "let";
-    if (varNode.kind === "var") return "var";
-    return "const";
+    return pipe(
+      Match.value(n.kind),
+      Match.when("let", () => "let" as const),
+      Match.when("var", () => "var" as const),
+      Match.orElse(() => "const" as const),
+    );
   }
-  if (n.type === "FunctionDeclaration") return "function";
-  if (n.type === "ClassDeclaration") return "class";
-  if (n.type === "TSInterfaceDeclaration") return "interface";
-  if (n.type === "TSTypeAliasDeclaration") return "type";
-  if (n.type === "TSEnumDeclaration") return "enum";
-  if (n.type === "TSModuleDeclaration") return "module";
-  if (n.type === "TSNamespaceExportDeclaration") return "namespace";
-  if (n.type === "ImportDeclaration") return "import";
 
-  return "other";
+  // Use lookup table for other types
+  return n.type ? DeclKindMap[n.type] ?? "other" : "other";
 }
 
 /**
@@ -431,6 +396,137 @@ function collectStatementsWithCollisionDetection(
   return bodyStatements;
 }
 
+/** Collected import information from symbols */
+interface CollectedImports {
+  readonly fileHeaders: readonly string[];
+  readonly userModuleImports: readonly n.ImportDeclaration[];
+  readonly seenValueImports: ReadonlyMap<string, Set<string>>;
+  readonly seenTypeImports: ReadonlyMap<string, Set<string>>;
+  readonly seenNamespaceImports: ReadonlyMap<string, string>;
+  readonly seenDefaultImports: ReadonlyMap<string, string>;
+}
+
+/**
+ * Collect imports from rendered symbols for a file.
+ */
+function collectImportsFromSymbols(
+  symbols: readonly AssignedSymbol[],
+  capToRendered: Map<Capability, RenderedSymbol>,
+  filePath: string,
+  config: EmitConfig,
+): CollectedImports {
+  const seenUserModulePaths = new Set<string>();
+
+  return pipe(
+    symbols,
+    Arr.filterMap(sym => Option.fromNullable(capToRendered.get(sym.declaration.capability))),
+    Arr.reduce(
+      {
+        fileHeaders: [] as string[],
+        userModuleImports: [] as n.ImportDeclaration[],
+        seenValueImports: new Map<string, Set<string>>(),
+        seenTypeImports: new Map<string, Set<string>>(),
+        seenNamespaceImports: new Map<string, string>(),
+        seenDefaultImports: new Map<string, string>(),
+      },
+      (acc, r) => {
+        // Collect file headers (deduplicated)
+        if (r.fileHeader && !acc.fileHeaders.includes(r.fileHeader)) {
+          acc.fileHeaders.push(r.fileHeader);
+        }
+
+        // Collect user module imports
+        if (r.userImports && config.configDir && config.outputDir) {
+          r.userImports.forEach(ref => {
+            const key = JSON.stringify({
+              path: ref.path,
+              named: ref.named,
+              default: ref.default,
+              namespace: ref.namespace,
+            });
+            if (!seenUserModulePaths.has(key)) {
+              seenUserModulePaths.add(key);
+              acc.userModuleImports.push(
+                generateUserModuleImport(ref, filePath, config.configDir!, config.outputDir!),
+              );
+            }
+          });
+        }
+
+        // Collect external imports
+        (r.imports ?? []).forEach(ext => {
+          if (ext.namespace) acc.seenNamespaceImports.set(ext.from, ext.namespace);
+          if (ext.default) acc.seenDefaultImports.set(ext.from, ext.default);
+          if (ext.names) {
+            if (!acc.seenValueImports.has(ext.from)) acc.seenValueImports.set(ext.from, new Set());
+            ext.names.forEach(n => acc.seenValueImports.get(ext.from)!.add(n));
+          }
+          if (ext.types) {
+            if (!acc.seenTypeImports.has(ext.from)) acc.seenTypeImports.set(ext.from, new Set());
+            ext.types.forEach(t => acc.seenTypeImports.get(ext.from)!.add(t));
+          }
+        });
+
+        return acc;
+      },
+    ),
+  );
+}
+
+/**
+ * Build external import declarations from collected imports.
+ */
+function buildExternalImports(
+  collected: CollectedImports,
+  resolveSource: (source: string) => string,
+): n.ImportDeclaration[] {
+  const typeImports = pipe(
+    Arr.fromIterable(collected.seenTypeImports.entries()),
+    Arr.filter(([, types]) => types.size > 0),
+    Arr.map(([source, types]) => {
+      const specifiers = Arr.fromIterable(types).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      const decl = b.importDeclaration(specifiers, b.stringLiteral(resolveSource(source)));
+      decl.importKind = "type";
+      return decl;
+    }),
+  );
+
+  const namespaceImports = pipe(
+    Arr.fromIterable(collected.seenNamespaceImports.entries()),
+    Arr.map(([source, namespace]) =>
+      b.importDeclaration(
+        [b.importNamespaceSpecifier(b.identifier(namespace))],
+        b.stringLiteral(resolveSource(source)),
+      ),
+    ),
+  );
+
+  const defaultImports = pipe(
+    Arr.fromIterable(collected.seenDefaultImports.entries()),
+    Arr.map(([source, defaultName]) =>
+      b.importDeclaration(
+        [b.importDefaultSpecifier(b.identifier(defaultName))],
+        b.stringLiteral(resolveSource(source)),
+      ),
+    ),
+  );
+
+  const valueImports = pipe(
+    Arr.fromIterable(collected.seenValueImports.entries()),
+    Arr.filter(([, names]) => names.size > 0),
+    Arr.map(([source, names]) => {
+      const specifiers = Arr.fromIterable(names).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      return b.importDeclaration(specifiers, b.stringLiteral(resolveSource(source)));
+    }),
+  );
+
+  return [...typeImports, ...namespaceImports, ...defaultImports, ...valueImports];
+}
+
 /**
  * Emit all files from orchestrator result.
  */
@@ -441,14 +537,21 @@ export function emitFiles(
   const { rendered, fileGroups, references, declarations } = result;
   const emitted: EmittedFile[] = [];
 
-  // Build a map: capability -> rendered symbol for lookup
-  const capToRendered = new Map<Capability, RenderedSymbol>();
-  const renderedOrder = new Map<Capability, number>();
-  for (let i = 0; i < rendered.length; i++) {
-    const r = rendered[i]!;
-    capToRendered.set(r.capability, r);
-    renderedOrder.set(r.capability, i);
-  }
+  // Build maps: capability -> rendered symbol and capability -> render order
+  const { capToRendered, renderedOrder } = pipe(
+    rendered,
+    Arr.reduce(
+      {
+        capToRendered: new Map<Capability, RenderedSymbol>(),
+        renderedOrder: new Map<Capability, number>(),
+      },
+      (acc, r, i) => {
+        acc.capToRendered.set(r.capability, r);
+        acc.renderedOrder.set(r.capability, i);
+        return acc;
+      },
+    ),
+  );
 
   // Process each file
   for (const [filePath, symbols] of fileGroups) {
@@ -461,135 +564,22 @@ export function emitFiles(
       declarations,
     );
 
-    // Collect external imports and file headers from rendered symbols
-    // Track value imports and type imports separately
-    const externalImportStatements: n.ImportDeclaration[] = [];
-    const seenValueImports = new Map<string, Set<string>>();
-    const seenTypeImports = new Map<string, Set<string>>();
-    const seenNamespaceImports = new Map<string, string>(); // source -> namespace name
-    const seenDefaultImports = new Map<string, string>(); // source -> default name
-    const fileHeaders: string[] = [];
-    const userModuleImports: n.ImportDeclaration[] = [];
-    // Track user module refs by their resolved path to dedupe
-    const seenUserModulePaths = new Set<string>();
+    // Collect imports from rendered symbols
+    const collected = collectImportsFromSymbols(symbols, capToRendered, filePath, config);
 
-    for (const sym of symbols) {
-      const r = capToRendered.get(sym.declaration.capability) as RenderedSymbol | undefined;
-      if (!r) continue;
-
-      // Collect file headers (deduplicated) - deprecated, but still supported
-      if (r.fileHeader && !fileHeaders.includes(r.fileHeader)) {
-        fileHeaders.push(r.fileHeader);
-      }
-
-      // Collect user module imports (new system)
-      if (r.userImports && config.configDir && config.outputDir) {
-        for (const ref of r.userImports) {
-          // Create a unique key for deduplication
-          const key = JSON.stringify({
-            path: ref.path,
-            named: ref.named,
-            default: ref.default,
-            namespace: ref.namespace,
-          });
-          if (!seenUserModulePaths.has(key)) {
-            seenUserModulePaths.add(key);
-            userModuleImports.push(
-              generateUserModuleImport(ref, filePath, config.configDir, config.outputDir),
-            );
-          }
-        }
-      }
-
-      if (!r.imports) continue;
-
-      for (const ext of r.imports) {
-        // Collect namespace imports
-        if (ext.namespace) {
-          seenNamespaceImports.set(ext.from, ext.namespace);
-        }
-        // Collect default imports
-        if (ext.default) {
-          seenDefaultImports.set(ext.from, ext.default);
-        }
-        // Collect value imports
-        if (ext.names) {
-          if (!seenValueImports.has(ext.from)) {
-            seenValueImports.set(ext.from, new Set());
-          }
-          for (const n of ext.names) seenValueImports.get(ext.from)!.add(n);
-        }
-        // Collect type imports separately
-        if (ext.types) {
-          if (!seenTypeImports.has(ext.from)) {
-            seenTypeImports.set(ext.from, new Set());
-          }
-          for (const t of ext.types) seenTypeImports.get(ext.from)!.add(t);
-        }
-      }
-    }
-
-    /**
-     * Compute import source path, handling internal vs external packages.
-     */
+    // Compute import source path, handling internal vs external packages
     const resolveImportSource = (source: string): string => {
-      // Internal paths:
-      // - Start with "./" or ".."
-      // - End in .ts/.js (could be "db.ts" or "foo/bar.ts")
-      // External packages: "elysia", "@effect/schema", "kysely", etc.
       const isInternalPath =
         source.startsWith("./") || source.startsWith("../") || /\.(ts|js)$/.test(source);
-
       if (isInternalPath) {
-        // Normalize: strip leading "./" if present, convert .js to .ts for path computation
         const normalized = source.replace(/^\.\//, "").replace(/\.js$/, ".ts");
         return computeRelativePath(filePath, normalized);
       }
       return source;
     };
 
-    // Build type-only import statements first
-    for (const [source, types] of seenTypeImports) {
-      if (types.size > 0) {
-        const specifiers = Array.from(types).map(name =>
-          b.importSpecifier(b.identifier(name), b.identifier(name)),
-        );
-        const importDecl = b.importDeclaration(
-          specifiers,
-          b.stringLiteral(resolveImportSource(source)),
-        );
-        importDecl.importKind = "type";
-        externalImportStatements.push(importDecl);
-      }
-    }
-
-    // Build namespace import statements
-    for (const [source, namespace] of seenNamespaceImports) {
-      const specifiers = [b.importNamespaceSpecifier(b.identifier(namespace))];
-      externalImportStatements.push(
-        b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
-      );
-    }
-
-    // Build default import statements
-    for (const [source, defaultName] of seenDefaultImports) {
-      const specifiers = [b.importDefaultSpecifier(b.identifier(defaultName))];
-      externalImportStatements.push(
-        b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
-      );
-    }
-
-    // Build value import statements
-    for (const [source, names] of seenValueImports) {
-      if (names.size > 0) {
-        const specifiers = Array.from(names).map(name =>
-          b.importSpecifier(b.identifier(name), b.identifier(name)),
-        );
-        externalImportStatements.push(
-          b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
-        );
-      }
-    }
+    // Build external import declarations
+    const externalImportStatements = buildExternalImports(collected, resolveImportSource);
 
     // Collect rendered bodies for symbols in this file
     // This also performs collision detection for same-name exports
@@ -605,21 +595,17 @@ export function emitFiles(
 
     // Build the program
     // Order: user module imports, external imports, cross-file imports
-    const allImports = [...userModuleImports, ...externalImportStatements, ...crossImports];
+    const allImports = [...collected.userModuleImports, ...externalImportStatements, ...crossImports];
     const program = b.program([...allImports, ...bodyStatements]);
 
-    // Serialize to code
-    let code = conjure.print(program);
-
-    // Add file-specific headers from plugins (e.g., custom imports)
-    if (fileHeaders.length > 0) {
-      code = fileHeaders.join("\n") + "\n\n" + code;
-    }
-
-    // Add global header comment
-    if (config.headerComment) {
-      code = config.headerComment + "\n\n" + code;
-    }
+    // Serialize and add headers
+    const baseCode = conjure.print(program);
+    const withFileHeaders = collected.fileHeaders.length > 0
+      ? collected.fileHeaders.join("\n") + "\n\n" + baseCode
+      : baseCode;
+    const code = config.headerComment
+      ? config.headerComment + "\n\n" + withFileHeaders
+      : withFileHeaders;
 
     emitted.push({ path: filePath, content: code });
   }

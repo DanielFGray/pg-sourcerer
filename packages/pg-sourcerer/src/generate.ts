@@ -116,46 +116,26 @@ const runFormatter = (command: string, outputDir: string) => {
 /**
  * Collect all unique UserModuleRefs from rendered symbols.
  */
-function collectUserModuleRefs(rendered: readonly RenderedSymbol[]): readonly UserModuleRef[] {
-  const seen = new Set<string>();
-  const refs: UserModuleRef[] = [];
-
-  for (const symbol of rendered) {
-    if (!symbol.userImports) continue;
-
-    for (const ref of symbol.userImports) {
-      // Only validate refs that have validate: true (default)
-      if (ref.validate === false) continue;
-
-      // Dedupe by path (we only need to validate each file once)
-      if (!seen.has(ref.path)) {
-        seen.add(ref.path);
-        refs.push(ref);
-      }
-    }
-  }
-
-  return refs;
-}
+const collectUserModuleRefs = (rendered: readonly RenderedSymbol[]): readonly UserModuleRef[] =>
+  pipe(
+    rendered,
+    Arr.flatMap(symbol => symbol.userImports ?? []),
+    Arr.filter(ref => ref.validate !== false),
+    Arr.dedupeWith((a, b) => a.path === b.path),
+  );
 
 /**
  * Validate all user module imports.
  * Resolves paths relative to configDir and checks that exports exist.
  */
-const validateUserModules = (
-  refs: readonly UserModuleRef[],
-  configDir: string,
-) =>
-  Effect.gen(function* () {
-    if (refs.length === 0) return;
-
-    const parser = createUserModuleParser();
-
-    for (const ref of refs) {
-      const absolutePath = path.resolve(configDir, ref.path);
-      yield* parser.validateImports(absolutePath, ref);
-    }
-  });
+const validateUserModules = (refs: readonly UserModuleRef[], configDir: string) => {
+  const parser = createUserModuleParser();
+  return Effect.forEach(
+    refs,
+    ref => parser.validateImports(path.resolve(configDir, ref.path), ref),
+    { discard: true },
+  );
+};
 
 /**
  * The main generate pipeline.

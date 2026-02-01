@@ -35,6 +35,12 @@ import { PG_NUMBER_TYPES } from "../shared/pg-types.js";
 
 const b = conjure.b;
 
+/**
+ * Check if entity is eligible for HTTP API generation
+ */
+const isHttpEligible = (entity: TableEntity): boolean =>
+  entity.tags.omit !== true && hasSingleColumnPrimaryKey(entity);
+
 // =============================================================================
 // PK Schema Type Detection
 // =============================================================================
@@ -44,26 +50,17 @@ const b = conjure.b;
  */
 function getPrimaryKeySchemaType(entity: TableEntity): string {
   const pkColumn = entity.primaryKey?.columns[0];
-  if (!pkColumn) return "S.String";
+  const pkField = pkColumn
+    ? entity.shapes.row.fields.find(f => f.columnName === pkColumn)
+    : undefined;
+  const pgType = pkField?.pgAttribute.getType();
+  const typeName = pgType?.typname.toLowerCase();
 
-  const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumn);
-  if (!pkField) return "S.String";
-
-  const pgType = pkField.pgAttribute.getType();
-  if (!pgType) return "S.String";
-
-  const typeName = pgType.typname.toLowerCase();
-
-  // UUID
-  if (typeName === "uuid") {
-    return "S.UUID";
-  }
-
-  // Numeric types need NumberFromString for URL parsing
+  if (!typeName) return "S.String";
+  if (typeName === "uuid") return "S.UUID";
   if (PG_NUMBER_TYPES.has(typeName) || typeName === "serial" || typeName === "bigserial") {
     return "S.NumberFromString";
   }
-
   return "S.String";
 }
 
@@ -73,10 +70,9 @@ function getPrimaryKeySchemaType(entity: TableEntity): string {
  */
 function buildPkSchemaExpr(schemaType: string): n.Expression {
   const parts = schemaType.split(".");
-  if (parts.length === 2) {
-    return b.memberExpression(b.identifier(parts[0]!), b.identifier(parts[1]!));
-  }
-  return b.identifier(schemaType);
+  return parts.length === 2
+    ? b.memberExpression(b.identifier(parts[0]!), b.identifier(parts[1]!))
+    : b.identifier(schemaType);
 }
 
 // =============================================================================
@@ -116,6 +112,54 @@ function buildNotFoundError(entityName: string, pkSchemaType: string): n.Stateme
 }
 
 /**
+ * Build the base HttpApiEndpoint expression based on path configuration.
+ */
+const buildBaseEndpoint = (
+  method: "get" | "post" | "put" | "del",
+  name: string,
+  path: string | null,
+  pathParam?: { name: string; schema: n.Expression },
+): n.Expression => {
+  // Template literal path with param: HttpApiEndpoint.get("findById")`/${HttpApiSchema.param("id", S.UUID)}`
+  if (pathParam) {
+    const paramCall = b.callExpression(
+      b.memberExpression(b.identifier("HttpApiSchema"), b.identifier("param")),
+      [conjure.str(pathParam.name), cast.toExpr(pathParam.schema)],
+    );
+
+    const baseCall = b.callExpression(
+      b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
+      [conjure.str(name)],
+    );
+
+    return b.taggedTemplateExpression(
+      baseCall,
+      b.templateLiteral(
+        [
+          b.templateElement({ raw: "/", cooked: "/" }, false),
+          b.templateElement({ raw: "", cooked: "" }, true),
+        ],
+        [paramCall],
+      ),
+    );
+  }
+
+  // Simple path: HttpApiEndpoint.post("create", "/")
+  if (path !== null) {
+    return b.callExpression(
+      b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
+      [conjure.str(name), conjure.str(path)],
+    );
+  }
+
+  // No path provided
+  return b.callExpression(
+    b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
+    [conjure.str(name)],
+  );
+};
+
+/**
  * Build an HttpApiEndpoint expression.
  */
 function buildEndpoint(
@@ -130,79 +174,39 @@ function buildEndpoint(
     error?: { name: string; status: number };
   },
 ): n.Expression {
-  // Start with HttpApiEndpoint.{method}("name", "/path") or HttpApiEndpoint.{method}("name")
-  let endpoint: n.Expression;
+  const baseEndpoint = buildBaseEndpoint(method, name, path, options.pathParam);
 
-  if (path !== null && !options.pathParam) {
-    // Simple path: HttpApiEndpoint.post("create", "/")
-    endpoint = b.callExpression(
-      b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
-      [conjure.str(name), conjure.str(path)],
-    );
-  } else if (options.pathParam) {
-    // Template literal path with param: HttpApiEndpoint.get("findById")`/${HttpApiSchema.param("id", S.UUID)}`
-    const paramCall = b.callExpression(
-      b.memberExpression(b.identifier("HttpApiSchema"), b.identifier("param")),
-      [conjure.str(options.pathParam.name), cast.toExpr(options.pathParam.schema)],
-    );
+  // Chain modifiers using ternary expressions
+  const withPayload = options.payload
+    ? b.callExpression(
+        b.memberExpression(cast.toExpr(baseEndpoint), b.identifier("setPayload")),
+        [cast.toExpr(options.payload)],
+      )
+    : baseEndpoint;
 
-    const baseCall = b.callExpression(
-      b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
-      [conjure.str(name)],
-    );
+  const withSuccess = options.success
+    ? b.callExpression(
+        b.memberExpression(cast.toExpr(withPayload), b.identifier("addSuccess")),
+        options.successStatus
+          ? [
+              cast.toExpr(options.success),
+              cast.toExpr(
+                conjure.obj().prop("status", b.numericLiteral(options.successStatus)).build(),
+              ),
+            ]
+          : [cast.toExpr(options.success)],
+      )
+    : withPayload;
 
-    endpoint = b.taggedTemplateExpression(
-      baseCall,
-      b.templateLiteral(
+  return options.error
+    ? b.callExpression(
+        b.memberExpression(cast.toExpr(withSuccess), b.identifier("addError")),
         [
-          b.templateElement({ raw: "/", cooked: "/" }, false),
-          b.templateElement({ raw: "", cooked: "" }, true),
+          b.identifier(options.error.name),
+          conjure.obj().prop("status", b.numericLiteral(options.error.status)).build(),
         ],
-        [paramCall],
-      ),
-    );
-  } else {
-    // No path provided
-    endpoint = b.callExpression(
-      b.memberExpression(b.identifier("HttpApiEndpoint"), b.identifier(method)),
-      [conjure.str(name)],
-    );
-  }
-
-  // Add payload if specified
-  if (options.payload) {
-    endpoint = b.callExpression(
-      b.memberExpression(cast.toExpr(endpoint), b.identifier("setPayload")),
-      [cast.toExpr(options.payload)],
-    );
-  }
-
-  // Add success if specified
-  if (options.success) {
-    const successArgs: ExpressionKind[] = [cast.toExpr(options.success)];
-    if (options.successStatus) {
-      successArgs.push(
-        cast.toExpr(conjure.obj().prop("status", b.numericLiteral(options.successStatus)).build()),
-      );
-    }
-    endpoint = b.callExpression(
-      b.memberExpression(cast.toExpr(endpoint), b.identifier("addSuccess")),
-      successArgs,
-    );
-  }
-
-  // Add error if specified
-  if (options.error) {
-    endpoint = b.callExpression(
-      b.memberExpression(cast.toExpr(endpoint), b.identifier("addError")),
-      [
-        b.identifier(options.error.name),
-        conjure.obj().prop("status", b.numericLiteral(options.error.status)).build(),
-      ],
-    );
-  }
-
-  return endpoint;
+      )
+    : withSuccess;
 }
 
 /**
@@ -226,46 +230,48 @@ function buildApiGroup(
   const modelUpdate = b.memberExpression(modelRef, b.identifier("update"));
 
   // Build endpoints
-  const findByIdEndpoint = buildEndpoint("get", "findById", null, {
-    pathParam: { name: "id", schema: pkSchemaExpr },
-    success: modelRef,
-    error: { name: errorName, status: 404 },
-  });
-
-  const insertEndpoint = buildEndpoint("post", "insert", "/", {
-    payload: modelInsert,
-    success: modelRef,
-    successStatus: 201,
-  });
-
-  const updateEndpoint = buildEndpoint("put", "update", null, {
-    pathParam: { name: "id", schema: pkSchemaExpr },
-    payload: modelUpdate,
-    success: modelRef,
-    error: { name: errorName, status: 404 },
-  });
-
-  const deleteEndpoint = buildEndpoint("del", "delete", null, {
-    pathParam: { name: "id", schema: pkSchemaExpr },
-    error: { name: errorName, status: 404 },
-  });
+  const endpoints = [
+    buildEndpoint("get", "findById", null, {
+      pathParam: { name: "id", schema: pkSchemaExpr },
+      success: modelRef,
+      error: { name: errorName, status: 404 },
+    }),
+    buildEndpoint("post", "insert", "/", {
+      payload: modelInsert,
+      success: modelRef,
+      successStatus: 201,
+    }),
+    buildEndpoint("put", "update", null, {
+      pathParam: { name: "id", schema: pkSchemaExpr },
+      payload: modelUpdate,
+      success: modelRef,
+      error: { name: errorName, status: 404 },
+    }),
+    buildEndpoint("del", "delete", null, {
+      pathParam: { name: "id", schema: pkSchemaExpr },
+      error: { name: errorName, status: 404 },
+    }),
+  ];
 
   // Build: HttpApiGroup.make("routePath").prefix("/basePath/routePath").add(...).add(...)
-  let groupExpr: n.Expression = b.callExpression(
+  const baseGroup = b.callExpression(
     b.memberExpression(b.identifier("HttpApiGroup"), b.identifier("make")),
     [conjure.str(routePath.replace(/^\//, ""))], // Remove leading slash for group name
   );
 
-  groupExpr = b.callExpression(b.memberExpression(cast.toExpr(groupExpr), b.identifier("prefix")), [
-    conjure.str(fullPath),
-  ]);
+  const withPrefix = b.callExpression(
+    b.memberExpression(cast.toExpr(baseGroup), b.identifier("prefix")),
+    [conjure.str(fullPath)],
+  );
 
-  // Add endpoints
-  for (const endpoint of [findByIdEndpoint, insertEndpoint, updateEndpoint, deleteEndpoint]) {
-    groupExpr = b.callExpression(b.memberExpression(cast.toExpr(groupExpr), b.identifier("add")), [
-      cast.toExpr(endpoint),
-    ]);
-  }
+  // Chain all endpoints using reduce
+  const groupExpr = endpoints.reduce(
+    (acc, endpoint) =>
+      b.callExpression(b.memberExpression(cast.toExpr(acc), b.identifier("add")), [
+        cast.toExpr(endpoint),
+      ]),
+    withPrefix as n.Expression,
+  );
 
   const varDecl = b.variableDeclaration("const", [
     b.variableDeclarator(b.identifier(groupName), cast.toExpr(groupExpr)),
@@ -282,14 +288,16 @@ function buildApi(entityName: string): n.Statement {
   const groupName = `${entityName}ApiGroup`;
 
   // Build: HttpApi.make("EntityApi").add(EntityApiGroup)
-  let apiExpr: n.Expression = b.callExpression(
-    b.memberExpression(b.identifier("HttpApi"), b.identifier("make")),
-    [conjure.str(apiName)],
+  const apiExpr = b.callExpression(
+    b.memberExpression(
+      b.callExpression(
+        b.memberExpression(b.identifier("HttpApi"), b.identifier("make")),
+        [conjure.str(apiName)],
+      ),
+      b.identifier("add"),
+    ),
+    [b.identifier(groupName)],
   );
-
-  apiExpr = b.callExpression(b.memberExpression(cast.toExpr(apiExpr), b.identifier("add")), [
-    b.identifier(groupName),
-  ]);
 
   const varDecl = b.variableDeclaration("const", [
     b.variableDeclarator(b.identifier(apiName), cast.toExpr(apiExpr)),
@@ -308,22 +316,18 @@ function shorthandProp(name: string): n.Property {
 }
 
 /**
- * Generate handlers using repo methods.
+ * Build a handler definition { name, handler } for chaining
  */
-function buildHandlers(entityName: string, inflection: CoreInflection): n.Statement {
-  const handlersName = `${entityName}ApiGroupLive`;
-  const apiName = `${entityName}Api`;
-  const repoName = `${entityName}Repo`;
+interface HandlerDef {
+  name: string;
+  handler: n.ArrowFunctionExpression;
+}
+
+/**
+ * Build handler definitions for CRUD operations
+ */
+function buildHandlerDefs(entityName: string): HandlerDef[] {
   const errorName = `${entityName}NotFound`;
-  const routePath = inflection.entityRoutePath(entityName).replace(/^\//, "");
-
-  // Build repo declaration: const repo = yield* EntityRepo;
-  const repoDecl = b.variableDeclaration("const", [
-    b.variableDeclarator(b.identifier("repo"), b.yieldExpression(b.identifier(repoName), true)),
-  ]);
-
-  // Build handlers chain
-  let handlersChain: n.Expression = b.identifier("handlers");
 
   // .handle("findById", ({ path: { id } }) => repo.findById(id).pipe(Effect.flatMap(Option.match({...}))))
   const findByIdHandler = b.arrowFunctionExpression(
@@ -366,22 +370,12 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
     ),
   );
 
-  handlersChain = b.callExpression(
-    b.memberExpression(cast.toExpr(handlersChain), b.identifier("handle")),
-    [conjure.str("findById"), findByIdHandler],
-  );
-
   // .handle("insert", ({ payload }) => repo.insert(payload))
   const insertHandler = b.arrowFunctionExpression(
     [b.objectPattern([shorthandProp("payload")])],
     b.callExpression(b.memberExpression(b.identifier("repo"), b.identifier("insert")), [
       b.identifier("payload"),
     ]),
-  );
-
-  handlersChain = b.callExpression(
-    b.memberExpression(cast.toExpr(handlersChain), b.identifier("handle")),
-    [conjure.str("insert"), insertHandler],
   );
 
   // .handle("update", ({ path: { id }, payload }) => repo.update({ ...payload, id }))
@@ -397,11 +391,6 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
     ]),
   );
 
-  handlersChain = b.callExpression(
-    b.memberExpression(cast.toExpr(handlersChain), b.identifier("handle")),
-    [conjure.str("update"), updateHandler],
-  );
-
   // .handle("delete", ({ path: { id } }) => repo.delete(id))
   const deleteHandler = b.arrowFunctionExpression(
     [
@@ -414,9 +403,37 @@ function buildHandlers(entityName: string, inflection: CoreInflection): n.Statem
     ]),
   );
 
-  handlersChain = b.callExpression(
-    b.memberExpression(cast.toExpr(handlersChain), b.identifier("handle")),
-    [conjure.str("delete"), deleteHandler],
+  return [
+    { name: "findById", handler: findByIdHandler },
+    { name: "insert", handler: insertHandler },
+    { name: "update", handler: updateHandler },
+    { name: "delete", handler: deleteHandler },
+  ];
+}
+
+/**
+ * Generate handlers using repo methods.
+ */
+function buildHandlers(entityName: string, inflection: CoreInflection): n.Statement {
+  const handlersName = `${entityName}ApiGroupLive`;
+  const apiName = `${entityName}Api`;
+  const repoName = `${entityName}Repo`;
+  const routePath = inflection.entityRoutePath(entityName).replace(/^\//, "");
+
+  // Build repo declaration: const repo = yield* EntityRepo;
+  const repoDecl = b.variableDeclaration("const", [
+    b.variableDeclarator(b.identifier("repo"), b.yieldExpression(b.identifier(repoName), true)),
+  ]);
+
+  // Build handlers chain using reduce
+  const handlerDefs = buildHandlerDefs(entityName);
+  const handlersChain = handlerDefs.reduce(
+    (acc, { name, handler }) =>
+      b.callExpression(b.memberExpression(cast.toExpr(acc), b.identifier("handle")), [
+        conjure.str(name),
+        handler,
+      ]),
+    b.identifier("handlers") as n.Expression,
   );
 
   // Build return statement
@@ -566,17 +583,17 @@ function generateServerStatements(
   );
 
   // Build pipe args: [Layer.provide([...ApiLive]), Layer.provide(SqlLive)?, HttpServer.withLogAddress]
-  const pipeArgs: n.Expression[] = [layerProvideApis];
-
-  if (sqlLayerName) {
-    const layerProvideSql = b.callExpression(
-      b.memberExpression(b.identifier("Layer"), b.identifier("provide")),
-      [b.identifier(sqlLayerName)],
-    );
-    pipeArgs.push(cast.toExpr(layerProvideSql));
-  }
-
-  pipeArgs.push(withLogAddress);
+  const pipeArgs = [
+    layerProvideApis,
+    ...(sqlLayerName
+      ? [
+          b.callExpression(b.memberExpression(b.identifier("Layer"), b.identifier("provide")), [
+            b.identifier(sqlLayerName),
+          ]),
+        ]
+      : []),
+    withLogAddress,
+  ];
 
   const serverLiveExpr = b.callExpression(
     b.memberExpression(cast.toExpr(serveCall), b.identifier("pipe")),
@@ -595,10 +612,66 @@ function generateServerStatements(
 // =============================================================================
 
 /**
+ * Build symbol declarations for a single entity
+ */
+const declareEntitySymbols = (entityName: string): SymbolDeclaration[] => {
+  const suffixes = ["NotFound", "ApiGroup", "Api", "ApiGroupLive", "ApiLive"] as const;
+  return suffixes.map(suffix => ({
+    name: `${entityName}${suffix}`,
+    capability: `effect:http:${entityName}:${suffix}`,
+    baseEntityName: entityName,
+  }));
+};
+
+/**
+ * Scope imports for a capability suffix
+ */
+const scopeImportsForSuffix = (
+  registry: SymbolRegistryService,
+  entityName: string,
+  capSuffix: string,
+): void => {
+  const capability = `effect:http:${entityName}:${capSuffix}`;
+  registry.forSymbol(capability, () => {
+    // Import model and repo - only ApiGroupLive handlers actually need them
+    if (capSuffix === "ApiGroupLive") {
+      registry.import(`effect:model:${entityName}`).ref();
+      registry.import(`effect:repo:${entityName}`).ref();
+    }
+    // ApiGroup references the Model for schema types
+    if (capSuffix === "ApiGroup") {
+      registry.import(`effect:model:${entityName}`).ref();
+    }
+    // ApiLive needs handlers and repo
+    if (capSuffix === "ApiLive") {
+      registry.import(`effect:http:${entityName}:ApiGroupLive`).ref();
+      registry.import(`effect:repo:${entityName}`).ref();
+    }
+  });
+};
+
+/**
  * Effect HTTP plugin - generates @effect/platform HttpApi endpoints.
  */
 export function effectHttp(config: ParsedEffectConfig): Plugin {
   const httpConfig = config.http as ParsedHttpConfig;
+
+  const platformImports: ExternalImport = {
+    from: "@effect/platform",
+    names: [
+      "HttpApi",
+      "HttpApiBuilder",
+      "HttpApiEndpoint",
+      "HttpApiGroup",
+      "HttpApiSchema",
+      "HttpServer",
+    ],
+  };
+
+  const effectImports: ExternalImport = {
+    from: "effect",
+    names: ["Effect", "Layer", "Option", "Schema as S"],
+  };
 
   return {
     name: "effect-http",
@@ -623,51 +696,14 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
     declare: Effect.gen(function* () {
       const ir = yield* IR;
 
-      const declarations: SymbolDeclaration[] = [];
+      const eligibleEntities = [...ir.entities.values()].filter(isTableEntity).filter(isHttpEligible);
 
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
-        if (entity.tags.omit === true) continue;
-        if (!hasSingleColumnPrimaryKey(entity)) continue;
+      const entityDeclarations = eligibleEntities.flatMap(entity => declareEntitySymbols(entity.name));
 
-        // Declare all 5 symbols for each entity's HTTP API
-        // Each needs a unique capability so they can be rendered separately
-        declarations.push({
-          name: `${entity.name}NotFound`,
-          capability: `effect:http:${entity.name}:NotFound`,
-          baseEntityName: entity.name,
-        });
-        declarations.push({
-          name: `${entity.name}ApiGroup`,
-          capability: `effect:http:${entity.name}:ApiGroup`,
-          baseEntityName: entity.name,
-        });
-        declarations.push({
-          name: `${entity.name}Api`,
-          capability: `effect:http:${entity.name}:Api`,
-          baseEntityName: entity.name,
-        });
-        declarations.push({
-          name: `${entity.name}ApiGroupLive`,
-          capability: `effect:http:${entity.name}:ApiGroupLive`,
-          baseEntityName: entity.name,
-        });
-        declarations.push({
-          name: `${entity.name}ApiLive`,
-          capability: `effect:http:${entity.name}:ApiLive`,
-          baseEntityName: entity.name,
-        });
-      }
-
-      // Declare server aggregator if there are any entities
-      if (declarations.length > 0) {
-        declarations.push({
-          name: "ServerLive",
-          capability: "effect:http:server",
-        });
-      }
-
-      return declarations;
+      // Add server aggregator if there are any entities
+      return entityDeclarations.length > 0
+        ? [...entityDeclarations, { name: "ServerLive", capability: "effect:http:server" }]
+        : entityDeclarations;
     }),
 
     render: Effect.gen(function* () {
@@ -675,104 +711,63 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      const rendered: RenderedSymbol[] = [];
-      const entityNames: string[] = [];
+      const eligibleEntities = [...ir.entities.values()].filter(isTableEntity).filter(isHttpEligible);
 
-      const platformImports: ExternalImport = {
-        from: "@effect/platform",
-        names: [
-          "HttpApi",
-          "HttpApiBuilder",
-          "HttpApiEndpoint",
-          "HttpApiGroup",
-          "HttpApiSchema",
-          "HttpServer",
-        ],
-      };
-
-      const effectImports: ExternalImport = {
-        from: "effect",
-        names: ["Effect", "Layer", "Option", "Schema as S"],
-      };
-
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
-        if (entity.tags.omit === true) continue;
-        if (!hasSingleColumnPrimaryKey(entity)) continue;
-
-        entityNames.push(entity.name);
-
+      // Render entity HTTP symbols
+      const entitySymbols = eligibleEntities.flatMap(entity => {
         const namedStatements = generateEntityHttpStatements(entity, httpConfig, inflection);
 
-        // Render all statements - each gets its own capability so they can be matched
-        // to their declarations. Use forSymbol() to scope imports to each specific capability.
-        for (const { name, capSuffix, node } of namedStatements) {
+        return namedStatements.map(({ name, capSuffix, node }): RenderedSymbol => {
           const capability = `effect:http:${entity.name}:${capSuffix}`;
 
           // Scope import tracking to this specific capability
-          registry.forSymbol(capability, () => {
-            // Import model and repo - only ApiGroupLive handlers actually need them
-            if (capSuffix === "ApiGroupLive") {
-              registry.import(`effect:model:${entity.name}`).ref();
-              registry.import(`effect:repo:${entity.name}`).ref();
-            }
-            // ApiGroup references the Model for schema types
-            if (capSuffix === "ApiGroup") {
-              registry.import(`effect:model:${entity.name}`).ref();
-            }
-            // ApiLive needs handlers and repo
-            if (capSuffix === "ApiLive") {
-              registry.import(`effect:http:${entity.name}:ApiGroupLive`).ref();
-              registry.import(`effect:repo:${entity.name}`).ref();
-            }
-          });
+          scopeImportsForSuffix(registry, entity.name, capSuffix);
 
-          rendered.push({
+          return {
             name,
             capability,
             node,
-            exports: "named", // Node already has export, wrapWithExport will detect and skip
+            exports: "named",
             imports: [platformImports, effectImports],
-          });
-        }
-      }
-
-      // Generate server aggregator
-      if (entityNames.length > 0) {
-        // Get the first named import from sqlClientLayer config (if any)
-        const sqlLayerName = httpConfig.sqlClientLayer?.named?.[0];
-        const serverStatements = generateServerStatements(entityNames, sqlLayerName);
-
-        // Scope import tracking to the server capability
-        registry.forSymbol("effect:http:server", () => {
-          // Import only ApiLive layers (not models or repos)
-          for (const name of entityNames) {
-            registry.import(`effect:http:${name}:ApiLive`).ref();
-          }
-        });
-
-        // User module imports for SqlClient layer (if configured)
-        const serverUserImports: readonly UserModuleRef[] | undefined = httpConfig.sqlClientLayer
-          ? [httpConfig.sqlClientLayer]
-          : undefined;
-
-        for (const stmt of serverStatements) {
-          const serverSymbol: RenderedSymbol = {
-            name: "ServerLive",
-            capability: "effect:http:server",
-            node: stmt,
-            exports: "named", // Node already has export, wrapWithExport will detect and skip
-            imports: [
-              { from: "@effect/platform", names: ["HttpApiBuilder", "HttpServer"] },
-              { from: "effect", names: ["Layer"] },
-            ],
-            userImports: serverUserImports,
           };
-          rendered.push(serverSymbol);
-        }
+        });
+      });
+
+      // Generate server aggregator if there are entities
+      if (eligibleEntities.length === 0) {
+        return entitySymbols;
       }
 
-      return rendered;
+      const entityNames = eligibleEntities.map(e => e.name);
+      const sqlLayerName = httpConfig.sqlClientLayer?.named?.[0];
+      const serverStatements = generateServerStatements(entityNames, sqlLayerName);
+
+      // Scope import tracking to the server capability
+      registry.forSymbol("effect:http:server", () => {
+        entityNames.forEach(name => {
+          registry.import(`effect:http:${name}:ApiLive`).ref();
+        });
+      });
+
+      const serverUserImports: readonly UserModuleRef[] | undefined = httpConfig.sqlClientLayer
+        ? [httpConfig.sqlClientLayer]
+        : undefined;
+
+      const serverSymbols = serverStatements.map(
+        (stmt): RenderedSymbol => ({
+          name: "ServerLive",
+          capability: "effect:http:server",
+          node: stmt,
+          exports: "named",
+          imports: [
+            { from: "@effect/platform", names: ["HttpApiBuilder", "HttpServer"] },
+            { from: "effect", names: ["Layer"] },
+          ],
+          userImports: serverUserImports,
+        }),
+      );
+
+      return [...entitySymbols, ...serverSymbols];
     }),
   };
 }

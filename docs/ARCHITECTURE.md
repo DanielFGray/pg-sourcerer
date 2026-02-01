@@ -212,52 +212,52 @@ interface ConjureService {
   // ═══════════════════════════════════════════════════════════════════════════
   // Tracked exports - these register symbols automatically
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   readonly exp: {
     /** Export const: `export const name = init` */
     const(name: string, init: n.Expression, opts?: ExpOpts): Effect<n.Statement>
-    
+
     /** Export type alias: `export type Name = Type` */
     type(name: string, type: n.TSType, opts?: ExpOpts): Effect<n.Statement>
-    
+
     /** Export interface: `export interface Name { ... }` */
     interface(name: string, props: InterfaceProp[], opts?: ExpOpts): Effect<n.Statement>
-    
+
     /** Export function: `export function name(...) { ... }` */
     fn(decl: n.FunctionDeclaration, opts?: ExpOpts): Effect<n.Statement>
   }
-  
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Cross-plugin references
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   /** Import a symbol from another plugin, returns handle for AST generation */
   use(capability: string): SymbolHandle
-  
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Pure AST builders - no tracking, just construction
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   /** Start chain from identifier */
   id(name: string): ChainBuilder
-  
+
   /** Start chain from expression */
   chain(expr: n.Expression): ChainBuilder
-  
+
   /** Object literal builder */
   obj(): ObjBuilder
-  
+
   /** Array literal builder */
   arr(...elements: n.Expression[]): ArrBuilder
-  
+
   /** Function builder */
   fn(): FnBuilder
-  
+
   /** Literals */
   str(value: string): n.StringLiteral
   num(value: number): n.NumericLiteral
   bool(value: boolean): n.BooleanLiteral
-  
+
   /** TypeScript types */
   readonly ts: {
     ref(name: string, typeParams?: n.TSType[]): n.TSTypeReference
@@ -266,14 +266,14 @@ interface ConjureService {
     nullable(type: n.TSType): n.TSUnionType
     // ... etc
   }
-  
+
   /** Statement builders */
   readonly stmt: {
     const(name: string, init: n.Expression): n.VariableDeclaration
     return(expr?: n.Expression): n.ReturnStatement
     // ... etc
   }
-  
+
   /** Parameter builders */
   readonly param: {
     typed(name: string, type: n.TSType): n.Identifier
@@ -287,22 +287,22 @@ interface ConjureService {
 
 ```typescript
 interface ExpOpts {
-  /** 
+  /**
    * Capability identifier for this symbol.
    * If omitted, inferred from plugin provides + symbol name.
    * Only needed for plugins that provide multiple capabilities.
    */
   capability?: string
-  
+
   /** External package imports needed by this symbol */
   imports?: ExternalImport[]
-  
-  /** 
+
+  /**
    * Consumer callback: how to use/validate through this symbol.
    * Enables Liskov Substitution—consumers don't care if Zod or Effect Schema.
    */
   consume?: (input: n.Expression) => n.Expression
-  
+
   /** Export style override (default: "named") */
   exports?: "named" | "default" | false
 }
@@ -317,16 +317,16 @@ Capabilities are inferred from plugin context by default, following Liskov Subst
 const zodPlugin: Plugin = {
   name: "zod",
   provides: ["schema"],  // Abstract capability
-  
+
   render: Effect.gen(function* () {
     const { exp } = yield* Conjure
-    
+
     // Capability inferred as "schema:zod:User" from context
     yield* exp.const("User", schemaExpr)
-    
+
     // Explicit override for edge cases
-    yield* exp.const("UserInput", inputSchema, { 
-      capability: "schema:zod:User:input" 
+    yield* exp.const("UserInput", inputSchema, {
+      capability: "schema:zod:User:input"
     })
   })
 }
@@ -335,13 +335,13 @@ const zodPlugin: Plugin = {
 const httpPlugin: Plugin = {
   name: "http",
   consumes: ["schema"],  // Any schema provider works
-  
+
   render: Effect.gen(function* () {
     const { use } = yield* Conjure
-    
+
     // Gets whatever schema plugin provided
     const userSchema = use("schema:User")
-    
+
     // consume() works regardless of Zod, Valibot, ArkType, etc.
     const validated = userSchema.consume?.(inputExpr)
   })
@@ -354,12 +354,12 @@ const httpPlugin: Plugin = {
 render: Effect.gen(function* () {
   const ir = yield* IR
   const { exp, id, obj, ts, use } = yield* Conjure
-  
+
   const statements: n.Statement[] = []
-  
+
   for (const entity of ir.entities.values()) {
     if (!isTableEntity(entity)) continue
-    
+
     // Build schema expression (pure AST building)
     const schemaExpr = id("z")
       .method("object", [
@@ -368,7 +368,7 @@ render: Effect.gen(function* () {
         ).build()
       ])
       .build()
-    
+
     // Emit with tracking (returns statement, registers symbol)
     // Capability inferred as "schema:zod:User" from plugin context
     statements.push(
@@ -377,16 +377,16 @@ render: Effect.gen(function* () {
         consume: (input) => id(entity.name).method("parse", [input]).build()
       })
     )
-    
+
     // Cross-plugin reference example
     const typeHandle = use(`type:${entity.name}`)
     const inferredType = ts.qualifiedRef("z", "infer", [ts.typeof(entity.name)])
-    
+
     statements.push(
       yield* exp.type(`${entity.name}Type`, inferredType)
     )
   }
-  
+
   return statements
 })
 ```
@@ -441,16 +441,16 @@ interface Query {
   readonly sql: string
   readonly descriptor: QueryDescriptor
   readonly templateParts: { parts: readonly string[]; paramNames: readonly string[] }
-  
+
   // For type generation
   toSignature(): TSTypeKind  // (params) => Promise<ReturnType>
-  
+
   // AST rendering
   toTaggedTemplate(tag: string, opts?: {
     typeParam?: n.TSType
     paramExpr?: (name: string) => n.Expression
   }): n.TaggedTemplateExpression
-  
+
   toParameterizedCall(obj: string, method: string, opts?: {
     typeParam?: n.TSType
     paramExpr?: (name: string) => n.Expression
@@ -665,17 +665,17 @@ interface SymbolHandle {
   readonly name: string
   readonly capability: Capability
   readonly metadata?: unknown
-  
+
   /** Use as identifier - tracks reference for imports */
   ref(): n.Identifier
-  
+
   /** Use as type reference - tracks reference for imports */
   typeRef(): n.TSTypeReference
-  
+
   /** Use as call expression - tracks reference for imports */
   call(...args: n.Expression[]): n.CallExpression
-  
-  /** 
+
+  /**
    * Consume/validate input through this symbol.
    * Returns AST that wraps the input with library-specific logic.
    */
@@ -713,11 +713,11 @@ import { isTableEntity, isEnumEntity } from "pg-sourcerer/ir";
 export const zodPlugin: Plugin = {
   name: "zod",
   provides: ["schema"],
-  
+
   declare: Effect.gen(function* () {
     const ir = yield* IR;
     const declarations = [];
-    
+
     for (const entity of ir.entities.values()) {
       if (isEnumEntity(entity)) {
         declarations.push({
@@ -732,24 +732,24 @@ export const zodPlugin: Plugin = {
         );
       }
     }
-    
+
     return declarations;
   }),
-  
+
   render: Effect.gen(function* () {
     const ir = yield* IR;
     const { exp, id, obj, arr, ts } = yield* Conjure;
-    
+
     const statements = [];
-    
+
     // Enum schemas
     for (const entity of ir.entities.values()) {
       if (!isEnumEntity(entity)) continue;
-      
+
       const schemaExpr = id("z")
         .method("enum", [arr(...entity.values.map(v => str(v))).build()])
         .build();
-      
+
       statements.push(
         yield* exp.const(entity.name, schemaExpr, {
           imports: [{ from: "zod", names: ["z"] }],
@@ -759,11 +759,11 @@ export const zodPlugin: Plugin = {
         })
       );
     }
-    
+
     // Table schemas
     for (const entity of ir.entities.values()) {
       if (!isTableEntity(entity)) continue;
-      
+
       const schemaExpr = id("z")
         .method("object", [
           obj().fromEntries(
@@ -771,7 +771,7 @@ export const zodPlugin: Plugin = {
           ).build()
         ])
         .build();
-      
+
       statements.push(
         yield* exp.const(entity.name, schemaExpr, {
           imports: [{ from: "zod", names: ["z"] }],
@@ -781,7 +781,7 @@ export const zodPlugin: Plugin = {
         })
       );
     }
-    
+
     return statements;
   }),
 };
@@ -819,16 +819,16 @@ export const httpRoutes: Plugin = {
   render: Effect.gen(function* () {
     const { exp, id, fn, use } = yield* Conjure;
     const own = yield* ownDeclarations(); // Helper to get this plugin's declarations
-    
+
     const statements = [];
-    
+
     for (const decl of own) {
       const { query, method, path } = decl.metadata;
-      
+
       // Get handles to consumed symbols
       const queryFn = use(query.capability);
       const inputSchema = use(`schema:${decl.entity}:insert`);
-      
+
       // Build route handler
       const handler = fn()
         .async()
@@ -845,14 +845,14 @@ export const httpRoutes: Plugin = {
           stmt.return(id("c").method("json", [id("result").build()]).build())
         )
         .build();
-      
+
       statements.push(
         yield* exp.const(decl.name, handler, {
           imports: [{ from: "hono", names: ["Context"] }]
         })
       );
     }
-    
+
     return statements;
   }),
 };
@@ -940,10 +940,10 @@ Goal: Implement the Conjure Effect service with `exp.*` helpers.
    - `packages/pg-sourcerer/src/services/conjure.ts`
    - Context.Tag with ConjureService interface
    - FiberRef for plugin context (name, provides)
-   
+
 2. **Implement exp.* methods**
    - `exp.const()`, `exp.type()`, `exp.interface()`, `exp.fn()`
-   - Each returns `Effect<n.Statement>` 
+   - Each returns `Effect<n.Statement>`
    - Reads FiberRef for capability inference
    - Internally registers with provided registry
    - Extracts refs via `extractIdentifierRefs()`

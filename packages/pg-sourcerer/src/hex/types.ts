@@ -3,6 +3,7 @@
  *
  * Type definitions for the declarative query builder API.
  */
+import { Array as Arr, pipe } from "effect";
 import type { SemanticIR, TableEntity } from "../ir/semantic-ir.js";
 import type {
   QueryDescriptor,
@@ -285,18 +286,25 @@ export interface BuilderState {
 }
 
 export function createBuilderState(ir: SemanticIR): BuilderState {
-  const tables = new Map<string, TableEntity>();
-  const enums = new Map<string, { name: string; values: readonly string[] }>();
-
-  for (const [name, entity] of ir.entities) {
-    if (entity.kind === "table" || entity.kind === "view") {
-      // Index by both entity name (User) and pgName (user) for flexible lookup
-      tables.set(name, entity);
-      tables.set(entity.pgName, entity);
-    } else if (entity.kind === "enum") {
-      enums.set(entity.pgName, { name: entity.name, values: entity.values });
-    }
-  }
+  const { tables, enums } = pipe(
+    Arr.fromIterable(ir.entities.entries()),
+    Arr.reduce(
+      {
+        tables: new Map<string, TableEntity>(),
+        enums: new Map<string, { name: string; values: readonly string[] }>(),
+      },
+      (acc, [name, entity]) => {
+        if (entity.kind === "table" || entity.kind === "view") {
+          // Index by both entity name (User) and pgName (user) for flexible lookup
+          acc.tables.set(name, entity);
+          acc.tables.set(entity.pgName, entity);
+        } else if (entity.kind === "enum") {
+          acc.enums.set(entity.pgName, { name: entity.name, values: entity.values });
+        }
+        return acc;
+      },
+    ),
+  );
 
   return {
     params: [],

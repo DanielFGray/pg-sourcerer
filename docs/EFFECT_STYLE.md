@@ -1,6 +1,29 @@
 # Effect-TS Style Guide
 
-Effect is functional TypeScript. Think of it as a different language: there is no `for(..)` loop
+Effect is functional TypeScript. Think of it as a different language.
+
+## No `for` Loops
+
+**`for` statements are forbidden.** Use native array methods or Effect's rich standard library instead:
+
+```typescript
+// FORBIDDEN
+const list: Type[] = []
+for (const item of items) { list.push(..) }
+for (let i = 0; i < n; i++) { ... }
+
+// USE INSTEAD
+items.map(item => ...)               // transform
+items.filter(pred)                   // filter
+items.flatMap(item => ...)           // transform/concat/filter
+items.reduce((acc, item) => ..., init)  // if all else fails
+Effect.forEach(items, fn)            // effectful iteration
+Effect.reduce(items, init, fn)       // effectful accumulation
+```
+
+**Exception:** Only permitted with documented performance justification above the loop, after profiling proves measurable improvement. Such exceptions should be rare.
+
+You are empowered and encouraged to refactor legacy `for` statements to their functional equivalents where applicable in this codebase.
 
 ## Two Pipe Styles
 

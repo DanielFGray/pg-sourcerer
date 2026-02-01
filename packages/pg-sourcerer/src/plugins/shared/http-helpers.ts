@@ -1,10 +1,34 @@
 import type { namedTypes as n } from "ast-types";
+import { Predicate } from "effect";
 
+import type { EntityPermissions } from "../../ir/semantic-ir.js";
 import type { SchemaImportSpec } from "../../ir/extensions/schema-builder.js";
 import { QueryMethodKind, type QueryMethod, type QueryMethodParam } from "../../ir/extensions/queries.js";
 import type { ExternalImport } from "../../runtime/emit.js";
 import type { SymbolHandle } from "../../runtime/types.js";
 import { conjure } from "../../conjure/index.js";
+
+// =============================================================================
+// Permission Predicates
+// =============================================================================
+
+/** Entity with permissions field */
+export type WithPermissions = { permissions: EntityPermissions };
+
+/**
+ * Predicate that returns true if the entity has any CRUD permission enabled.
+ * Use with `.filter(hasAnyPermission)` to filter entities for HTTP route generation.
+ */
+export const hasAnyPermission = Predicate.some<WithPermissions>([
+  e => e.permissions.canSelect,
+  e => e.permissions.canInsert,
+  e => e.permissions.canUpdate,
+  e => e.permissions.canDelete,
+]);
+
+// =============================================================================
+// Parameter Coercion
+// =============================================================================
 
 const b = conjure.b;
 

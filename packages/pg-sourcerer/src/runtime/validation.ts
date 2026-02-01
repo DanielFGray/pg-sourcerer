@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Schema, pipe, Array as Arr } from "effect";
 import type { Plugin, SymbolDeclaration, Capability } from "./types.js";
 
 /**
@@ -51,10 +51,13 @@ export const validateConsumes = (plugins: readonly Plugin[]) =>
  */
 export const validateDependencyGraph = (declarations: readonly SymbolDeclaration[]) =>
   Effect.gen(function* () {
-    const adjacency = new Map<Capability, Capability[]>();
-    for (const decl of declarations) {
-      adjacency.set(decl.capability, [...(decl.dependsOn ?? [])]);
-    }
+    const adjacency = pipe(
+      declarations,
+      Arr.reduce(new Map<Capability, Capability[]>(), (map, decl) => {
+        map.set(decl.capability, [...(decl.dependsOn ?? [])]);
+        return map;
+      }),
+    );
 
     const visited = new Set<Capability>();
     const recursionStack = new Set<Capability>();
@@ -89,7 +92,7 @@ export const validateDependencyGraph = (declarations: readonly SymbolDeclaration
         );
       });
 
-    yield* Effect.forEach(Array.from(adjacency.keys()), cap => detectCycle(cap, []));
+    yield* Effect.forEach(Arr.fromIterable(adjacency.keys()), cap => detectCycle(cap, []));
   });
 
 /**

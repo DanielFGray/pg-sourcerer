@@ -12,7 +12,7 @@
  * - Calls registry.import(queryCapability).ref() during render
  * - Emit phase generates imports from the recorded references
  */
-import { Effect, Schema as S } from "effect";
+import { Effect, Match, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, SymbolHandle } from "../runtime/types.js";
@@ -35,6 +35,7 @@ import { type UserModuleRef } from "../user-module.js";
 import {
   buildQueryInvocation,
   getBodySchemaName,
+  hasAnyPermission,
   toExternalImport,
 } from "./shared/http-helpers.js";
 import { getSchemaBuilder } from "./shared/schema-builder.js";
@@ -121,19 +122,12 @@ interface ResolvedHttpTrpcConfig {
 /**
  * Map query method kind to tRPC procedure type.
  */
-const kindToProcedureType = (kind: QueryMethodKind): "query" | "mutation" => {
-  switch (kind) {
-    case "read":
-    case "list":
-    case "lookup":
-      return "query";
-    case "create":
-    case "update":
-    case "delete":
-    case "function":
-      return "mutation";
-  }
-};
+const kindToProcedureType = (kind: QueryMethodKind): "query" | "mutation" =>
+  Match.value(kind).pipe(
+    Match.whenOr("read", "list", "lookup", () => "query" as const),
+    Match.whenOr("create", "update", "delete", "function", () => "mutation" as const),
+    Match.exhaustive,
+  );
 
 /**
  * Build the handler function body for a tRPC procedure.
@@ -178,9 +172,7 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
 
   if (callSig.style === "positional") {
     // Positional: fn(a, b, c)
-    for (const param of method.params) {
-      args.push(paramExpr(param));
-    }
+    args.push(...method.params.map(paramExpr));
   } else {
     // Named style
     const bodyParam = method.params.find(p => p.source === "body");
@@ -189,11 +181,9 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
     if (bodyParam && callSig.bodyStyle === "spread") {
       // Body fields spread directly: fn(input)
       if (nonBodyParams.length > 0) {
-        let objBuilder = conjure.obj();
-        for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-        objBuilder = objBuilder.spread(bodyConsume ? b.identifier("body") : bodySource);
+        const objBuilder = nonBodyParams
+          .reduce((obj, param) => obj.prop(param.name, paramExpr(param)), conjure.obj())
+          .spread(bodyConsume ? b.identifier("body") : bodySource);
         args.push(objBuilder.build());
       } else {
         args.push(bodyConsume ? b.identifier("body") : bodySource);
@@ -210,14 +200,9 @@ function buildProcedureBody(method: QueryMethod, schemas: ProcedureSchemas): n.S
 
       if (nonBodyParams.length > 0) {
         // Build object with non-body params + body property
-        let objBuilder = conjure.obj();
-        for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-        objBuilder = objBuilder.prop(
-          bodyParam.name,
-          bodyConsume ? b.identifier("body") : bodySource,
-        );
+        const objBuilder = nonBodyParams
+          .reduce((obj, param) => obj.prop(param.name, paramExpr(param)), conjure.obj())
+          .prop(bodyParam.name, bodyConsume ? b.identifier("body") : bodySource);
         args.push(objBuilder.build());
       } else {
         // No non-body params, just pass input
@@ -276,9 +261,6 @@ function buildProcedure(
 } {
   const procedureType = kindToProcedureType(method.kind);
 
-  // Start with base procedure
-  let chainExpr: n.Expression = b.identifier(baseProcedure);
-
   const imports: ExternalImport[] = [];
   const bodySchemaName = getBodySchemaName(method, entityName);
   const bodySchema =
@@ -302,20 +284,17 @@ function buildProcedure(
   const hasBody = method.params.some(p => p.source === "body");
   const shouldUseInputSchema = !hasBody && paramSchema;
 
-  if (shouldUseInputSchema) {
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier("input")),
-      [cast.toExpr(paramSchema!.ast)],
-    );
-  }
-
   // Build the handler: async ({ input }) => { ... }
-  const handlerParams: n.ObjectProperty[] = [];
-  if (method.params.length > 0) {
-    const inputProp = b.objectProperty(b.identifier("input"), b.identifier("input"));
-    inputProp.shorthand = true;
-    handlerParams.push(inputProp);
-  }
+  const handlerParams: n.ObjectProperty[] =
+    method.params.length > 0
+      ? [
+          (() => {
+            const prop = b.objectProperty(b.identifier("input"), b.identifier("input"));
+            prop.shorthand = true;
+            return prop;
+          })(),
+        ]
+      : [];
 
   const handlerBody = buildProcedureBody(method, {
     paramSchema: hasBody ? paramSchema : undefined,
@@ -329,13 +308,19 @@ function buildProcedure(
   );
   handler.async = true;
 
-  // Add .query() or .mutation()
-  chainExpr = b.callExpression(
-    b.memberExpression(cast.toExpr(chainExpr), b.identifier(procedureType)),
+  // Build chain: baseProcedure[.input(schema)].query/mutation(handler)
+  const baseExpr = b.identifier(baseProcedure);
+  const withInput = shouldUseInputSchema
+    ? b.callExpression(b.memberExpression(baseExpr, b.identifier("input")), [
+        cast.toExpr(paramSchema!.ast),
+      ])
+    : baseExpr;
+  const procedureExpr = b.callExpression(
+    b.memberExpression(withInput, b.identifier(procedureType)),
     [handler],
   );
 
-  return { procedureExpr: chainExpr, bodySchemaName, imports };
+  return { procedureExpr, bodySchemaName, imports };
 }
 
 /**
@@ -346,10 +331,9 @@ function getMethodCapabilitySuffix(
   entityName: string,
   inflection: CoreInflection,
 ): string {
-  switch (method.kind) {
-    case "read":
-      return "findById";
-    case "list":
+  return Match.value(method.kind).pipe(
+    Match.when("read", () => "findById"),
+    Match.when("list", () => {
       const prefix = inflection.variableName(entityName, "");
       if (method.name.startsWith(prefix)) {
         const remainder = method.name.slice(prefix.length);
@@ -361,21 +345,16 @@ function getMethodCapabilitySuffix(
         }
       }
       return "list";
-    case "create":
-      return "create";
-    case "update":
-      return "update";
-    case "delete":
-      return "delete";
-    case "lookup":
-      if (method.lookupField) {
-        const pascalField = inflection.pascalCase(method.lookupField);
-        return `findBy${pascalField}`;
-      }
-      return "lookup";
-    case "function":
-      return method.name;
-  }
+    }),
+    Match.when("create", () => "create"),
+    Match.when("update", () => "update"),
+    Match.when("delete", () => "delete"),
+    Match.when("lookup", () =>
+      method.lookupField ? `findBy${inflection.pascalCase(method.lookupField)}` : "lookup",
+    ),
+    Match.when("function", () => method.name),
+    Match.exhaustive,
+  );
 }
 
 /**
@@ -392,46 +371,47 @@ function generateTrpcRouter(
   imports: ExternalImport[];
 } {
   const routerName = inflection.variableName(entityName, "Router");
-  const schemaImports: ExternalImport[] = [];
   const schemaBuilder = getSchemaBuilder(registry);
-  const bodySchemaNames: string[] = [];
 
-  // Build router object
-  let routerObjBuilder = conjure.obj();
+  const { routerObjBuilder, schemaImports, bodySchemaNames } = queries.methods.reduce(
+    (acc, method) => {
+      const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(
+        method,
+        entityName,
+        inflection,
+      )}`;
+      const queryHandle = registry.import(methodCapability);
 
-  for (const method of queries.methods) {
-    // Record cross-reference for this query method
-    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(
-      method,
-      entityName,
-      inflection,
-    )}`;
-    const queryHandle = registry.import(methodCapability);
+      const { procedureExpr, bodySchemaName, imports } = buildProcedure(
+        method,
+        entityName,
+        config.baseProcedure,
+        registry,
+        schemaBuilder,
+        queryHandle,
+      );
 
-    const { procedureExpr, bodySchemaName, imports } = buildProcedure(
-      method,
-      entityName,
-      config.baseProcedure,
-      registry,
-      schemaBuilder,
-      queryHandle,
-    );
-
-    if (bodySchemaName && !bodySchemaNames.includes(bodySchemaName)) {
-      bodySchemaNames.push(bodySchemaName);
-      // Import schema via cross-reference system
-      const schemaCapability = `schema:${bodySchemaName}`;
-      if (registry.has(schemaCapability)) {
-        registry.import(schemaCapability).ref();
+      if (bodySchemaName && !acc.bodySchemaNames.includes(bodySchemaName)) {
+        acc.bodySchemaNames.push(bodySchemaName);
+        const schemaCapability = `schema:${bodySchemaName}`;
+        if (registry.has(schemaCapability)) {
+          registry.import(schemaCapability).ref();
+        }
       }
-    }
 
-    schemaImports.push(...imports);
+      return {
+        routerObjBuilder: acc.routerObjBuilder.prop(method.name, procedureExpr),
+        schemaImports: [...acc.schemaImports, ...imports],
+        bodySchemaNames: acc.bodySchemaNames,
+      };
+    },
+    {
+      routerObjBuilder: conjure.obj(),
+      schemaImports: [] as ExternalImport[],
+      bodySchemaNames: [] as string[],
+    },
+  );
 
-    routerObjBuilder = routerObjBuilder.prop(method.name, procedureExpr);
-  }
-
-  // Build: export const userRouter = router({ ... })
   const routerCall = b.callExpression(b.identifier("router"), [
     cast.toExpr(routerObjBuilder.build()),
   ]);
@@ -441,11 +421,9 @@ function generateTrpcRouter(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  const imports: ExternalImport[] = schemaImports;
-
   return {
     statements: [variableDeclaration as n.Statement],
-    imports,
+    imports: schemaImports,
   };
 }
 
@@ -467,21 +445,15 @@ function generateAggregator(
     return { statements: [], imports: [] };
   }
 
-  // Build: router({ user: userRouter, post: postRouter, ... })
-  let routerObjBuilder = conjure.obj();
-
-  for (const [entityName] of entityEntries) {
+  const routerObjBuilder = entityEntries.reduce((acc, [entityName]) => {
     const routerName = inflection.variableName(entityName, "Router");
     const key = inflection.camelCase(entityName);
-
-    routerObjBuilder = routerObjBuilder.prop(key, b.identifier(routerName));
-
-    // Record cross-reference to the entity's router capability
     const routeCapability = `http-routes:trpc:${entityName}`;
     if (registry.has(routeCapability)) {
       registry.import(routeCapability).ref();
     }
-  }
+    return acc.prop(key, b.identifier(routerName));
+  }, conjure.obj());
 
   const routerCall = b.callExpression(b.identifier("router"), [
     cast.toExpr(routerObjBuilder.build()),
@@ -492,7 +464,6 @@ function generateAggregator(
   );
   const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
-  // Also export the type: export type AppRouter = typeof appRouter
   const typeExport = b.exportNamedDeclaration(
     b.tsTypeAliasDeclaration(
       b.identifier("AppRouter"),
@@ -564,35 +535,23 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       const ir = yield* IR;
       const inflection = yield* Inflection;
 
-      const declarations: SymbolDeclaration[] = [];
+      const entityDeclarations = [...ir.entities.values()]
+        .filter(isTableEntity)
+        .filter(e => e.tags.omit !== true)
+        .filter(hasAnyPermission)
+        .map(entity => ({
+          name: inflection.variableName(entity.name, "Router"),
+          capability: `http-routes:trpc:${entity.name}`,
+          baseEntityName: entity.name,
+        }));
 
-      // Declare routers for all table entities that might have queries
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
-        if (entity.tags.omit === true) continue;
-
-        const hasAnyPermissions =
-          entity.permissions.canSelect ||
-          entity.permissions.canInsert ||
-          entity.permissions.canUpdate ||
-          entity.permissions.canDelete;
-
-        if (hasAnyPermissions) {
-          declarations.push({
-            name: inflection.variableName(entity.name, "Router"),
-            capability: `http-routes:trpc:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-        }
-      }
-
-      // Also declare the aggregator
-      declarations.push({
-        name: resolvedConfig.aggregatorName,
-        capability: "http-routes:trpc:app",
-      });
-
-      return declarations;
+      return [
+        ...entityDeclarations,
+        {
+          name: resolvedConfig.aggregatorName,
+          capability: "http-routes:trpc:app",
+        },
+      ];
     }),
 
     render: Effect.gen(function* () {
@@ -600,82 +559,77 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      const rendered: RenderedSymbol[] = [];
-
-      // Query the registry for all entity query capabilities
-      const entityQueries = new Map<string, EntityQueriesExtension>();
       const queryCapabilities = registry.query("queries:");
 
-      for (const decl of queryCapabilities) {
-        // Only look at aggregate capabilities (queries:impl:EntityName, not queries:impl:EntityName:method)
+      const entityQueries = queryCapabilities.reduce((acc, decl) => {
         const parts = decl.capability.split(":");
-        if (parts.length !== 3) continue;
+        if (parts.length !== 3) return acc;
 
         const entityName = parts[2]!;
         const metadata = registry.getMetadata(decl.capability);
         if (metadata && typeof metadata === "object" && "methods" in metadata) {
-          entityQueries.set(entityName, metadata as EntityQueriesExtension);
+          acc.set(entityName, metadata as EntityQueriesExtension);
         }
-      }
+        return acc;
+      }, new Map<string, EntityQueriesExtension>());
 
-      // User module imports for router and procedure (if configured)
       const trpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.trpcImport
         ? [resolvedConfig.trpcImport]
         : undefined;
 
-      for (const [entityName, queries] of entityQueries) {
+      const entitySymbols = [...entityQueries.entries()].flatMap(([entityName, queries]) => {
         const entity = ir.entities.get(entityName);
-        if (!entity || !isTableEntity(entity)) continue;
+        if (!entity || !isTableEntity(entity)) return [];
 
         const capability = `http-routes:trpc:${entityName}`;
-
-        // Scope cross-references to this specific capability
         const { statements, imports } = registry.forSymbol(capability, () =>
           generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
         );
 
-        rendered.push({
-          name: inflection.variableName(entityName, "Router"),
-          capability,
-          node: statements[0] ?? null,
-          exports: "named",
-          imports,
-          userImports: trpcUserImports,
-        });
-      }
+        return [
+          {
+            name: inflection.variableName(entityName, "Router"),
+            capability,
+            node: statements[0] ?? null,
+            exports: "named" as const,
+            imports,
+            userImports: trpcUserImports,
+          },
+        ];
+      });
 
-      if (entityQueries.size > 0) {
-        const appCapability = "http-routes:trpc:app";
+      const appSymbols =
+        entityQueries.size > 0
+          ? (() => {
+              const appCapability = "http-routes:trpc:app";
+              const { statements, imports } = registry.forSymbol(appCapability, () =>
+                generateAggregator(entityQueries, resolvedConfig, registry, inflection),
+              );
 
-        // Scope cross-references to the app capability
-        const { statements, imports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
-        );
+              return [
+                {
+                  name: resolvedConfig.aggregatorName,
+                  capability: appCapability,
+                  node: statements[0] ?? null,
+                  exports: "named" as const,
+                  imports,
+                  userImports: trpcUserImports,
+                },
+                ...(statements[1]
+                  ? [
+                      {
+                        name: "AppRouter",
+                        capability: "http-routes:trpc:app:type",
+                        node: statements[1],
+                        exports: false as const,
+                      },
+                    ]
+                  : []),
+              ];
+            })()
+          : [];
 
-        // The aggregator has multiple statements (const + type export)
-        // We need to handle this differently - wrap in a program or return multiple
-        rendered.push({
-          name: resolvedConfig.aggregatorName,
-          capability: appCapability,
-          node: statements[0] ?? null, // The const declaration
-          exports: "named",
-          imports,
-          userImports: trpcUserImports,
-        });
-
-        // Add the type export as a separate rendered symbol
-        if (statements[1]) {
-          rendered.push({
-            name: "AppRouter",
-            capability: "http-routes:trpc:app:type",
-            node: statements[1],
-            exports: false, // Already has export in the node
-            // No userImports needed for type export
-          });
-        }
-      }
-
-      return rendered;
+      return [...entitySymbols, ...appSymbols];
     }),
   };
 }

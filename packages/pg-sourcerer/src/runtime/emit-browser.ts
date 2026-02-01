@@ -7,12 +7,11 @@
 import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
-import { Array as Arr, pipe } from "effect";
+import { Array as Arr, Option, pipe } from "effect";
 import type { OrchestratorResult } from "./orchestrator";
 import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types";
 import type { AssignedSymbol } from "./file-assignment";
 import { ExportCollisionError } from "../errors";
-import type { UserModuleRef } from "../user-module";
 import conjure from "../conjure";
 
 const b = recast.types.builders;
@@ -78,54 +77,46 @@ function generateCrossFileImports(
   symbolsInFile: readonly AssignedSymbol[],
   references: ReadonlyMap<Capability, readonly Capability[]>,
   fileGroups: ReadonlyMap<string, readonly AssignedSymbol[]>,
-  allDeclarations: readonly SymbolDeclaration[],
+  _allDeclarations: readonly SymbolDeclaration[],
 ): n.ImportDeclaration[] {
   // Build a map: capability -> { name, file }
-  const capToLocation = new Map<Capability, { name: string; file: string }>();
-  for (const [file, symbols] of fileGroups) {
-    for (const sym of symbols) {
-      capToLocation.set(sym.declaration.capability, {
-        name: sym.declaration.name,
-        file,
-      });
-    }
-  }
-
-  // Collect all capabilities in this file
-  const capsInThisFile = new Set(symbolsInFile.map(s => s.declaration.capability));
+  const capToLocation = pipe(
+    Arr.fromIterable(fileGroups.entries()),
+    Arr.flatMap(([file, symbols]) =>
+      symbols.map(sym => [sym.declaration.capability, { name: sym.declaration.name, file }] as const),
+    ),
+    entries => new Map<Capability, { name: string; file: string }>(entries),
+  );
 
   // Find all cross-file references from symbols in this file
-  const importsBySource = new Map<string, Set<string>>();
-
-  for (const sym of symbolsInFile) {
-    const refs = references.get(sym.declaration.capability);
-    if (!refs) continue;
-
-    for (const refCap of refs) {
+  const importsBySource = pipe(
+    symbolsInFile,
+    Arr.flatMap(sym => {
+      const refs = references.get(sym.declaration.capability);
+      return refs ? Arr.fromIterable(refs) : [];
+    }),
+    Arr.filterMap(refCap => {
       const location = capToLocation.get(refCap);
-      if (!location) continue;
+      if (!location || location.file === forFile) return Option.none();
+      return Option.some({ file: location.file, name: location.name });
+    }),
+    Arr.reduce(new Map<string, Set<string>>(), (acc, { file, name }) => {
+      if (!acc.has(file)) acc.set(file, new Set());
+      acc.get(file)!.add(name);
+      return acc;
+    }),
+  );
 
-      // Skip if reference is in the same file
-      if (location.file === forFile) continue;
-
-      if (!importsBySource.has(location.file)) {
-        importsBySource.set(location.file, new Set());
-      }
-      importsBySource.get(location.file)!.add(location.name);
-    }
-  }
-
-  const imports: n.ImportDeclaration[] = [];
-
-  for (const [sourceFile, names] of importsBySource) {
-    const relativePath = computeRelativePath(forFile, sourceFile);
-    const specifiers = Array.from(names).map(name =>
-      b.importSpecifier(b.identifier(name), b.identifier(name)),
-    );
-    imports.push(b.importDeclaration(specifiers, b.stringLiteral(relativePath)));
-  }
-
-  return imports;
+  return pipe(
+    Arr.fromIterable(importsBySource.entries()),
+    Arr.map(([sourceFile, names]) => {
+      const relativePath = computeRelativePath(forFile, sourceFile);
+      const specifiers = Array.from(names).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      return b.importDeclaration(specifiers, b.stringLiteral(relativePath));
+    }),
+  );
 }
 
 /**
@@ -133,36 +124,27 @@ function generateCrossFileImports(
  * Both paths should be relative to the same base (outputDir).
  */
 function computeRelativePath(fromFile: string, toFile: string): string {
-  const fromParts = fromFile.split("/");
+  const fromParts = fromFile.split("/").slice(0, -1); // Remove filename
   const toParts = toFile.split("/");
-
-  fromParts.pop();
   const toFileName = toParts.pop()!;
 
-  let commonLen = 0;
-  while (
-    commonLen < fromParts.length &&
-    commonLen < toParts.length &&
-    fromParts[commonLen] === toParts[commonLen]
-  ) {
-    commonLen++;
-  }
+  // Find common prefix length
+  const commonLen = pipe(
+    Arr.zip(fromParts, toParts),
+    Arr.takeWhile(([a, b]) => a === b),
+    Arr.length,
+  );
 
   const upCount = fromParts.length - commonLen;
   const downParts = toParts.slice(commonLen);
 
-  const parts: string[] = [];
-  for (let i = 0; i < upCount; i++) {
-    parts.push("..");
-  }
-  parts.push(...downParts);
-  parts.push(toFileName.replace(/\.ts$/, ".js"));
+  const parts = [
+    ...Arr.replicate("..", upCount),
+    ...downParts,
+    toFileName.replace(/\.ts$/, ".js"),
+  ];
 
-  if (parts[0] !== "..") {
-    parts.unshift(".");
-  }
-
-  return parts.join("/");
+  return parts[0] !== ".." ? [".", ...parts].join("/") : parts.join("/");
 }
 
 /**
@@ -279,22 +261,20 @@ function collectStatementsWithCollisionDetection(
   capToRendered: Map<Capability, RenderedSymbol>,
 ): StatementKind[] {
   const seenExports = new Map<string, { kind: DeclKind; capability: Capability }>();
-  const bodyStatements: StatementKind[] = [];
 
-  for (const sym of symbols) {
-    const r = capToRendered.get(sym.declaration.capability);
-    if (!r) continue;
+  return pipe(
+    symbols,
+    Arr.filterMap(sym => {
+      const r = capToRendered.get(sym.declaration.capability);
+      if (!r || r.exports === false || r.exports === undefined) {
+        return Option.none();
+      }
 
-    if (r.exports === false || r.exports === undefined) {
-      continue;
-    }
+      const wrapped = wrapWithExport(r.node, r.exports);
+      const kind = getDeclarationKind(wrapped);
 
-    const wrapped = wrapWithExport(r.node, r.exports);
-    const kind = getDeclarationKind(wrapped);
-
-    const existing = seenExports.get(r.name);
-    if (existing) {
-      if (!areKindsCompatible(existing.kind, kind)) {
+      const existing = seenExports.get(r.name);
+      if (existing && !areKindsCompatible(existing.kind, kind)) {
         throw new ExportCollisionError({
           file: filePath,
           exportName: r.name,
@@ -304,14 +284,92 @@ function collectStatementsWithCollisionDetection(
           message: `Export collision in ${filePath}: "${r.name}" is already declared as ${existing.kind}`,
         });
       }
-    }
 
-    seenExports.set(r.name, { kind, capability: sym.declaration.capability });
+      seenExports.set(r.name, { kind, capability: sym.declaration.capability });
+      return Option.some(wrapped);
+    }),
+  );
+}
 
-    bodyStatements.push(wrapped);
-  }
+/** Collected import information from symbols */
+interface CollectedImports {
+  readonly fileHeaders: readonly string[];
+  readonly seenValueImports: ReadonlyMap<string, Set<string>>;
+  readonly seenTypeImports: ReadonlyMap<string, Set<string>>;
+}
 
-  return bodyStatements;
+/**
+ * Collect imports from rendered symbols for a file.
+ */
+function collectImportsFromSymbols(
+  symbols: readonly AssignedSymbol[],
+  capToRendered: Map<Capability, RenderedSymbol>,
+): CollectedImports {
+  return pipe(
+    symbols,
+    Arr.filterMap(sym => Option.fromNullable(capToRendered.get(sym.declaration.capability))),
+    Arr.reduce(
+      {
+        fileHeaders: [] as string[],
+        seenValueImports: new Map<string, Set<string>>(),
+        seenTypeImports: new Map<string, Set<string>>(),
+      },
+      (acc, r) => {
+        // Collect file headers (deduplicated)
+        if (r.fileHeader && !acc.fileHeaders.includes(r.fileHeader)) {
+          acc.fileHeaders.push(r.fileHeader);
+        }
+
+        // Collect external imports
+        (r.imports ?? []).forEach(ext => {
+          if (ext.names) {
+            if (!acc.seenValueImports.has(ext.from)) acc.seenValueImports.set(ext.from, new Set());
+            ext.names.forEach(n => acc.seenValueImports.get(ext.from)!.add(n));
+          }
+          if (ext.types) {
+            if (!acc.seenTypeImports.has(ext.from)) acc.seenTypeImports.set(ext.from, new Set());
+            ext.types.forEach(t => acc.seenTypeImports.get(ext.from)!.add(t));
+          }
+        });
+
+        return acc;
+      },
+    ),
+  );
+}
+
+/**
+ * Build external import declarations from collected imports.
+ */
+function buildExternalImports(
+  collected: CollectedImports,
+  resolveSource: (source: string) => string,
+): n.ImportDeclaration[] {
+  const typeImports = pipe(
+    Arr.fromIterable(collected.seenTypeImports.entries()),
+    Arr.filter(([, types]) => types.size > 0),
+    Arr.map(([source, types]) => {
+      const specifiers = Arr.fromIterable(types).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      const decl = b.importDeclaration(specifiers, b.stringLiteral(resolveSource(source)));
+      decl.importKind = "type";
+      return decl;
+    }),
+  );
+
+  const valueImports = pipe(
+    Arr.fromIterable(collected.seenValueImports.entries()),
+    Arr.filter(([, names]) => names.size > 0),
+    Arr.map(([source, names]) => {
+      const specifiers = Arr.fromIterable(names).map(name =>
+        b.importSpecifier(b.identifier(name), b.identifier(name)),
+      );
+      return b.importDeclaration(specifiers, b.stringLiteral(resolveSource(source)));
+    }),
+  );
+
+  return [...typeImports, ...valueImports];
 }
 
 /**
@@ -322,112 +380,65 @@ export function emitFiles(
   config: EmitConfig = {},
 ): readonly EmittedFile[] {
   const { rendered, fileGroups, references, declarations } = result;
-  const emitted: EmittedFile[] = [];
 
-  const capToRendered = new Map<Capability, RenderedSymbol>();
-  for (const r of rendered) {
-    capToRendered.set(r.capability, r);
-  }
+  // Build map: capability -> rendered symbol
+  const capToRendered = pipe(
+    rendered,
+    Arr.reduce(new Map<Capability, RenderedSymbol>(), (acc, r) => {
+      acc.set(r.capability, r);
+      return acc;
+    }),
+  );
 
-  for (const [filePath, symbols] of fileGroups) {
-    const crossImports = generateCrossFileImports(
-      filePath,
-      symbols,
-      references,
-      fileGroups,
-      declarations,
-    );
+  // Process each file
+  return pipe(
+    Arr.fromIterable(fileGroups.entries()),
+    Arr.filterMap(([filePath, symbols]) => {
+      // Generate cross-file imports
+      const crossImports = generateCrossFileImports(
+        filePath,
+        symbols,
+        references,
+        fileGroups,
+        declarations,
+      );
 
-    const externalImportStatements: n.ImportDeclaration[] = [];
-    const seenValueImports = new Map<string, Set<string>>();
-    const seenTypeImports = new Map<string, Set<string>>();
-    const fileHeaders: string[] = [];
+      // Collect imports from rendered symbols
+      const collected = collectImportsFromSymbols(symbols, capToRendered);
 
-    for (const sym of symbols) {
-      const r = capToRendered.get(sym.declaration.capability) as RenderedSymbol | undefined;
-      if (!r) continue;
-
-      if (r.fileHeader && !fileHeaders.includes(r.fileHeader)) {
-        fileHeaders.push(r.fileHeader);
-      }
-
-      if (!r.imports) continue;
-
-      for (const ext of r.imports) {
-        if (ext.names) {
-          if (!seenValueImports.has(ext.from)) {
-            seenValueImports.set(ext.from, new Set());
-          }
-          for (const n of ext.names) seenValueImports.get(ext.from)!.add(n);
+      // Compute import source path, handling internal vs external packages
+      const resolveImportSource = (source: string): string => {
+        const isInternalPath =
+          source.startsWith("./") || source.startsWith("../") || /\.(ts|js)$/.test(source);
+        if (isInternalPath) {
+          const normalized = source.replace(/^\.\//, "").replace(/\.js$/, ".ts");
+          return computeRelativePath(filePath, normalized);
         }
-        if (ext.types) {
-          if (!seenTypeImports.has(ext.from)) {
-            seenTypeImports.set(ext.from, new Set());
-          }
-          for (const t of ext.types) seenTypeImports.get(ext.from)!.add(t);
-        }
-      }
-    }
+        return source;
+      };
 
-    const resolveImportSource = (source: string): string => {
-      const isInternalPath =
-        source.startsWith("./") || source.startsWith("../") || /\.(ts|js)$/.test(source);
+      // Build external import declarations
+      const externalImportStatements = buildExternalImports(collected, resolveImportSource);
 
-      if (isInternalPath) {
-        const normalized = source.replace(/^\.\//, "").replace(/\.js$/, ".ts");
-        return computeRelativePath(filePath, normalized);
-      }
-      return source;
-    };
+      // Collect rendered bodies for symbols in this file
+      const bodyStatements = collectStatementsWithCollisionDetection(
+        filePath,
+        symbols,
+        capToRendered,
+      );
 
-    for (const [source, types] of seenTypeImports) {
-      if (types.size > 0) {
-        const specifiers = Array.from(types).map(name =>
-          b.importSpecifier(b.identifier(name), b.identifier(name)),
-        );
-        const importDecl = b.importDeclaration(
-          specifiers,
-          b.stringLiteral(resolveImportSource(source)),
-        );
-        importDecl.importKind = "type";
-        externalImportStatements.push(importDecl);
-      }
-    }
+      if (bodyStatements.length === 0) return Option.none();
 
-    for (const [source, names] of seenValueImports) {
-      if (names.size > 0) {
-        const specifiers = Array.from(names).map(name =>
-          b.importSpecifier(b.identifier(name), b.identifier(name)),
-        );
-        externalImportStatements.push(
-          b.importDeclaration(specifiers, b.stringLiteral(resolveImportSource(source))),
-        );
-      }
-    }
+      const allImports = [...externalImportStatements, ...crossImports];
+      const program = b.program([...allImports, ...bodyStatements]);
 
-    const bodyStatements = collectStatementsWithCollisionDetection(
-      filePath,
-      symbols,
-      capToRendered,
-    );
+      const code = pipe(
+        conjure.print(program),
+        code => (collected.fileHeaders.length > 0 ? collected.fileHeaders.join("\n") + "\n\n" + code : code),
+        code => (config.headerComment ? config.headerComment + "\n\n" + code : code),
+      );
 
-    if (bodyStatements.length === 0) continue;
-
-    const allImports = [...externalImportStatements, ...crossImports];
-    const program = b.program([...allImports, ...bodyStatements]);
-
-    let code = conjure.print(program);
-
-    if (fileHeaders.length > 0) {
-      code = fileHeaders.join("\n") + "\n\n" + code;
-    }
-
-    if (config.headerComment) {
-      code = config.headerComment + "\n\n" + code;
-    }
-
-    emitted.push({ path: filePath, content: code });
-  }
-
-  return emitted;
+      return Option.some({ path: filePath, content: code });
+    }),
+  );
 }

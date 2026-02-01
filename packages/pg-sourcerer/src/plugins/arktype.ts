@@ -10,7 +10,7 @@
  * - `schema:arktype:EntityName:update` for Update shape
  * - `schema:arktype:EnumName` for enum entities
  */
-import { Effect, Schema as S } from "effect";
+import { Effect, Match, Schema as S, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
@@ -70,33 +70,14 @@ function createArkTypeConsumeCallback(schemaName: string): (input: unknown) => n
 function paramToArkTypeString(param: { type: string; required: boolean }): string {
   const baseType = param.type.replace(/\[\]$/, "").replace(/\?$/, "").toLowerCase();
 
-  let arkType: string;
-  switch (baseType) {
-    case "number":
-    case "int":
-    case "integer":
-    case "float":
-    case "double":
-      arkType = "number";
-      break;
-    case "boolean":
-    case "bool":
-      arkType = "boolean";
-      break;
-    case "date":
-      arkType = "Date";
-      break;
-    case "string":
-    default:
-      arkType = "string";
-      break;
-  }
+  const arkType = Match.value(baseType).pipe(
+    Match.whenOr("number", "int", "integer", "float", "double", () => "number"),
+    Match.whenOr("boolean", "bool", () => "boolean"),
+    Match.when("date", () => "Date"),
+    Match.orElse(() => "string"),
+  );
 
-  if (!param.required) {
-    arkType = `${arkType}?`;
-  }
-
-  return arkType;
+  return param.required ? arkType : `${arkType}?`;
 }
 
 /**
@@ -109,17 +90,11 @@ const arkTypeSchemaBuilder: SchemaBuilder = {
       return undefined;
     }
 
-    // Build type({ field: "string", ... })
-    const typeObj: Record<string, string> = {};
-    for (const param of request.params) {
-      typeObj[param.name] = paramToArkTypeString(param);
-    }
-
-    // Generate: type({ id: "number", email: "string" })
-    let objBuilder = conjure.obj();
-    for (const [name, arkType] of Object.entries(typeObj)) {
-      objBuilder = objBuilder.prop(name, conjure.str(arkType));
-    }
+    // Build type({ field: "string", ... }) using reduce
+    const objBuilder = request.params.reduce(
+      (builder, param) => builder.prop(param.name, conjure.str(paramToArkTypeString(param))),
+      conjure.obj(),
+    );
 
     const ast = conjure.id("type").call([objBuilder.build()]).build();
     const consume = (input: n.Expression) =>
@@ -198,19 +173,12 @@ function fieldToArkType(field: Field, enums: EnumEntity[], domains: DomainEntity
     return baseResult;
   }
 
-  let typeStr = baseResult.typeString;
-
-  if (field.isArray) {
-    typeStr = `${typeStr}[]`;
-  }
-
-  if (field.nullable) {
-    typeStr = `${typeStr} | null`;
-  }
-
-  if (field.optional) {
-    typeStr = `${typeStr}?`;
-  }
+  const typeStr = pipe(
+    baseResult.typeString,
+    s => (field.isArray ? `${s}[]` : s),
+    s => (field.nullable ? `${s} | null` : s),
+    s => (field.optional ? `${s}?` : s),
+  );
 
   return { kind: "string", typeString: typeStr };
 }
@@ -279,61 +247,39 @@ function shapeToArkTypeObject(
   domains: DomainEntity[],
   registry: SymbolRegistryService,
 ): n.Expression {
-  let objBuilder = conjure.obj();
+  // Apply nullable modifier to an expression
+  const applyNullable = (expr: n.Expression): n.Expression =>
+    conjure
+      .chain(expr)
+      .method("or", [conjure.id("type").call([conjure.str("null")]).build()])
+      .build();
 
-  for (const field of shape.fields) {
+  // Apply array modifier to an expression
+  const applyArray = (expr: n.Expression): n.Expression =>
+    conjure.chain(expr).method("array").build();
+
+  // Build property value for a field
+  const buildFieldValue = (field: Field): n.Expression => {
     const mapping = fieldToArkType(field, enums, domains);
 
-    if (mapping.kind === "enumRef") {
-      // Get handle and track cross-reference
-      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
-      let enumExpr = enumHandle.ref() as n.Expression;
+    if (mapping.kind === "enumRef" || mapping.kind === "domainRef") {
+      const capability = mapping.kind === "enumRef"
+        ? `schema:arktype:${mapping.enumRef}`
+        : `schema:arktype:${mapping.domainRef}`;
+      const handle = registry.import(capability);
+      const baseExpr = handle.ref() as n.Expression;
 
-      if (field.isArray) {
-        enumExpr = conjure.chain(enumExpr).method("array").build();
-      }
-      if (field.nullable) {
-        enumExpr = conjure
-          .chain(enumExpr)
-          .method("or", [
-            conjure
-              .id("type")
-              .call([conjure.str("null")])
-              .build(),
-          ])
-          .build();
-      }
-      // Note: ArkType doesn't have a direct .optional() method like Zod
-      // Optional is typically handled at the object level with "key?" syntax
-      // For now, we'll treat optional enum fields the same as required
-      // This is a limitation - may need scope() for full support
-
-      objBuilder = objBuilder.prop(field.name, enumExpr);
-    } else if (mapping.kind === "domainRef") {
-      // Get handle and track cross-reference to domain schema
-      const domainHandle = registry.import(`schema:arktype:${mapping.domainRef}`);
-      let domainExpr = domainHandle.ref() as n.Expression;
-
-      if (field.isArray) {
-        domainExpr = conjure.chain(domainExpr).method("array").build();
-      }
-      if (field.nullable) {
-        domainExpr = conjure
-          .chain(domainExpr)
-          .method("or", [
-            conjure
-              .id("type")
-              .call([conjure.str("null")])
-              .build(),
-          ])
-          .build();
-      }
-
-      objBuilder = objBuilder.prop(field.name, domainExpr);
-    } else {
-      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString!));
+      const withArray = field.isArray ? applyArray(baseExpr) : baseExpr;
+      return field.nullable ? applyNullable(withArray) : withArray;
     }
-  }
+
+    return conjure.str(mapping.typeString!);
+  };
+
+  const objBuilder = shape.fields.reduce(
+    (builder, field) => builder.prop(field.name, buildFieldValue(field)),
+    conjure.obj(),
+  );
 
   return conjure.id("type").call([objBuilder.build()]).build();
 }
@@ -349,72 +295,64 @@ function shapeToArkTypeObject(
  */
 function domainToArktypeString(domain: DomainEntity): string {
   const baseType = domain.baseTypeName.toLowerCase();
-  
-  // Start with base type
-  let schema = "";
-  
-  if (pgStringTypes.has(baseType)) {
-    schema = "string";
-  } else if (pgNumberTypes.has(baseType)) {
-    schema = "number";
-  } else if (pgBooleanTypes.has(baseType)) {
-    schema = "boolean";
-  } else if (pgDateTypes.has(baseType)) {
-    schema = "Date";
-  } else if (pgJsonTypes.has(baseType)) {
-    schema = "unknown";
-  } else {
-    schema = "unknown";
-  }
 
-  // Apply domain constraints as refinements
-  const constraints: string[] = [];
-  let minLen: number | null = null;
-  let maxLen: number | null = null;
+  // Get base type
+  const baseSchema = pgStringTypes.has(baseType)
+    ? "string"
+    : pgNumberTypes.has(baseType)
+      ? "number"
+      : pgBooleanTypes.has(baseType)
+        ? "boolean"
+        : pgDateTypes.has(baseType)
+          ? "Date"
+          : "unknown";
 
-  for (const constraint of domain.constraints) {
-    for (const validation of constraint.validations) {
-      switch (validation.kind) {
-        case "minLength":
-          minLen = validation.value;
-          break;
-        case "maxLength":
-          maxLen = validation.value;
-          break;
-        case "min":
-          constraints.push(`>= ${validation.value}`);
-          break;
-        case "max":
-          constraints.push(`<= ${validation.value}`);
-          break;
-        case "regex":
-          // Pattern is already properly escaped from PostgreSQL
-          // Escape forward slashes for regex literal
-          const escapedPattern = validation.pattern.replace(/\//g, "\\/");
-          constraints.push(`/${escapedPattern}/${validation.caseInsensitive ? "i" : ""}`);
-          break;
-        case "unknown":
-          // Skip unknown constraints
-          break;
-      }
-    }
-  }
+  // Extract all validations from constraints
+  const validations = domain.constraints.flatMap(c => c.validations);
 
-  // For string length, arktype uses >= min <= max syntax
-  if (minLen !== null && maxLen !== null) {
-    schema = `${schema} >= ${minLen} <= ${maxLen}`;
-  } else if (minLen !== null) {
-    schema = `${schema} >= ${minLen}`;
-  } else if (maxLen !== null) {
-    schema = `${schema} <= ${maxLen}`;
-  }
+  // Process validations into constraint strings and length bounds
+  type Accumulator = { constraints: string[]; minLen: number | null; maxLen: number | null };
+
+  const { constraints, minLen, maxLen } = validations.reduce<Accumulator>(
+    (acc, validation) =>
+      Match.value(validation).pipe(
+        Match.when({ kind: "minLength" }, v => ({ ...acc, minLen: v.value })),
+        Match.when({ kind: "maxLength" }, v => ({ ...acc, maxLen: v.value })),
+        Match.when({ kind: "min" }, v => ({
+          ...acc,
+          constraints: [...acc.constraints, `>= ${v.value}`],
+        })),
+        Match.when({ kind: "max" }, v => ({
+          ...acc,
+          constraints: [...acc.constraints, `<= ${v.value}`],
+        })),
+        Match.when({ kind: "regex" }, v => {
+          const escapedPattern = v.pattern.replace(/\//g, "\\/");
+          const flags = v.caseInsensitive ? "i" : "";
+          return {
+            ...acc,
+            constraints: [...acc.constraints, `/${escapedPattern}/${flags}`],
+          };
+        }),
+        Match.orElse(() => acc),
+      ),
+    { constraints: [], minLen: null, maxLen: null },
+  );
+
+  // Apply string length constraints
+  const withLength =
+    minLen !== null && maxLen !== null
+      ? `${baseSchema} >= ${minLen} <= ${maxLen}`
+      : minLen !== null
+        ? `${baseSchema} >= ${minLen}`
+        : maxLen !== null
+          ? `${baseSchema} <= ${maxLen}`
+          : baseSchema;
 
   // Combine with other constraints
-  if (constraints.length > 0) {
-    return schema ? `${schema} & ${constraints.join(" & ")}` : constraints.join(" & ");
-  }
-  
-  return schema;
+  return constraints.length > 0
+    ? `${withLength} & ${constraints.join(" & ")}`
+    : withLength;
 }
 
 function buildUpdateInputSchema(
@@ -431,84 +369,64 @@ function buildUpdateInputSchema(
   }
 
   const pkColumnSet = new Set(primaryKey.columns);
-  let objBuilder = conjure.obj();
 
-  // First, add PK fields as REQUIRED (from row shape to get correct types)
-  for (const pkColName of primaryKey.columns) {
-    // Find the field in the row shape (PK fields always exist in row)
-    const pkField = entity.shapes.row.fields.find(f => f.name === pkColName);
-    if (!pkField) continue;
+  // Apply nullable modifier
+  const applyNullable = (expr: n.Expression): n.Expression =>
+    conjure
+      .chain(expr)
+      .method("or", [conjure.id("type").call([conjure.str("null")]).build()])
+      .build();
 
-    // Get the base type without optional/nullable modifiers for PK
-    const mapping = fieldToArkType({ ...pkField, optional: false, nullable: false }, enums, domains);
+  // Build required PK field value
+  const buildPkFieldValue = (field: Field): n.Expression => {
+    const mapping = fieldToArkType({ ...field, optional: false, nullable: false }, enums, domains);
 
     if (mapping.kind === "enumRef") {
-      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
-      objBuilder = objBuilder.prop(pkField.name, enumHandle.ref() as n.Expression);
-    } else if (mapping.kind === "domainRef") {
-      const domainHandle = registry.import(`schema:arktype:${mapping.domainRef}`);
-      objBuilder = objBuilder.prop(pkField.name, domainHandle.ref() as n.Expression);
-    } else {
-      objBuilder = objBuilder.prop(pkField.name, conjure.str(mapping.typeString!));
+      return registry.import(`schema:arktype:${mapping.enumRef}`).ref() as n.Expression;
     }
-  }
-
-  // Then add non-PK fields from update shape as OPTIONAL
-  for (const field of updateShape.fields) {
-    if (pkColumnSet.has(field.name)) {
-      continue; // Skip PK fields, already added above
+    if (mapping.kind === "domainRef") {
+      return registry.import(`schema:arktype:${mapping.domainRef}`).ref() as n.Expression;
     }
+    return conjure.str(mapping.typeString!);
+  };
 
-    // Force optional for non-PK fields (partial updates)
+  // Build optional non-PK field value
+  const buildOptionalFieldValue = (field: Field): n.Expression => {
     const mapping = fieldToArkType({ ...field, optional: true }, enums, domains);
 
-    if (mapping.kind === "enumRef") {
-      const enumHandle = registry.import(`schema:arktype:${mapping.enumRef}`);
-      let enumExpr = enumHandle.ref() as n.Expression;
+    if (mapping.kind === "enumRef" || mapping.kind === "domainRef") {
+      const capability = mapping.kind === "enumRef"
+        ? `schema:arktype:${mapping.enumRef}`
+        : `schema:arktype:${mapping.domainRef}`;
+      const baseExpr = registry.import(capability).ref() as n.Expression;
 
-      if (field.isArray) {
-        enumExpr = conjure.chain(enumExpr).method("array").build();
-      }
-      if (field.nullable) {
-        enumExpr = conjure
-          .chain(enumExpr)
-          .method("or", [
-            conjure
-              .id("type")
-              .call([conjure.str("null")])
-              .build(),
-          ])
-          .build();
-      }
-      // For optional enum fields, we need to use .optional() method
-      enumExpr = conjure.chain(enumExpr).method("optional").build();
-
-      objBuilder = objBuilder.prop(field.name, enumExpr);
-    } else if (mapping.kind === "domainRef") {
-      const domainHandle = registry.import(`schema:arktype:${mapping.domainRef}`);
-      let domainExpr = domainHandle.ref() as n.Expression;
-
-      if (field.isArray) {
-        domainExpr = conjure.chain(domainExpr).method("array").build();
-      }
-      if (field.nullable) {
-        domainExpr = conjure
-          .chain(domainExpr)
-          .method("or", [
-            conjure
-              .id("type")
-              .call([conjure.str("null")])
-              .build(),
-          ])
-          .build();
-      }
-      domainExpr = conjure.chain(domainExpr).method("optional").build();
-
-      objBuilder = objBuilder.prop(field.name, domainExpr);
-    } else {
-      objBuilder = objBuilder.prop(field.name, conjure.str(mapping.typeString!));
+      const withArray = field.isArray
+        ? conjure.chain(baseExpr).method("array").build()
+        : baseExpr;
+      const withNullable = field.nullable ? applyNullable(withArray) : withArray;
+      return conjure.chain(withNullable).method("optional").build();
     }
-  }
+
+    return conjure.str(mapping.typeString!);
+  };
+
+  // Add PK fields as required
+  const pkFields = primaryKey.columns
+    .map(pkColName => entity.shapes.row.fields.find(f => f.name === pkColName))
+    .filter((f): f is Field => f !== undefined);
+
+  const withPkFields = pkFields.reduce(
+    (builder, field) => builder.prop(field.name, buildPkFieldValue(field)),
+    conjure.obj(),
+  );
+
+  // Add non-PK fields as optional
+  const nonPkFields = updateShape.fields.filter(f => !pkColumnSet.has(f.name));
+
+  const objBuilder = nonPkFields.reduce(
+    (builder, field) => builder.prop(field.name, buildOptionalFieldValue(field)),
+    withPkFields,
+  );
 
   return conjure.id("type").call([objBuilder.build()]).build();
 }
@@ -547,227 +465,202 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
-
-      const declarations: SymbolDeclaration[] = [];
+      const entities = [...ir.entities.values()];
 
       // Declare domains FIRST (so they can be referenced by tables)
-      for (const entity of ir.entities.values()) {
-        if (isDomainEntity(entity)) {
-          declarations.push({
-            name: entity.name,
-            capability: `schema:arktype:${entity.name}`,
-          });
-          declarations.push({
-            name: entity.name,
-            capability: `schema:arktype:${entity.name}:type`,
-          });
-        }
-      }
+      const domainDeclarations = entities.filter(isDomainEntity).flatMap(entity => [
+        { name: entity.name, capability: `schema:arktype:${entity.name}` },
+        { name: entity.name, capability: `schema:arktype:${entity.name}:type` },
+      ]);
 
-      // Then declare tables and enums
-      for (const entity of ir.entities.values()) {
-        if (isTableEntity(entity)) {
-          declarations.push(...buildShapeDeclarations(entity, "schema:arktype"));
-          if (entity.shapes.update && entity.primaryKey) {
-            const updateInputName = getUpdateInputName(entity);
-            declarations.push({
-              name: updateInputName,
-              capability: `schema:arktype:${updateInputName}`,
-              baseEntityName: entity.name,
-            });
-            declarations.push({
-              name: updateInputName,
-              capability: `schema:arktype:${updateInputName}:type`,
-              baseEntityName: entity.name,
-            });
-          }
-        } else if (isEnumEntity(entity)) {
-          declarations.push(...buildEnumDeclarations(entity, "schema:arktype"));
-        }
-      }
+      // Table declarations including UpdateInput schemas
+      const tableDeclarations = entities.filter(isTableEntity).flatMap(entity => {
+        const shapeDecls = buildShapeDeclarations(entity, "schema:arktype");
+        const updateInputDecls =
+          entity.shapes.update && entity.primaryKey
+            ? (() => {
+                const updateInputName = getUpdateInputName(entity);
+                return [
+                  { name: updateInputName, capability: `schema:arktype:${updateInputName}`, baseEntityName: entity.name },
+                  { name: updateInputName, capability: `schema:arktype:${updateInputName}:type`, baseEntityName: entity.name },
+                ];
+              })()
+            : [];
+        return [...shapeDecls, ...updateInputDecls];
+      });
 
-      // Declare the schema builder capability
-      declarations.push(buildSchemaBuilderDeclaration("arkTypeSchemaBuilder", "schema:arktype"));
+      const enumDeclarations = entities
+        .filter(isEnumEntity)
+        .flatMap(entity => buildEnumDeclarations(entity, "schema:arktype"));
 
-      return declarations;
+      return [
+        ...domainDeclarations,
+        ...tableDeclarations,
+        ...enumDeclarations,
+        buildSchemaBuilderDeclaration("arkTypeSchemaBuilder", "schema:arktype"),
+      ];
     }),
 
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
 
-      const enums = [...ir.entities.values()].filter(isEnumEntity);
-      const domains = [...ir.entities.values()].filter(isDomainEntity);
+      const entities = [...ir.entities.values()];
+      const enums = entities.filter(isEnumEntity);
+      const domains = entities.filter(isDomainEntity);
+      const tables = entities.filter(isTableEntity);
 
-      const rendered: RenderedSymbol[] = [];
+      const arktypeImport = { from: "arktype", names: ["type"] };
 
-      // Render domains FIRST so they can be referenced by tables
-      for (const entity of domains) {
-        // Build arktype schema string for domain
+      // Render domain entity
+      const renderDomain = (entity: DomainEntity): RenderedSymbol[] => {
         const schemaString = domainToArktypeString(entity);
-        const schemaNode = conjure
-          .id("type")
-          .call([conjure.str(schemaString)])
-          .build();
-
+        const schemaNode = conjure.id("type").call([conjure.str(schemaString)]).build();
         const schemaDecl = conjure.export.const(entity.name, schemaNode);
-
         const inferType = conjure.ts.typeof(`${entity.name}.infer`);
         const typeDecl = conjure.export.type(entity.name, inferType);
 
-        rendered.push({
-          name: entity.name,
-          capability: `schema:arktype:${entity.name}`,
-          node: schemaDecl,
-          exports: "named",
-          imports: [{ from: "arktype", names: ["type"] }],
-          metadata: {
-            consume: createArkTypeConsumeCallback(entity.name),
-          },
-        });
-
-        if (resolvedConfig.exportTypes) {
-          rendered.push({
-            name: entity.name,
-            capability: `schema:arktype:${entity.name}:type`,
-            node: typeDecl,
-            exports: "named",
-            imports: [{ from: "arktype", names: ["type"] }],
-          });
-        }
-      }
-
-      // Then render tables and enums
-      for (const entity of ir.entities.values()) {
-        if (isTableEntity(entity)) {
-          const shapes: NonNullable<TableEntity["shapes"]["row" | "insert" | "update"]>[] = [
-            entity.shapes.row,
-          ];
-          if (entity.shapes.insert) shapes.push(entity.shapes.insert);
-          if (entity.shapes.update) shapes.push(entity.shapes.update);
-
-          for (const shape of shapes) {
-            const isRow = shape.kind === "row";
-            const capability = `schema:arktype:${shape.name}`;
-
-            // Scope cross-references to this specific capability
-            const schemaNode = registry.forSymbol(capability, () =>
-              shapeToArkTypeObject(shape, enums, domains, registry),
-            );
-
-            const schemaDecl = conjure.export.const(shape.name, schemaNode);
-
-            rendered.push({
-              name: shape.name,
-              capability,
-              node: schemaDecl,
-              exports: "named",
-              imports: [{ from: "arktype", names: ["type"] }],
-              metadata: {
-                consume: createArkTypeConsumeCallback(shape.name),
-              },
-            });
-
-            if (resolvedConfig.exportTypes && !isRow) {
-              const inferType = conjure.ts.typeof(`${shape.name}.infer`);
-              const typeDecl = conjure.export.type(shape.name, inferType);
-
-              rendered.push({
-                name: shape.name,
-                capability: `schema:arktype:${shape.name}:type`,
-                node: typeDecl,
-                exports: "named",
-                imports: [{ from: "arktype", names: ["type"] }],
-              });
-            }
-          }
-
-          // Render UpdateInput schema if entity has update shape AND primary key
-          if (entity.shapes.update && entity.primaryKey) {
-            const updateInputName = getUpdateInputName(entity);
-            const capability = `schema:arktype:${updateInputName}`;
-
-            const schemaNode = registry.forSymbol(capability, () =>
-              buildUpdateInputSchema(entity, enums, domains, registry),
-            );
-
-            if (schemaNode) {
-              const schemaDecl = conjure.export.const(updateInputName, schemaNode);
-
-              rendered.push({
-                name: updateInputName,
-                capability,
-                node: schemaDecl,
-                exports: "named",
-                imports: [{ from: "arktype", names: ["type"] }],
-                metadata: {
-                  consume: createArkTypeConsumeCallback(updateInputName),
-                },
-              });
-
-              if (resolvedConfig.exportTypes) {
-                const inferType = conjure.ts.typeof(`${updateInputName}.infer`);
-                const typeDecl = conjure.export.type(updateInputName, inferType);
-
-                rendered.push({
-                  name: updateInputName,
-                  capability: `schema:arktype:${updateInputName}:type`,
-                  node: typeDecl,
-                  exports: "named",
-                  imports: [{ from: "arktype", names: ["type"] }],
-                });
-              }
-            }
-          }
-        } else if (isEnumEntity(entity)) {
-          const enumString = entity.values.map(v => `'${v}'`).join(" | ");
-          const schemaNode = conjure
-            .id("type")
-            .call([conjure.str(enumString)])
-            .build();
-
-          const schemaDecl = conjure.export.const(entity.name, schemaNode);
-
-          const inferType = conjure.ts.typeof(`${entity.name}.infer`);
-          const typeDecl = conjure.export.type(entity.name, inferType);
-
-          rendered.push({
+        return [
+          {
             name: entity.name,
             capability: `schema:arktype:${entity.name}`,
             node: schemaDecl,
             exports: "named",
-            imports: [{ from: "arktype", names: ["type"] }],
-            metadata: {
-              consume: createArkTypeConsumeCallback(entity.name),
-            },
-          });
+            imports: [arktypeImport],
+            metadata: { consume: createArkTypeConsumeCallback(entity.name) },
+          },
+          ...(resolvedConfig.exportTypes
+            ? [{
+                name: entity.name,
+                capability: `schema:arktype:${entity.name}:type`,
+                node: typeDecl,
+                exports: "named" as const,
+                imports: [arktypeImport],
+              }]
+            : []),
+        ];
+      };
 
-          if (resolvedConfig.exportTypes) {
-            rendered.push({
-              name: entity.name,
-              capability: `schema:arktype:${entity.name}:type`,
-              node: typeDecl,
-              exports: "named",
-              imports: [{ from: "arktype", names: ["type"] }],
-            });
-          }
-        }
-        // Note: domains and enums are handled separately (domains before loop, enums via buildEnumDeclarations)
-      }
+      // Render enum entity
+      const renderEnum = (entity: EnumEntity): RenderedSymbol[] => {
+        const enumString = entity.values.map(v => `'${v}'`).join(" | ");
+        const schemaNode = conjure.id("type").call([conjure.str(enumString)]).build();
+        const schemaDecl = conjure.export.const(entity.name, schemaNode);
+        const inferType = conjure.ts.typeof(`${entity.name}.infer`);
+        const typeDecl = conjure.export.type(entity.name, inferType);
 
-      // Render the schema builder (virtual symbol - no node, just metadata)
-      // The builder is used by HTTP plugins to generate inline param schemas
-      rendered.push({
+        return [
+          {
+            name: entity.name,
+            capability: `schema:arktype:${entity.name}`,
+            node: schemaDecl,
+            exports: "named",
+            imports: [arktypeImport],
+            metadata: { consume: createArkTypeConsumeCallback(entity.name) },
+          },
+          ...(resolvedConfig.exportTypes
+            ? [{
+                name: entity.name,
+                capability: `schema:arktype:${entity.name}:type`,
+                node: typeDecl,
+                exports: "named" as const,
+                imports: [arktypeImport],
+              }]
+            : []),
+        ];
+      };
+
+      // Render a shape (row, insert, update)
+      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>): RenderedSymbol[] => {
+        const isRow = shape.kind === "row";
+        const capability = `schema:arktype:${shape.name}`;
+        const schemaNode = registry.forSymbol(capability, () =>
+          shapeToArkTypeObject(shape, enums, domains, registry),
+        );
+        const schemaDecl = conjure.export.const(shape.name, schemaNode);
+
+        return [
+          {
+            name: shape.name,
+            capability,
+            node: schemaDecl,
+            exports: "named",
+            imports: [arktypeImport],
+            metadata: { consume: createArkTypeConsumeCallback(shape.name) },
+          },
+          ...(resolvedConfig.exportTypes && !isRow
+            ? [{
+                name: shape.name,
+                capability: `schema:arktype:${shape.name}:type`,
+                node: conjure.export.type(shape.name, conjure.ts.typeof(`${shape.name}.infer`)),
+                exports: "named" as const,
+                imports: [arktypeImport],
+              }]
+            : []),
+        ];
+      };
+
+      // Render UpdateInput schema for a table
+      const renderUpdateInput = (entity: TableEntity): RenderedSymbol[] => {
+        if (!entity.shapes.update || !entity.primaryKey) return [];
+
+        const updateInputName = getUpdateInputName(entity);
+        const capability = `schema:arktype:${updateInputName}`;
+        const schemaNode = registry.forSymbol(capability, () =>
+          buildUpdateInputSchema(entity, enums, domains, registry),
+        );
+
+        if (!schemaNode) return [];
+
+        const schemaDecl = conjure.export.const(updateInputName, schemaNode);
+
+        return [
+          {
+            name: updateInputName,
+            capability,
+            node: schemaDecl,
+            exports: "named",
+            imports: [arktypeImport],
+            metadata: { consume: createArkTypeConsumeCallback(updateInputName) },
+          },
+          ...(resolvedConfig.exportTypes
+            ? [{
+                name: updateInputName,
+                capability: `schema:arktype:${updateInputName}:type`,
+                node: conjure.export.type(updateInputName, conjure.ts.typeof(`${updateInputName}.infer`)),
+                exports: "named" as const,
+                imports: [arktypeImport],
+              }]
+            : []),
+        ];
+      };
+
+      // Get shapes from table entity
+      const getEntityShapes = (entity: TableEntity) =>
+        [entity.shapes.row, entity.shapes.insert, entity.shapes.update]
+          .filter(Boolean) as NonNullable<TableEntity["shapes"]["row"]>[];
+
+      // Render table entity (shapes + UpdateInput)
+      const renderTable = (entity: TableEntity): RenderedSymbol[] => [
+        ...getEntityShapes(entity).flatMap(renderShape),
+        ...renderUpdateInput(entity),
+      ];
+
+      // Schema builder symbol (virtual - no node, just metadata)
+      const builderSymbol: RenderedSymbol = {
         name: "arkTypeSchemaBuilder",
         capability: "schema:arktype:builder",
-        node: null, // Virtual symbol - no emitted code
-        exports: false, // Not exported
-        metadata: {
-          builder: arkTypeSchemaBuilder,
-        },
-      });
+        node: null,
+        exports: false,
+        metadata: { builder: arkTypeSchemaBuilder },
+      };
 
-      return rendered;
+      return [
+        ...domains.flatMap(renderDomain),
+        ...tables.flatMap(renderTable),
+        ...enums.flatMap(renderEnum),
+        builderSymbol,
+      ];
     }),
   };
 }
