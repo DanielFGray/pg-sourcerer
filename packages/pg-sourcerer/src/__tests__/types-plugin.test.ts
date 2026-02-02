@@ -115,13 +115,13 @@ describe("Types Plugin - Declare", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
-      expect(result.declarations.length).toBeGreaterThan(0);
+      expect(result.rendered.length).toBeGreaterThan(0);
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       expect(capabilities).toContain("type:User");
       expect(capabilities).toContain("type:Post");
 
-      const names = result.declarations.map(d => d.name);
+      const names = result.rendered.map(d => d.name);
       expect(names).toContain("User");
       expect(names).toContain("Post");
     }),
@@ -147,9 +147,9 @@ describe("Types Plugin - Declare", () => {
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
       // Types plugin declares enum types too, plus UserRow (not User)
-      expect(result.declarations).toHaveLength(2);
-      expect(result.declarations.some(d => d.name === "UserRow")).toBe(true);
-      expect(result.declarations.some(d => d.name === "Status")).toBe(true);
+      expect(result.rendered).toHaveLength(2);
+      expect(result.rendered.some(d => d.name === "UserRow")).toBe(true);
+      expect(result.rendered.some(d => d.name === "Status")).toBe(true);
     }),
   );
 });

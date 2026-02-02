@@ -3,7 +3,7 @@
  */
 import { Schema as S } from "effect";
 import type { InflectionConfig } from "./services/inflection.js";
-import type { Plugin } from "./runtime/types.js";
+import type { Plugin, FinalizeHooks } from "./runtime/types.js";
 
 /**
  * Type hint match criteria
@@ -71,6 +71,9 @@ export const Config = S.Struct({
    * Relative to outputDir. Default: "index.ts"
    */
   defaultFile: S.optional(S.String),
+
+  /** Finalize hooks for transforming output before emit (validated as Any, properly typed in ConfigInput) */
+  hooks: S.optional(S.Any),
 });
 
 export type Config = S.Schema.Type<typeof Config>;
@@ -152,6 +155,22 @@ export interface ConfigInput {
    * Relative to outputDir. Default: "index.ts"
    */
   readonly defaultFile?: string;
+
+  /**
+   * Finalize hooks for transforming output before emit.
+   *
+   * @example
+   * ```typescript
+   * hooks: {
+   *   // Add license header to all files
+   *   transformFile: (file) => ({
+   *     ...file,
+   *     content: `// Copyright 2024 My Company\n\n${file.content}`,
+   *   }),
+   * }
+   * ```
+   */
+  readonly hooks?: FinalizeHooks;
 }
 
 /**
@@ -168,6 +187,8 @@ export interface ResolvedConfig {
   readonly plugins: readonly Plugin[];
   readonly formatter?: string;
   readonly defaultFile?: string;
+  /** Finalize hooks for transforming output before emit */
+  readonly hooks?: FinalizeHooks;
   /**
    * Directory containing the config file.
    * Used to resolve relative paths in userModule() references.

@@ -9,6 +9,7 @@ import type { namedTypes as n } from "ast-types";
 import { conjure as conjureApi, extractIdentifierRefs } from "../conjure/index.js";
 import type { RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import type { ExternalImport } from "../runtime/emit.js";
+import type { UserModuleRef } from "../user-module.js";
 import { SymbolCollision } from "../runtime/registry.js";
 
 // =============================================================================
@@ -28,7 +29,7 @@ export interface ExpOpts {
   /**
    * External package imports needed by this symbol
    */
-  imports?: ExternalImport[];
+  imports?: readonly ExternalImport[];
 
   /**
    * Consumer callback: how to use/validate through this symbol.
@@ -45,7 +46,21 @@ export interface ExpOpts {
    * Arbitrary metadata attached to this symbol
    */
   metadata?: unknown;
+
+  /**
+   * User module imports for this symbol.
+   * These are resolved relative to the config file and converted to
+   * correct relative paths for each output file at emit time.
+   */
+  userImports?: readonly UserModuleRef[];
+
+  /**
+   * The base entity name for file grouping purposes.
+   * For shapes like "CommentInsert", this would be "Comment".
+   */
+  baseEntityName?: string;
 }
+
 
 /**
  * Interface property specification
@@ -72,12 +87,19 @@ export interface PluginContext {
 export interface ConjureRegistry {
   /** Register a symbol declaration (makes it findable) */
   register(decl: { name: string; capability: string }): Effect.Effect<void, SymbolCollision>;
-  
-  /** Store rendered output for a symbol */
-  setRendered(capability: string, node: unknown, metadata?: unknown): void;
-  
+
+  /** Store a complete RenderedSymbol (new API for automatic tracking) */
+  storeRenderedSymbol(symbol: RenderedSymbol): void;
+
   /** Get a handle to an already-registered symbol */
-  import(capability: string): SymbolHandle; // Returns runtime SymbolHandle with ref/call/consume
+  import(capability: string): SymbolHandle;
+
+  /**
+   * Scope cross-reference tracking to a single symbol.
+   * All `import().ref()` calls within the callback are attributed
+   * only to the specified capability.
+   */
+  forSymbol<T>(capability: string, fn: () => T): T;
 }
 
 // =============================================================================
@@ -88,23 +110,26 @@ export interface ConjureService {
   // ═══════════════════════════════════════════════════════════════════════════
   // Tracked exports - these register symbols automatically
   // ═══════════════════════════════════════════════════════════════════════════
-  
+
   readonly exp: {
     /** Export const: `export const name = init` */
     const(name: string, init: n.Expression, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
-    
+
     /** Export type alias: `export type Name = Type` */
     type(name: string, type: n.TSType, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
-    
+
     /** Export interface: `export interface Name { ... }` */
     interface(
       name: string,
       props: InterfaceProp[],
       opts?: ExpOpts,
     ): Effect.Effect<n.Statement, SymbolCollision>;
-    
+
     /** Export function: `export function name(...) { ... }` */
     fn(decl: n.FunctionDeclaration, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
+
+    /** Export class: `export class Name extends ... {}` */
+    class(name: string, decl: n.ClassDeclaration, opts?: ExpOpts): Effect.Effect<n.Statement, SymbolCollision>;
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -189,6 +214,17 @@ function inferCapability(ctx: PluginContext | null, name: string, explicitCap?: 
 }
 
 /**
+ * Build metadata object from ExpOpts
+ */
+function buildMetadata(opts?: ExpOpts): unknown {
+  if (!opts?.consume && !opts?.metadata) return undefined;
+  return {
+    consume: opts?.consume,
+    ...(typeof opts?.metadata === "object" ? opts?.metadata : { data: opts?.metadata }),
+  };
+}
+
+/**
  * Create the Conjure service implementation
  */
 export function makeConjureService(registry: ConjureRegistry): ConjureService {
@@ -201,20 +237,22 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         // Register the declaration (makes symbol findable by other plugins)
         yield* registry.register({ name, capability });
 
-        // Build the AST node
-        const node = conjureApi.export.const(name, init);
+        // Build the AST node - scoped for ref tracking
+        const node = registry.forSymbol(capability, () => conjureApi.export.const(name, init));
         const refs = extractIdentifierRefs(node);
 
-        // Build metadata that includes consume callback and any user-provided metadata
-        const metadata = opts?.consume || opts?.metadata
-          ? {
-              consume: opts?.consume,
-              ...(typeof opts?.metadata === "object" ? opts?.metadata : { data: opts?.metadata }),
-            }
-          : undefined;
-
-        // Store rendered output
-        registry.setRendered(capability, node, metadata);
+        // Store complete RenderedSymbol
+        registry.storeRenderedSymbol({
+          name,
+          capability,
+          node,
+          exports: opts?.exports ?? "named",
+          imports: opts?.imports,
+          metadata: buildMetadata(opts),
+          refs,
+          userImports: opts?.userImports,
+          baseEntityName: opts?.baseEntityName,
+        });
 
         return node;
       }),
@@ -227,18 +265,23 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         // Register the declaration
         yield* registry.register({ name, capability });
 
-        // Build the AST node
-        const node = conjureApi.export.type(name, type);
+        // Build the AST node - scoped for ref tracking
+        const node = registry.forSymbol(capability, () => conjureApi.export.type(name, type));
         const refs = extractIdentifierRefs(node);
 
-        const metadata = opts?.consume || opts?.metadata
-          ? {
-              consume: opts?.consume,
-              ...(typeof opts?.metadata === "object" ? opts?.metadata : { data: opts?.metadata }),
-            }
-          : undefined;
+        // Store complete RenderedSymbol
+        registry.storeRenderedSymbol({
+          name,
+          capability,
+          node,
+          exports: opts?.exports ?? "named",
+          imports: opts?.imports,
+          metadata: buildMetadata(opts),
+          refs,
+          userImports: opts?.userImports,
+          baseEntityName: opts?.baseEntityName,
+        });
 
-        registry.setRendered(capability, node, metadata);
         return node;
       }),
 
@@ -250,25 +293,30 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         // Register the declaration
         yield* registry.register({ name, capability });
 
-        // Build the AST node
-        const node = conjureApi.export.interface(name, props);
+        // Build the AST node - scoped for ref tracking
+        const node = registry.forSymbol(capability, () => conjureApi.export.interface(name, props));
         const refs = extractIdentifierRefs(node);
 
-        const metadata = opts?.consume || opts?.metadata
-          ? {
-              consume: opts?.consume,
-              ...(typeof opts?.metadata === "object" ? opts?.metadata : { data: opts?.metadata }),
-            }
-          : undefined;
+        // Store complete RenderedSymbol
+        registry.storeRenderedSymbol({
+          name,
+          capability,
+          node,
+          exports: opts?.exports ?? "named",
+          imports: opts?.imports,
+          metadata: buildMetadata(opts),
+          refs,
+          userImports: opts?.userImports,
+          baseEntityName: opts?.baseEntityName,
+        });
 
-        registry.setRendered(capability, node, metadata);
         return node;
       }),
 
     fn: (decl: n.FunctionDeclaration, opts?: ExpOpts) =>
       Effect.gen(function* () {
         const ctx = yield* FiberRef.get(CurrentPluginContext);
-        
+
         // Extract function name from declaration
         const nameNode = decl.id;
         if (!nameNode || typeof nameNode !== "object" || !("name" in nameNode)) {
@@ -281,18 +329,53 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
         // Register the declaration
         yield* registry.register({ name, capability });
 
-        // Build the AST node
-        const node = conjureApi.export.fn(decl);
+        // Build the AST node - scoped for ref tracking
+        const node = registry.forSymbol(capability, () => conjureApi.export.fn(decl));
         const refs = extractIdentifierRefs(node);
 
-        const metadata = opts?.consume || opts?.metadata
-          ? {
-              consume: opts?.consume,
-              ...(typeof opts?.metadata === "object" ? opts?.metadata : { data: opts?.metadata }),
-            }
-          : undefined;
+        // Store complete RenderedSymbol
+        registry.storeRenderedSymbol({
+          name,
+          capability,
+          node,
+          exports: opts?.exports ?? "named",
+          imports: opts?.imports,
+          metadata: buildMetadata(opts),
+          refs,
+          userImports: opts?.userImports,
+          baseEntityName: opts?.baseEntityName,
+        });
 
-        registry.setRendered(capability, node, metadata);
+        return node;
+      }),
+
+    class: (name: string, decl: n.ClassDeclaration, opts?: ExpOpts) =>
+      Effect.gen(function* () {
+        const ctx = yield* FiberRef.get(CurrentPluginContext);
+        const capability = inferCapability(ctx, name, opts?.capability);
+
+        // Register the declaration
+        yield* registry.register({ name, capability });
+
+        // Build the exported class node - scoped for ref tracking
+        const node = registry.forSymbol(capability, () =>
+          conjureApi.b.exportNamedDeclaration(decl, []),
+        );
+        const refs = extractIdentifierRefs(node);
+
+        // Store complete RenderedSymbol
+        registry.storeRenderedSymbol({
+          name,
+          capability,
+          node,
+          exports: opts?.exports ?? "named",
+          imports: opts?.imports,
+          metadata: buildMetadata(opts),
+          refs,
+          userImports: opts?.userImports,
+          baseEntityName: opts?.baseEntityName,
+        });
+
         return node;
       }),
   };

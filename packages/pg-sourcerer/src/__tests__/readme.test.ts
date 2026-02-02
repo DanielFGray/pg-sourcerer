@@ -190,7 +190,7 @@ const passes: ReadonlyArray<{
   {
     id: "valibot-types-raw-trpc",
     outputDir: "generated/valibot",
-    plugins: [typesPlugin(), sqlQueries(), valibot({ exportTypes: false }), trpc()],
+    plugins: [sqlQueries(), valibot(), trpc()],
   },
   {
     id: "effect",
@@ -208,86 +208,88 @@ describe("README spec", () => {
         const fixture = yield* readFixture;
         yield* applyFixture(db, fixture);
 
-      const introspectionLayer = makeIntrospectionLayer(db);
-      const runtimeLayer = Layer.mergeAll(introspectionLayer, NodeContext.layer);
+        const introspectionLayer = makeIntrospectionLayer(db);
+        const runtimeLayer = Layer.mergeAll(introspectionLayer, NodeContext.layer);
 
-      // Collect all emitted files in memory (dryRun mode)
-      const allFiles = new Map<string, string>();
+        // Collect all emitted files in memory (dryRun mode)
+        const allFiles = new Map<string, string>();
 
-      yield* Effect.forEach(passes, pass =>
-        Effect.gen(function* () {
-          console.log(`\n=== PASS: ${pass.id} ===\n`);
-          const config = toResolvedConfig(generateConfig(pass.outputDir, pass.plugins));
-
-          const result = yield* generate({ outputDir: pass.outputDir, dryRun: true }).pipe(
-            Effect.provide(runtimeLayer),
-            Effect.provide(ConfigFromMemory(config)),
-          );
-
-          // Store emitted files in memory (resolve relative to repoRoot)
-          for (const file of result.emittedFiles) {
-            const fullPath = resolve(repoRoot, pass.outputDir, file.path);
-            allFiles.set(fullPath, file.content);
-          }
-
-          return result;
-        }),
-      );
-
-      // Create Effect-based file resolver
-      const fileResolver = createFileResolver(allFiles);
-
-      // Convert to Promise-based resolver for verifyReadmeSpec
-      const promiseResolver = (filePath: string) => Effect.runPromise(fileResolver(filePath));
-
-      // Verify README spec using in-memory files
-      yield* Effect.tryPromise({
-        try: () =>
-          verifyReadmeSpec({
-            repoRoot,
-            fileResolver: promiseResolver,
-          }),
-        catch: error => {
-          // Type-safe error handling
-          if (error && typeof error === "object" && "details" in error) {
-          // Narrow error shape defensively rather than using `as any`
-          const verified = error && typeof error === "object" && "verified" in error
-            ? (error as unknown as { verified?: number }).verified ?? 0
-            : 0;
-          const skipped = error && typeof error === "object" && "skipped" in error
-            ? (error as unknown as { skipped?: number }).skipped ?? 0
-            : 0;
-          return new SpecVerificationError({
-            message: "README specification verification failed",
-            verified,
-            skipped,
-            failures: Array.isArray((error as unknown as { details?: unknown }).details)
-              ? (error as unknown as { details?: string[] }).details!
-              : [],
-          });
-          }
-          return new SpecVerificationError({
-            message: error instanceof Error ? error.message : String(error),
-            verified: 0,
-            skipped: 0,
-            failures: [],
-          });
-        },
-      }).pipe(
-        Effect.catchTag("SpecVerificationError", error =>
+        yield* Effect.forEach(passes, pass =>
           Effect.gen(function* () {
-            console.error("\n=== VERIFICATION FAILURES ===");
-            console.error(`Verified: ${error.verified}, Skipped: ${error.skipped}`);
-            console.error(`Failures: ${error.failures.length}`);
-            for (const detail of error.failures) {
-              console.error("\n" + detail);
-              console.error("---");
+            console.log(`\n=== PASS: ${pass.id} ===\n`);
+            const config = toResolvedConfig(generateConfig(pass.outputDir, pass.plugins));
+
+            const result = yield* generate({ outputDir: pass.outputDir, dryRun: true }).pipe(
+              Effect.provide(runtimeLayer),
+              Effect.provide(ConfigFromMemory(config)),
+            );
+
+            // Store emitted files in memory (resolve relative to repoRoot)
+            for (const file of result.emittedFiles) {
+              const fullPath = resolve(repoRoot, pass.outputDir, file.path);
+              allFiles.set(fullPath, file.content);
             }
-            return yield* Effect.fail(error); // Re-throw after logging
+
+            return result;
           }),
-        ),
-      );
-    }),
+        );
+
+        // Create Effect-based file resolver
+        const fileResolver = createFileResolver(allFiles);
+
+        // Convert to Promise-based resolver for verifyReadmeSpec
+        const promiseResolver = (filePath: string) => Effect.runPromise(fileResolver(filePath));
+
+        // Verify README spec using in-memory files
+        yield* Effect.tryPromise({
+          try: () =>
+            verifyReadmeSpec({
+              repoRoot,
+              fileResolver: promiseResolver,
+            }),
+          catch: error => {
+            // Type-safe error handling
+            if (error && typeof error === "object" && "details" in error) {
+              // Narrow error shape defensively rather than using `as any`
+              const verified =
+                error && typeof error === "object" && "verified" in error
+                  ? ((error as unknown as { verified?: number }).verified ?? 0)
+                  : 0;
+              const skipped =
+                error && typeof error === "object" && "skipped" in error
+                  ? ((error as unknown as { skipped?: number }).skipped ?? 0)
+                  : 0;
+              return new SpecVerificationError({
+                message: "README specification verification failed",
+                verified,
+                skipped,
+                failures: Array.isArray((error as unknown as { details?: unknown }).details)
+                  ? (error as unknown as { details?: string[] }).details!
+                  : [],
+              });
+            }
+            return new SpecVerificationError({
+              message: error instanceof Error ? error.message : String(error),
+              verified: 0,
+              skipped: 0,
+              failures: [],
+            });
+          },
+        }).pipe(
+          Effect.catchTag("SpecVerificationError", error =>
+            Effect.gen(function* () {
+              console.error("\n=== VERIFICATION FAILURES ===");
+              console.error(`Verified: ${error.verified}, Skipped: ${error.skipped}`);
+              console.error(`Failures: ${error.failures.length}`);
+              for (const detail of error.failures) {
+                console.error("\n" + detail);
+                console.error("---");
+              }
+              return yield* Effect.fail(error); // Re-throw after logging
+            }),
+          ),
+        );
+      }),
     15000,
   );
 });

@@ -2,7 +2,7 @@ import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import { Context, Effect, Schema, pipe, Array as Arr } from "effect";
-import type { Capability, SymbolDeclaration, SymbolRef, SymbolHandle } from "./types.js";
+import type { Capability, SymbolDeclaration, SymbolRef, SymbolHandle, RenderedSymbol } from "./types.js";
 
 const b = recast.types.builders;
 
@@ -142,6 +142,12 @@ export interface SymbolRegistryService {
    * ```
    */
   readonly forSymbol: <T>(capability: Capability, fn: () => T) => T;
+
+  /**
+   * Store a complete RenderedSymbol directly.
+   * Used for virtual symbols that have no AST node (e.g., schema builders).
+   */
+  readonly storeRenderedSymbol: (symbol: RenderedSymbol) => void;
 }
 
 /**
@@ -171,6 +177,12 @@ export class SymbolRegistryImpl {
   private symbols = new Map<Capability, SymbolDeclaration>();
   private rendered = new Map<Capability, { node: unknown; metadata?: unknown }>();
   private referenceCallbacks = new Map<Capability, Set<(capability: Capability) => void>>();
+
+  /**
+   * Full RenderedSymbol storage for automatic symbol tracking.
+   * Populated by Conjure service's exp.* methods during render phase.
+   */
+  private renderedSymbols = new Map<Capability, RenderedSymbol>();
 
   /**
    * Category providers: Maps category name -> provider plugin name.
@@ -213,6 +225,10 @@ export class SymbolRegistryImpl {
     return Effect.gen(this, function* () {
       if (this.symbols.has(decl.capability)) {
         const existing = this.symbols.get(decl.capability)!;
+        // Idempotent: if same name, already registered - skip
+        if (existing.name === decl.name) {
+          return;
+        }
         return yield* new SymbolCollision({
           message: `Capability "${decl.capability}" already registered by symbol "${existing.name}"`,
           capability: decl.capability,
@@ -226,12 +242,46 @@ export class SymbolRegistryImpl {
 
   /**
    * Store rendered output for a symbol. Called during render phase.
-   * 
-   * Note: Cross-file reference tracking via symbol.refs is now handled
-   * by the orchestrator before calling this method.
+   *
+   * Also records cross-file references from the symbol's refs field.
+   * Refs are identifier names extracted from AST; we find matching
+   * symbol declarations by name and prefer schema/type capabilities.
+   *
+   * @param capability - The capability being rendered
+   * @param node - The rendered AST node
+   * @param metadata - Optional metadata from the plugin
+   * @param refs - Identifier names referenced by this symbol
    */
-  setRendered(capability: Capability, node: unknown, metadata?: unknown): void {
+  setRendered(
+    capability: Capability,
+    node: unknown,
+    metadata?: unknown,
+    refs?: readonly string[],
+  ): void {
     this.rendered.set(capability, { node, metadata });
+
+    // Record cross-file references from provided refs
+    if (refs && refs.length > 0) {
+      for (const refName of refs) {
+        // Find candidate declarations with the referenced name
+        const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
+        if (candidates.length === 0) continue;
+
+        // Prefer schema/type capabilities when ambiguous
+        const chosen =
+          candidates.find(c => c.capability.startsWith("schema:")) ||
+          candidates.find(c => c.capability.startsWith("type:")) ||
+          candidates[0];
+
+        // Record cross-file reference: capability -> chosen.capability
+        if (chosen && chosen.capability !== capability) {
+          if (!this.references.has(capability)) {
+            this.references.set(capability, new Set());
+          }
+          this.references.get(capability)!.add(chosen.capability);
+        }
+      }
+    }
   }
 
   /**
@@ -239,6 +289,65 @@ export class SymbolRegistryImpl {
    */
   getRenderedMetadata(capability: Capability): unknown {
     return this.rendered.get(capability)?.metadata;
+  }
+
+  /**
+   * Store a complete RenderedSymbol. Called by Conjure's exp.* methods.
+   * This is the primary storage for automatic symbol tracking.
+   */
+  storeRenderedSymbol(symbol: RenderedSymbol): void {
+    // Register in symbols map so import() can find it
+    if (!this.symbols.has(symbol.capability)) {
+      this.symbols.set(symbol.capability, {
+        name: symbol.name,
+        capability: symbol.capability,
+        baseEntityName: symbol.baseEntityName,
+      });
+    }
+
+    this.renderedSymbols.set(symbol.capability, symbol);
+    // Also update legacy rendered map for backward compatibility
+    this.rendered.set(symbol.capability, { node: symbol.node, metadata: symbol.metadata });
+
+    // Record cross-file references from provided refs
+    if (symbol.refs && symbol.refs.length > 0) {
+      for (const refName of symbol.refs) {
+        const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
+        if (candidates.length === 0) continue;
+
+        const chosen =
+          candidates.find(c => c.capability.startsWith("schema:")) ||
+          candidates.find(c => c.capability.startsWith("type:")) ||
+          candidates[0];
+
+        if (chosen && chosen.capability !== symbol.capability) {
+          if (!this.references.has(symbol.capability)) {
+            this.references.set(symbol.capability, new Set());
+          }
+          this.references.get(symbol.capability)!.add(chosen.capability);
+        }
+      }
+    }
+  }
+
+  /**
+   * Get rendered symbols for specific capabilities.
+   * Used by orchestrator to collect symbols after render phase.
+   */
+  getRenderedSymbols(capabilities: readonly Capability[]): readonly RenderedSymbol[] {
+    return pipe(
+      capabilities,
+      Arr.map(cap => this.renderedSymbols.get(cap)),
+      Arr.filter((s): s is RenderedSymbol => s !== undefined),
+    );
+  }
+
+  /**
+   * Get all rendered symbols from all plugins.
+   * Used by orchestrator when collecting final results.
+   */
+  getAllRenderedSymbols(): readonly RenderedSymbol[] {
+    return Arr.fromIterable(this.renderedSymbols.values());
   }
 
   /**
@@ -564,6 +673,7 @@ export class SymbolRegistryImpl {
       getMetadata: cap => this.getRenderedMetadata(cap),
       own: () => this.own(),
       forSymbol: <T>(cap: Capability, fn: () => T) => this.forSymbol(cap, fn),
+      storeRenderedSymbol: symbol => this.storeRenderedSymbol(symbol),
     };
   }
 }

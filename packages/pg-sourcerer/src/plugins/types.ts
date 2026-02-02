@@ -7,12 +7,13 @@
  *
  * Other plugins can consume these types via the SymbolRegistry.
  */
-import { Effect, pipe } from "effect";
+import { Effect, pipe, Array as Arr } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { TSTypeKind } from "ast-types/lib/gen/kinds.js";
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
+import { Conjure, type InterfaceProp } from "../services/conjure.js";
 import {
   isEnumEntity,
   isTableEntity,
@@ -69,20 +70,19 @@ function fieldToTsType(
   );
 }
 
-function fieldToPropertySignature(
+function fieldToInterfaceProp(
   field: Field,
   enumMap: Map<string, string>,
   domainMap: Map<string, string>,
-  readonly: boolean,
-): n.TSPropertySignature {
-  const propName = b.identifier(field.name);
+  isReadonly: boolean,
+): InterfaceProp {
   const tsType = fieldToTsType(field, enumMap, domainMap);
-
-  const sig = b.tsPropertySignature(propName, b.tsTypeAnnotation(tsType));
-  sig.optional = field.optional;
-  if (readonly) sig.readonly = true;
-
-  return sig;
+  return {
+    name: field.name,
+    type: tsType,
+    optional: field.optional,
+    readonly: isReadonly,
+  };
 }
 
 // =============================================================================
@@ -90,39 +90,38 @@ function fieldToPropertySignature(
 // =============================================================================
 
 /**
- * Generate an interface declaration for a table entity's row shape.
+ * Generate interface properties for a table entity's shape.
  *
  * @example
  * // For a "users" table with id, email, name columns:
- * interface User {
- *   readonly id: string;
- *   readonly email: string;
- *   readonly name: string | null;
- * }
+ * [
+ *   { name: 'id', type: TSStringKeyword, readonly: true },
+ *   { name: 'email', type: TSStringKeyword, readonly: true },
+ *   { name: 'name', type: TSUnionType([TSStringKeyword, TSNullKeyword]), readonly: true },
+ * ]
  */
-function shapeToInterface(
+function shapeToInterfaceProps(
   shape: Shape,
   enumMap: Map<string, string>,
   domainMap: Map<string, string>,
   readonly: boolean,
-): n.TSInterfaceDeclaration {
-  const members = shape.fields.map(field => fieldToPropertySignature(field, enumMap, domainMap, readonly));
-  return b.tsInterfaceDeclaration(b.identifier(shape.name), b.tsInterfaceBody(members));
-}
-
-function enumToTypeAlias(entity: EnumEntity): n.TSTypeAliasDeclaration {
-  const union = b.tsUnionType(entity.values.map(value => b.tsLiteralType(b.stringLiteral(value))));
-  return b.tsTypeAliasDeclaration(b.identifier(entity.name), union);
+): InterfaceProp[] {
+  return shape.fields.map(field => fieldToInterfaceProp(field, enumMap, domainMap, readonly));
 }
 
 /**
- * Convert a domain entity to a type alias.
+ * Convert an enum entity to a union type.
+ */
+function enumToUnionType(entity: EnumEntity): n.TSType {
+  return b.tsUnionType(entity.values.map(value => b.tsLiteralType(b.stringLiteral(value))));
+}
+
+/**
+ * Convert a domain entity to a TypeScript type.
  * Domains are branded types in the database, but in TypeScript we just alias to the base type.
  */
-function domainToTypeAlias(entity: DomainEntity): n.TSTypeAliasDeclaration {
-  // Map domain base type to TypeScript type
-  const tsType = types.fromPg(entity.baseTypeName);
-  return b.tsTypeAliasDeclaration(b.identifier(entity.name), tsType);
+function domainToTsType(entity: DomainEntity): n.TSType {
+  return types.fromPg(entity.baseTypeName);
 }
 
 // =============================================================================
@@ -159,35 +158,9 @@ export function typesPlugin(): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const entities = [...ir.entities.values()];
-
-      const enumDeclarations = entities
-        .filter(isEnumEntity)
-        .map(entity => ({ name: entity.name, capability: `type:${entity.name}` }));
-
-      const domainDeclarations = entities
-        .filter(isDomainEntity)
-        .map(entity => ({ name: entity.name, capability: `type:${entity.name}` }));
-
-      const getEntityShapes = (entity: TableEntity): Shape[] =>
-        [entity.shapes.row, entity.shapes.update, entity.shapes.insert].filter(Boolean) as Shape[];
-
-      const tableDeclarations = entities
-        .filter(isTableEntity)
-        .flatMap(entity =>
-          getEntityShapes(entity).map(shape => ({
-            name: shape.name,
-            capability: `type:${shape.name}`,
-          })),
-        );
-
-      return [...enumDeclarations, ...domainDeclarations, ...tableDeclarations];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
+      const cj = yield* Conjure;
       const entities = [...ir.entities.values()];
 
       const enumEntities = entities.filter(isEnumEntity);
@@ -198,35 +171,34 @@ export function typesPlugin(): Plugin {
       const domainMap = new Map(domainEntities.map(entity => [entity.pgType.typname, entity.name]));
 
       // Render enum types first (domains may reference them, tables reference both)
-      const enumSymbols: RenderedSymbol[] = enumEntities.map(entity => ({
-        name: entity.name,
-        capability: `type:${entity.name}`,
-        node: enumToTypeAlias(entity),
-        exports: "named",
-      }));
+      const enumStatements = yield* Effect.forEach(enumEntities, entity =>
+        cj.exp.type(entity.name, enumToUnionType(entity), {
+          capability: `type:${entity.name}`,
+        }),
+      );
 
       // Render domain types (tables reference these)
-      const domainSymbols: RenderedSymbol[] = domainEntities.map(entity => ({
-        name: entity.name,
-        capability: `type:${entity.name}`,
-        node: domainToTypeAlias(entity),
-        exports: "named",
-      }));
+      const domainStatements = yield* Effect.forEach(domainEntities, entity =>
+        cj.exp.type(entity.name, domainToTsType(entity), {
+          capability: `type:${entity.name}`,
+        }),
+      );
 
       // Render table interfaces
       const getEntityShapes = (entity: TableEntity): Shape[] =>
         [entity.shapes.row, entity.shapes.update, entity.shapes.insert].filter(Boolean) as Shape[];
 
-      const tableSymbols: RenderedSymbol[] = tableEntities.flatMap(entity =>
-        getEntityShapes(entity).map(shape => ({
-          name: shape.name,
-          capability: `type:${shape.name}`,
-          node: shapeToInterface(shape, enumMap, domainMap, shape.kind === "row"),
-          exports: "named" as const,
-        })),
+      const tableStatements = yield* Effect.forEach(
+        Arr.flatMap(tableEntities, entity => getEntityShapes(entity)),
+        shape =>
+          cj.exp.interface(
+            shape.name,
+            shapeToInterfaceProps(shape, enumMap, domainMap, shape.kind === "row"),
+            { capability: `type:${shape.name}` },
+          ),
       );
 
-      return [...enumSymbols, ...domainSymbols, ...tableSymbols];
+      return [...enumStatements, ...domainStatements, ...tableStatements];
     }),
   };
 }

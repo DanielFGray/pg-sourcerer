@@ -137,7 +137,7 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          expect(result.declarations.length).toBeGreaterThan(0);
+          expect(result.rendered.length).toBeGreaterThan(0);
           expect(result.rendered.length).toBeGreaterThan(0);
         }),
       );
@@ -204,11 +204,11 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          const unsatisfiedDeps = result.declarations.filter(
+          const unsatisfiedDeps = result.rendered.filter(
             (d) =>
               d.dependsOn &&
               d.dependsOn.some(
-                (dep) => !result.declarations.some((other) => other.capability === dep),
+                (dep) => !result.rendered.some((other) => other.capability === dep),
               ),
           );
 
@@ -229,7 +229,7 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          const caps = result.declarations.map((d) => d.capability);
+          const caps = result.rendered.map((d) => d.capability);
           const uniqueCaps = new Set(caps);
           expect(caps.length).toBe(uniqueCaps.size);
         }

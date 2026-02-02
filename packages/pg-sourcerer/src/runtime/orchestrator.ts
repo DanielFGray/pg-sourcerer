@@ -1,5 +1,5 @@
 import { Effect, Layer, Array as Arr, FiberRef, pipe } from "effect";
-import type { Plugin, SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
+import type { Plugin, Capability, RenderedSymbol } from "./types.js";
 import { SymbolRegistry, SymbolRegistryImpl } from "./registry.js";
 import { validateAll } from "./validation.js";
 import type { FileAssignmentConfig, AssignedSymbol } from "./file-assignment.js";
@@ -9,19 +9,17 @@ import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { TypeHints, type TypeHintRegistry } from "../services/type-hints.js";
 import type { SemanticIR } from "../ir/semantic-ir.js";
 import { Conjure, CurrentPluginContext, makeConjureService } from "../services/conjure.js";
+import { IRExtensions, IRExtensionsImpl } from "../services/ir-extensions.js";
 
 /**
  * Result of running the orchestrator.
  */
 export interface OrchestratorResult {
-  /** All symbol declarations from all plugins */
-  readonly declarations: readonly SymbolDeclaration[];
-
   /** All rendered symbols from all plugins */
   readonly rendered: readonly RenderedSymbol[];
 
   /** Symbols grouped by output file */
-  readonly fileGroups: ReadonlyMap<string, readonly AssignedSymbol[]>;
+  readonly fileGroups: ReadonlyMap<string, readonly AssignedSymbol<RenderedSymbol>[]>;
 
   /** The symbol registry for lookups */
   readonly registry: SymbolRegistryImpl;
@@ -58,32 +56,88 @@ export interface OrchestratorConfig {
 }
 
 /**
- * Run plugins through two-phase execution.
+ * Run plugins through render-first execution.
  *
  * Phases:
- * 1. Declare: All plugins declare their symbols (with IR, Inflection, TypeHints services)
- * 2. Validate: Check capability satisfaction and dependency cycles
+ * 1. Render: All plugins generate AST via Conjure (symbols auto-register)
+ * 2. Validate: Check for conflicts and missing refs (post-render)
  * 3. Assign: Assign symbols to output files
- * 4. Render: All plugins render their symbol bodies (with SymbolRegistry service added)
  *
  * @param config - Orchestrator configuration
  */
+/**
+ * Sort plugins topologically based on provides/consumes dependencies.
+ * Plugins that provide capabilities must run before plugins that consume them.
+ */
+function sortPluginsByDependencies(plugins: readonly Plugin[]): readonly Plugin[] {
+  // Build a map of category -> providing plugin
+  const categoryProviders = new Map<string, Plugin>();
+  for (const plugin of plugins) {
+    for (const cap of plugin.provides) {
+      if (!cap.includes(":")) {
+        categoryProviders.set(cap, plugin);
+      }
+    }
+  }
+
+  // Build dependency graph: plugin -> plugins it depends on
+  const dependsOn = new Map<Plugin, Set<Plugin>>();
+  for (const plugin of plugins) {
+    const deps = new Set<Plugin>();
+    for (const cap of plugin.consumes ?? []) {
+      const provider = categoryProviders.get(cap);
+      if (provider && provider !== plugin) {
+        deps.add(provider);
+      }
+    }
+    dependsOn.set(plugin, deps);
+  }
+
+  // Topological sort using Kahn's algorithm
+  const sorted: Plugin[] = [];
+  const remaining = new Set(plugins);
+
+  while (remaining.size > 0) {
+    // Find plugins with no unsatisfied dependencies
+    const ready: Plugin[] = [];
+    for (const plugin of remaining) {
+      const deps = dependsOn.get(plugin) ?? new Set();
+      const unsatisfied = [...deps].filter(d => remaining.has(d));
+      if (unsatisfied.length === 0) {
+        ready.push(plugin);
+      }
+    }
+
+    if (ready.length === 0) {
+      // Circular dependency - just take any remaining plugin
+      ready.push([...remaining][0]!);
+    }
+
+    for (const plugin of ready) {
+      sorted.push(plugin);
+      remaining.delete(plugin);
+    }
+  }
+
+  return sorted;
+}
+
 export const runPlugins = (config: OrchestratorConfig) =>
   Effect.gen(function* () {
     const registry = new SymbolRegistryImpl();
 
-    const plugins = config.plugins;
+    // Sort plugins by dependencies - providers before consumers
+    const plugins = sortPluginsByDependencies(config.plugins);
+    // Debug: log plugin order
+    // console.log("Plugin order:", plugins.map(p => `${p.name}(provides:${p.provides.join(",")},consumes:${(p.consumes ?? []).join(",")})`));
 
     // Collect file defaults from all plugins
     const pluginFileDefaults = Arr.flatMap(plugins, p => p.fileDefaults ?? []);
 
-    // Use plugin file defaults directly (no user overrides - plugins handle their own config)
-    const mergedRules = pluginFileDefaults;
-
     // Build file assignment config
     const fileAssignment: FileAssignmentConfig = {
       outputDir: config.outputDir,
-      rules: mergedRules,
+      rules: pluginFileDefaults,
       defaultFile: config.defaultFile ?? "index.ts",
       inflection: config.inflection,
     };
@@ -92,11 +146,11 @@ export const runPlugins = (config: OrchestratorConfig) =>
     const irLayer = Layer.succeed(IR, config.ir);
     const inflectionLayer = Layer.succeed(Inflection, config.inflection);
     const typeHintsLayer = Layer.succeed(TypeHints, config.typeHints);
-    const declareLayer = Layer.mergeAll(irLayer, inflectionLayer, typeHintsLayer);
+    const baseLayer = Layer.mergeAll(irLayer, inflectionLayer, typeHintsLayer);
 
     // Phase 0: Register category providers
     // Categories are bare strings in `provides` (no colons), e.g., "queries", "schema"
-    // This must happen before declare phase so capability resolution works
+    // This must happen before render so capability resolution works
     const categoryRegistrations = pipe(
       plugins,
       Arr.flatMap(plugin =>
@@ -109,115 +163,60 @@ export const runPlugins = (config: OrchestratorConfig) =>
       registry.registerCategoryProvider(cap, pluginName),
     );
 
-    // Phase 1: Declare - collect all symbol declarations
-    // Track which plugin declared which capabilities for Phase 4
-    const declarationResults = yield* Effect.forEach(plugins, plugin =>
-      Effect.gen(function* () {
-        const decls = yield* plugin.declare.pipe(Effect.provide(declareLayer));
-        yield* registry.registerAll(decls);
-        return { plugin, decls };
-      }),
-    );
-
-    const allDeclarations = Arr.flatMap(declarationResults, r => r.decls);
-    const capabilitiesByPlugin = new Map<Plugin, readonly Capability[]>(
-      declarationResults.map(({ plugin, decls }) => [plugin, decls.map(d => d.capability)]),
-    );
-
-    // Phase 2: Validate
-    yield* validateAll(plugins, registry);
-
-    // Phase 3: Assign symbols to files
-    const assigned = assignSymbolsToFiles(allDeclarations, fileAssignment);
-    const fileGroups = groupByFile(assigned);
-
-    // Phase 4: Render - add SymbolRegistry and Conjure services
+    // Phase 1: Render - add SymbolRegistry, Conjure, and IRExtensions services
     const registryLayer = Layer.succeed(SymbolRegistry, registry.toService());
-    
+
     // Create Conjure service with the registry
     const conjureService = makeConjureService({
-      register: (decl) => registry.register(decl),
-      setRendered: (capability, node, metadata) => registry.setRendered(capability, node, metadata),
-      import: (capability) => registry.import(capability),
+      register: decl => registry.register(decl),
+      storeRenderedSymbol: symbol => registry.storeRenderedSymbol(symbol),
+      import: capability => registry.import(capability),
+      forSymbol: <T>(capability: string, fn: () => T) => registry.forSymbol(capability, fn),
     });
     const conjureLayer = Layer.succeed(Conjure, conjureService);
-    
-    const renderLayer = Layer.mergeAll(declareLayer, registryLayer, conjureLayer);
 
-    // Helper to safely record a schema reference for a symbol
-    const recordSchemaRef = (capability: Capability, refName: string): void => {
-      try {
-        registry.forSymbol(capability, () => {
-          try {
-            registry.import(`schema:${refName}`).ref();
-          } catch {
-            // ignore missing capabilities
-          }
-        });
-      } catch {
-        // ignore
-      }
-    };
+    // Create IRExtensions service for plugin coordination (schema builder sharing)
+    const irExtensions = new IRExtensionsImpl();
+    const irExtensionsLayer = Layer.succeed(IRExtensions, irExtensions.toService());
 
-    // Helper to process rendered symbols (record refs, set rendered output)
-    const processRenderedSymbols = (rendered: readonly RenderedSymbol[]): void => {
-      rendered.forEach(symbol => {
-        // If conjure attached metadata with referenced identifiers (refs),
-        // record cross-file references by importing the corresponding schema
-        // capabilities. This allows conjure-created `typeof X` usages to be
-        // attributed to the proper capability without plugins calling
-        // registry.import(...) themselves.
-        const refs = symbol.refs;
-        if (refs && Array.isArray(refs)) {
-          refs.forEach(refName => recordSchemaRef(symbol.capability, refName));
-        }
+    const renderLayer = Layer.mergeAll(baseLayer, registryLayer, conjureLayer, irExtensionsLayer);
 
-        // Store rendered output and metadata for consumers
-        registry.setRendered(symbol.capability, symbol.node, symbol.metadata);
-      });
-    };
+    // Run render phase for all plugins
+    yield* Effect.forEach(
+      plugins,
+      plugin =>
+        Effect.gen(function* () {
+          // Handle renderWithImports - record references before render
+          (plugin.renderWithImports ?? []).forEach(cap => {
+            registry.import(cap).ref();
+          });
 
-    const renderResults = yield* Effect.forEach(plugins, plugin =>
-      Effect.gen(function* () {
-        // Set context so registry knows which capabilities are being rendered
-        // Use the capabilities declared by this plugin in Phase 1
-        const pluginCapabilities = capabilitiesByPlugin.get(plugin) ?? [];
-        registry.setCurrentCapabilities(pluginCapabilities);
+          // Set plugin context in FiberRef for Conjure service capability inference
+          yield* FiberRef.set(CurrentPluginContext, {
+            pluginName: plugin.name,
+            provides: plugin.provides,
+          });
 
-        // Set owned declarations so plugins can iterate with registry.own()
-        const pluginDeclarations = allDeclarations.filter(d =>
-          pluginCapabilities.includes(d.capability),
-        );
-        registry.setOwnedDeclarations(pluginDeclarations);
+          // Run render - plugins return AST statements, Conjure populates registry
+          yield* plugin.render.pipe(Effect.provide(renderLayer));
 
-        // Handle renderWithImports - record references before render
-        // We need to actually call .ref() to trigger reference tracking
-        (plugin.renderWithImports ?? []).forEach(cap => {
-          registry.import(cap).ref();
-        });
-
-        // Set plugin context in FiberRef for Conjure service capability inference
-        yield* FiberRef.set(CurrentPluginContext, {
-          pluginName: plugin.name,
-          provides: plugin.provides,
-        });
-
-        const rendered = yield* plugin.render.pipe(Effect.provide(renderLayer));
-
-        processRenderedSymbols(rendered);
-
-        // Clear plugin context after render
-        yield* FiberRef.set(CurrentPluginContext, null);
-        registry.clearCurrentCapabilities();
-
-        return rendered;
-      }),
+          // Clear plugin context after render
+          yield* FiberRef.set(CurrentPluginContext, null);
+        }),
+      { discard: true },
     );
 
-    const allRendered = Arr.flatten(renderResults);
+    // Collect rendered symbols from registry (populated by Conjure's exp.* calls)
+    const allRendered = registry.getAllRenderedSymbols();
+
+    // Phase 2: Validate (post-render)
+    yield* validateAll(plugins, registry);
+
+    // Phase 3: Assign symbols to files (using RenderedSymbol)
+    const assigned = assignSymbolsToFiles(allRendered, fileAssignment);
+    const fileGroups = groupByFile(assigned);
 
     return {
-      declarations: allDeclarations,
       rendered: allRendered,
       fileGroups,
       registry,

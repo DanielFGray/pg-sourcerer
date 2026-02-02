@@ -16,10 +16,12 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
@@ -27,7 +29,7 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import {
   buildEntityQueriesMap,
@@ -41,7 +43,6 @@ import {
   listByRouteFromName,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
 import { FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 
 const { b, stmt } = conjure;
@@ -349,6 +350,7 @@ function buildRouteCall(
 
 /**
  * Generate Hono routes for an entity.
+ * Returns the init expression for the routes variable (not the full statement).
  */
 function generateHonoRoutes(
   entityName: string,
@@ -356,17 +358,15 @@ function generateHonoRoutes(
   config: ResolvedHttpHonoConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression;
   imports: ExternalImport[];
   needsSValidator: boolean;
 } {
-  const routesVarName = inflection.variableName(entityName, "Routes");
-
   const initialChainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
   const schemaCapabilities: string[] = [];
   const schemaImports: ExternalImport[] = [];
-  const schemaBuilder = getSchemaBuilder(registry);
 
   const chainExpr = queries.methods.reduce((chain, method) => {
     const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
@@ -398,12 +398,6 @@ function generateHonoRoutes(
     );
   }, initialChainExpr);
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routesVarName),
-    cast.toExpr(chainExpr),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   const imports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
   const needsSValidator =
     schemaCapabilities.length > 0 ||
@@ -418,7 +412,7 @@ function generateHonoRoutes(
     );
 
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports,
     needsSValidator,
   };
@@ -426,21 +420,22 @@ function generateHonoRoutes(
 
 
 /**
- * Get the schema builder from registry if available.
+ * Generate the aggregator app init expression.
+ * Returns the init expression for the app variable (not the full statement).
  */
-function generateAggregator(
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpHonoConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression | null;
   imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], imports: [] };
+    return { initExpr: null, imports: [] };
   }
 
   const basePath = config.basePath.replace(/^\/+|\/+$/g, "");
@@ -468,11 +463,8 @@ function generateAggregator(
     );
   }, withBasePath);
 
-  const variableDeclarator = b.variableDeclarator(b.identifier("app"), cast.toExpr(chainExpr));
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports: [{ from: "hono", names: ["Hono"] }],
   };
 }
@@ -505,92 +497,58 @@ export function hono(config?: HttpHonoConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
-        name: inflection.variableName(entity.name, "Routes"),
-        capability: `http-routes:hono:${entity.name}`,
-        baseEntityName: entity.name,
-      }));
-
-      return [
-        ...entityDeclarations,
-        { name: "honoApp", capability: "http-routes:hono:app" },
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const entityQueries = buildEntityQueriesMap(registry);
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
-      // Generate routes for each entity, tracking which need sValidator
-      const routeResults = [...entityQueries.entries()]
-        .filter(([entityName]) => {
-          const entity = ir.entities.get(entityName);
-          return entity && isTableEntity(entity);
-        })
-        .map(([entityName, queries]) => {
-          const capability = `http-routes:hono:${entityName}`;
-          const { statements, imports, needsSValidator } = registry.forSymbol(
-            capability,
-            () => generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection),
-          );
+      // Generate routes for each entity
+      for (const [entityName, queries] of entityQueries.entries()) {
+        const entity = ir.entities.get(entityName);
+        if (!entity || !isTableEntity(entity)) continue;
 
-          return {
-            symbol: {
-              name: inflection.variableName(entityName, "Routes"),
-              capability,
-              node: statements[0] ?? null,
-              exports: "named" as const,
-              imports,
-            },
-            needsSValidator,
-          };
-        });
+        const capability = `http-routes:hono:${entityName}`;
+        // Scope ref tracking to this capability
+        const { initExpr, imports, needsSValidator } = registry.forSymbol(capability, () =>
+          generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
+        );
 
-      const needsSValidatorSet = new Set(
-        routeResults.filter(r => r.needsSValidator).map(r => r.symbol.capability),
-      );
+        const finalImports = needsSValidator
+          ? [...imports, { from: "@hono/standard-validator", names: ["sValidator"] }]
+          : imports;
+
+        const routeStmt = yield* cj.exp.const(
+          inflection.variableName(entityName, "Routes"),
+          initExpr,
+          { capability, imports: finalImports },
+        );
+        statements.push(routeStmt);
+      }
 
       // Generate aggregator app if we have any routes
-      const appSymbol: RenderedSymbol[] =
-        entityQueries.size > 0
-          ? (() => {
-              const appCapability = "http-routes:hono:app";
-              const { statements, imports } = registry.forSymbol(appCapability, () =>
-                generateAggregator(entityQueries, resolvedConfig, registry, inflection),
-              );
-              return [{
-                name: "honoApp",
-                capability: appCapability,
-                node: statements[0] ?? null,
-                exports: "named" as const,
-                imports,
-              }];
-            })()
-          : [];
+      if (entityQueries.size > 0) {
+        const appCapability = "http-routes:hono:app";
+        // Scope ref tracking to this capability
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, resolvedConfig, registry, inflection),
+        );
 
-      // Add sValidator import to routes that need it
-      const addSValidatorImport = (symbol: RenderedSymbol): RenderedSymbol =>
-        needsSValidatorSet.has(symbol.capability)
-          ? {
-              ...symbol,
-              imports: [
-                ...(symbol.imports ?? []),
-                { from: "@hono/standard-validator", names: ["sValidator"] },
-              ],
-            }
-          : symbol;
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const("honoApp", initExpr, {
+            capability: appCapability,
+            imports,
+          });
+          statements.push(appStmt);
+        }
+      }
 
-      return [
-        ...routeResults.map(r => r.symbol).map(addSValidatorImport),
-        ...appSymbol,
-      ];
+      return statements;
     }),
   };
 }

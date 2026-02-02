@@ -142,53 +142,12 @@ describe("symbol()", () => {
 });
 
 describe("virtualSymbol()", () => {
-  it("should create symbol with null node", () => {
-    const result = virtualSymbol({
-      name: "findUser",
-      capability: "queries:User:findById",
-    });
-
-    expect(result.name).toBe("findUser");
-    expect(result.capability).toBe("queries:User:findById");
-    expect(result.node).toBeNull();
-    expect(result.exports).toBe(false);
-  });
-
-  it("should preserve metadata", () => {
-    const metadata = {
-      kind: "select-one",
-      params: [{ name: "id", type: "string" }],
-      returnType: "User",
-    };
-
-    const result = virtualSymbol({
-      name: "findUser",
-      capability: "queries:User:findById",
-      metadata,
-    });
-
-    expect(result.metadata).toBe(metadata);
-  });
-
-  it("should preserve imports", () => {
-    const imports = [{ from: "effect", types: ["Effect"] }];
-    const result = virtualSymbol({
-      name: "findUser",
-      capability: "queries:User:findById",
-      imports,
-    });
-
-    expect(result.imports).toBe(imports);
-  });
-
-  it("should preserve userImports", () => {
-    const userImports = [{ modulePath: "./db", kind: "named" as const, imports: ["pool"] }];
-    const result = virtualSymbol({
-      name: "findUser",
-      capability: "queries:User:findById",
-      userImports,
-    });
-
-    expect(result.userImports).toBe(userImports);
+  it("should throw deprecation error", () => {
+    expect(() =>
+      virtualSymbol({
+        name: "findUser",
+        capability: "queries:User:findById",
+      }),
+    ).toThrow("virtualSymbol() has been removed");
   });
 });

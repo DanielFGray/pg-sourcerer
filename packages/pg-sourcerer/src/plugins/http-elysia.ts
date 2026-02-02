@@ -15,10 +15,12 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
@@ -26,7 +28,7 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder, type SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import {
@@ -43,7 +45,6 @@ import {
   needsCoercion,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
 
 const { b, stmt } = conjure;
 
@@ -298,11 +299,13 @@ function buildRouteCall(
 
 /**
  * Generate Elysia routes for an entity.
+ * Returns the init expression for the routes variable (not the full statement).
  *
  * @param entityName - The entity name
  * @param queries - Query extension metadata
  * @param config - Plugin config
  * @param registry - Symbol registry for recording cross-references
+ * @param schemaBuilder - Schema builder for validation schemas
  */
 function generateElysiaRoutes(
   entityName: string,
@@ -310,14 +313,13 @@ function generateElysiaRoutes(
   config: ResolvedHttpElysiaConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression;
   imports: ExternalImport[];
 } {
   // Use inflection.entityRoutePath which handles pluralization and kebab-casing
   const prefix = inflection.entityRoutePath(entityName);
-  // Use same name as the symbol declaration for consistency with cross-references
-  const routesVarName = inflection.variableName(entityName, "Routes");
 
   // Build prefix: ensure proper slashes with basePath
   const basePath = config.basePath.replace(/^\/+|\/+$/g, ""); // trim slashes
@@ -326,7 +328,6 @@ function generateElysiaRoutes(
   const initialChainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), [
     conjure.obj().prop("prefix", b.stringLiteral(fullPrefix)).build(),
   ]);
-  const schemaBuilder = getSchemaBuilder(registry);
   const schemaImports: ExternalImport[] = [];
 
   const chainExpr = queries.methods.reduce((chain, method) => {
@@ -402,12 +403,6 @@ function generateElysiaRoutes(
     );
   }, initialChainExpr);
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routesVarName),
-    cast.toExpr(chainExpr),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   // Only external package imports go here; query and schema imports are handled via cross-references
   const imports: ExternalImport[] = [
     { from: "elysia", names: ["Elysia"] },
@@ -415,24 +410,28 @@ function generateElysiaRoutes(
   ];
 
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports,
   };
 }
 
 
-function generateAggregator(
+/**
+ * Generate the aggregator app init expression.
+ * Returns the init expression for the app variable (not the full statement).
+ */
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression | null;
   imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], imports: [] };
+    return { initExpr: null, imports: [] };
   }
 
   const chainExpr = entityEntries.reduce((chain, [entityName]) => {
@@ -448,11 +447,8 @@ function generateAggregator(
     ]);
   }, b.newExpression(b.identifier("Elysia"), []) as n.Expression);
 
-  const variableDeclarator = b.variableDeclarator(b.identifier("app"), cast.toExpr(chainExpr));
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports: [{ from: "elysia", names: ["Elysia"] }],
   };
 }
@@ -488,69 +484,54 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
-        name: inflection.variableName(entity.name, "Routes"),
-        capability: `http-routes:elysia:${entity.name}`,
-        baseEntityName: entity.name,
-      }));
-
-      return [
-        ...entityDeclarations,
-        { name: "elysiaApp", capability: "http-routes:elysia:app" },
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const entityQueries = buildEntityQueriesMap(registry);
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
       // Generate routes for each entity
-      const routeSymbols = [...entityQueries.entries()]
-        .filter(([entityName]) => {
-          const entity = ir.entities.get(entityName);
-          return entity && isTableEntity(entity);
-        })
-        .map(([entityName, queries]): RenderedSymbol => {
-          const capability = `http-routes:elysia:${entityName}`;
-          const { statements, imports } = registry.forSymbol(capability, () =>
-            generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection),
-          );
+      for (const [entityName, queries] of entityQueries.entries()) {
+        const entity = ir.entities.get(entityName);
+        if (!entity || !isTableEntity(entity)) continue;
 
-          return {
-            name: inflection.variableName(entityName, "Routes"),
-            capability,
-            node: statements[0] ?? null,
-            exports: "named",
-            imports,
-          };
-        });
+        const capability = `http-routes:elysia:${entityName}`;
+        // Scope ref tracking to this capability
+        const { initExpr, imports } = registry.forSymbol(capability, () =>
+          generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
+        );
+
+        const routeStmt = yield* cj.exp.const(
+          inflection.variableName(entityName, "Routes"),
+          initExpr,
+          { capability, imports },
+        );
+        statements.push(routeStmt);
+      }
 
       // Generate aggregator app if we have any routes
-      const appSymbol: RenderedSymbol[] =
-        entityQueries.size > 0
-          ? (() => {
-              const appCapability = "http-routes:elysia:app";
-              const { statements, imports } = registry.forSymbol(appCapability, () =>
-                generateAggregator(entityQueries, registry, inflection),
-              );
-              return [{
-                name: "elysiaApp",
-                capability: appCapability,
-                node: statements[0] ?? null,
-                exports: "named" as const,
-                imports,
-              }];
-            })()
-          : [];
+      if (entityQueries.size > 0) {
+        const appCapability = "http-routes:elysia:app";
+        // Scope ref tracking to this capability
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, registry, inflection),
+        );
 
-      return [...routeSymbols, ...appSymbol];
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const("elysiaApp", initExpr, {
+            capability: appCapability,
+            imports,
+          });
+          statements.push(appStmt);
+        }
+      }
+
+      return statements;
     }),
   };
 }

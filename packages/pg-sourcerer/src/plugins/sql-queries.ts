@@ -4,11 +4,12 @@
  * Generates SQL query functions with tagged template literals.
  * Uses parameterized queries ($1, $2, etc.) for safety.
  */
-import { Effect, Match, Predicate, Schema as S, pipe, Array as Arr, Option } from "effect";
+import { Effect, Schema as S, pipe, Array as Arr, Option } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration } from "../runtime/types.js";
-import type { RenderedSymbol } from "../runtime/types.js";
+import type { Plugin } from "../runtime/types.js";
+import { Conjure, type ExpOpts } from "../services/conjure.js";
+import { IRExtensions } from "../services/ir-extensions.js";
 import type { FileNaming } from "../runtime/file-assignment.js";
 import { normalizeFileNaming } from "../runtime/file-assignment.js";
 import { IR } from "../services/ir.js";
@@ -20,7 +21,7 @@ import {
   type Field,
 } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { QueryMethod, EntityQueriesExtension } from "../ir/extensions/queries.js";
+import { ENTITY_QUERIES_KEY, type QueryMethod, type EntityQueriesExtension } from "../ir/extensions/queries.js";
 import { type UserModuleRef } from "../user-module.js";
 import { getPgType, pgTypeToTsType, resolveFieldTypeInfo } from "./shared/pg-types.js";
 
@@ -33,18 +34,26 @@ const createQueryConsume =
     return b.callExpression(b.identifier(method.name), args);
   };
 
+/** Info needed to register a query symbol via Conjure */
+interface QuerySymbolInfo {
+  readonly name: string;
+  readonly capability: string;
+  readonly initExpr: n.Expression;
+  readonly opts: ExpOpts;
+}
+
 /** Result of generating a query symbol - may include both a symbol and a method */
 interface QueryGenResult {
-  readonly symbols: readonly RenderedSymbol[];
+  readonly symbolInfos: readonly QuerySymbolInfo[];
   readonly methods: readonly QueryMethod[];
 }
 
-const emptyResult: QueryGenResult = { symbols: [], methods: [] };
+const emptyResult: QueryGenResult = { symbolInfos: [], methods: [] };
 
 const combineResults = (results: readonly QueryGenResult[]): QueryGenResult =>
   results.reduce(
     (acc, r) => ({
-      symbols: [...acc.symbols, ...r.symbols],
+      symbolInfos: [...acc.symbolInfos, ...r.symbolInfos],
       methods: [...acc.methods, ...r.methods],
     }),
     emptyResult,
@@ -280,7 +289,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
   const queriesFilePath = typeof queriesFile === "string" ? queriesFile : "queries.ts";
 
   return {
-    name: "sql-queries",
+    name: "sql",
     provides: ["queries"],
     consumes: [],
 
@@ -291,112 +300,10 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      if (!resolvedConfig.generateQueries) return [];
-
-      const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
-
-      const hasPrimaryKey = (entity: TableEntity) =>
-        entity.primaryKey && entity.primaryKey.columns.length > 0;
-
-      const isValidIndex = (index: TableEntity["indexes"][number]) =>
-        !index.isPartial &&
-        !index.hasExpressions &&
-        index.columns.length === 1 &&
-        index.method !== "gin" &&
-        index.method !== "gist";
-
-      return tableEntities.flatMap(entity => {
-        const entityName = entity.name;
-
-        const findByIdDecl =
-          entity.permissions.canSelect && hasPrimaryKey(entity)
-            ? [
-                {
-                  name: buildQueryName(inflection, entityName, "FindById"),
-                  capability: `queries:sql:${entityName}:findById`,
-                },
-              ]
-            : [];
-
-        const createDecl =
-          entity.kind === "table" && entity.permissions.canInsert && entity.shapes.insert
-            ? [
-                {
-                  name: buildQueryName(inflection, entityName, "Create"),
-                  capability: `queries:sql:${entityName}:create`,
-                },
-              ]
-            : [];
-
-        const updateDecl =
-          entity.kind === "table" &&
-          entity.permissions.canUpdate &&
-          entity.shapes.update &&
-          hasPrimaryKey(entity)
-            ? [
-                {
-                  name: buildQueryName(inflection, entityName, "Update"),
-                  capability: `queries:sql:${entityName}:update`,
-                },
-              ]
-            : [];
-
-        const deleteDecl =
-          entity.kind === "table" && entity.permissions.canDelete && hasPrimaryKey(entity)
-            ? [
-                {
-                  name: buildQueryName(inflection, entityName, "Delete"),
-                  capability: `queries:sql:${entityName}:delete`,
-                },
-              ]
-            : [];
-
-        const pkColumns = new Set(entity.primaryKey?.columns ?? []);
-        const findByIndexDecls = entity.permissions.canSelect
-          ? entity.indexes
-              .filter(isValidIndex)
-              .map(index => index.columns[0]!)
-              .filter(columnName => !pkColumns.has(columnName))
-              .filter((columnName, i, arr) => arr.indexOf(columnName) === i) // dedupe
-              .map(columnName => ({
-                name: buildFindByName(inflection, entityName, columnName),
-                capability: `queries:sql:${entityName}:findBy${inflection.pascalCase(columnName)}`,
-              }))
-          : [];
-
-        const cursorDecls = getCursorPaginationCandidates(entity).map(candidate => ({
-          name: buildListByName(inflection, entityName, candidate.cursorColumnName),
-          capability: `queries:sql:${entityName}:listBy${inflection.pascalCase(candidate.cursorColumnName)}`,
-        }));
-
-        const methodDecls = [
-          ...findByIdDecl,
-          ...createDecl,
-          ...updateDecl,
-          ...deleteDecl,
-          ...findByIndexDecls,
-          ...cursorDecls,
-        ];
-
-        return methodDecls.length > 0
-          ? [
-              ...methodDecls,
-              {
-                name: `${entityName}Queries`,
-                capability: `queries:sql:${entityName}`,
-              },
-            ]
-          : [];
-      });
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
 
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
       const defaultSchemas = ir.schemas;
@@ -442,7 +349,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           `${selectClause} ${fromClause} where ${pkColumn} = `,
           "",
         ]);
-        const fnExpr = fn()
+        const initExpr = fn()
           .rawParam(buildDestructuredParam([pkParam]))
           .arrow()
           .body(conjure.stmt.return(templateLiteral))
@@ -450,14 +357,15 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
         return {
           methods: [method],
-          symbols: [
+          symbolInfos: [
             {
               name: method.name,
               capability: `queries:sql:${entityName}:findById`,
-              node: conjure.export.const(method.name, fnExpr),
-              metadata: { consume: createQueryConsume(method) },
-              exports: "named",
-              userImports: queryUserImports,
+              initExpr,
+              opts: {
+                metadata: { consume: createQueryConsume(method) },
+                userImports: queryUserImports,
+              },
             },
           ],
         };
@@ -493,7 +401,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
         const paramExprs = insertableFields.map(f =>
           b.memberExpression(b.identifier("data"), b.identifier(f.name)),
         );
-        const fnExpr = fn()
+        const initExpr = fn()
           .rawParam(buildDestructuredParam([bodyParam]))
           .arrow()
           .body(conjure.stmt.return(buildTemplateLiteralWithParams(templateParts, paramExprs)))
@@ -501,15 +409,16 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
         return {
           methods: [method],
-          symbols: [
+          symbolInfos: [
             {
               name: method.name,
               capability: `queries:sql:${entityName}:create`,
-              node: conjure.export.const(method.name, fnExpr),
-              metadata: { consume: createQueryConsume(method) },
-              exports: "named",
-              imports: [{ from: queriesFilePath, types: [entityName] }],
-              userImports: queryUserImports,
+              initExpr,
+              opts: {
+                metadata: { consume: createQueryConsume(method) },
+                imports: [{ from: queriesFilePath, types: [entityName] }],
+                userImports: queryUserImports,
+              },
             },
           ],
         };
@@ -557,7 +466,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           ),
           b.identifier(pkField.name),
         ];
-        const fnExpr = fn()
+        const initExpr = fn()
           .rawParam(buildDestructuredParam([pkParam, bodyParam]))
           .arrow()
           .body(conjure.stmt.return(buildTemplateLiteralWithParams(templateParts, paramExprs)))
@@ -565,15 +474,16 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
         return {
           methods: [method],
-          symbols: [
+          symbolInfos: [
             {
               name: method.name,
               capability: `queries:sql:${entityName}:update`,
-              node: conjure.export.const(method.name, fnExpr),
-              metadata: { consume: createQueryConsume(method) },
-              exports: "named",
-              imports: [{ from: queriesFilePath, types: [entityName] }],
-              userImports: queryUserImports,
+              initExpr,
+              opts: {
+                metadata: { consume: createQueryConsume(method) },
+                imports: [{ from: queriesFilePath, types: [entityName] }],
+                userImports: queryUserImports,
+              },
             },
           ],
         };
@@ -601,7 +511,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           callSignature: { style: "named" },
         };
 
-        const fnExpr = fn()
+        const initExpr = fn()
           .rawParam(buildDestructuredParam([pkParam]))
           .arrow()
           .body(
@@ -613,14 +523,15 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
         return {
           methods: [method],
-          symbols: [
+          symbolInfos: [
             {
               name: method.name,
               capability: `queries:sql:${entityName}:delete`,
-              node: conjure.export.const(method.name, fnExpr),
-              metadata: { consume: createQueryConsume(method) },
-              exports: "named",
-              userImports: queryUserImports,
+              initExpr,
+              opts: {
+                metadata: { consume: createQueryConsume(method) },
+                userImports: queryUserImports,
+              },
             },
           ],
         };
@@ -665,7 +576,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
                   callSignature: { style: "named" },
                 };
 
-                const fnExpr = fn()
+                const initExpr = fn()
                   .rawParam(buildDestructuredParam([lookupParam]))
                   .arrow()
                   .body(
@@ -677,14 +588,15 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
                 return {
                   methods: [method],
-                  symbols: [
+                  symbolInfos: [
                     {
                       name: method.name,
                       capability: `queries:sql:${entityName}:findBy${pascalColumn}`,
-                      node: conjure.export.const(method.name, fnExpr),
-                      metadata: { consume: createQueryConsume(method) },
-                      exports: "named" as const,
-                      userImports: queryUserImports,
+                      initExpr,
+                      opts: {
+                        metadata: { consume: createQueryConsume(method) },
+                        userImports: queryUserImports,
+                      },
                     },
                   ],
                 } satisfies QueryGenResult;
@@ -748,7 +660,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
                   `)) order by ${candidate.cursorColumnName} ${orderDirection}, ${candidate.pkColumnName} ${orderDirection} limit `,
                 ];
 
-                const fnExpr = fn()
+                const initExpr = fn()
                   .rawParam(buildDestructuredParam([cursorParam, cursorPkParam, limitParam]))
                   .arrow()
                   .body(
@@ -764,13 +676,14 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
                 return {
                   methods: [method],
-                  symbols: [
+                  symbolInfos: [
                     {
                       name: method.name,
                       capability: `queries:sql:${entityName}:listBy${pascalColumn}`,
-                      node: conjure.export.const(method.name, fnExpr),
-                      exports: "named" as const,
-                      userImports: queryUserImports,
+                      initExpr,
+                      opts: {
+                        userImports: queryUserImports,
+                      },
                     },
                   ],
                 } satisfies QueryGenResult;
@@ -780,13 +693,13 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           combineResults,
         );
 
-      const generateEntitySymbols = (entity: TableEntity): RenderedSymbol[] => {
+      const generateEntityResults = (entity: TableEntity): QueryGenResult => {
         const entityName = entity.name;
         const tableName = buildTableName(entity, defaultSchemas);
         const selectClause = buildSelectClause(entity, resolvedConfig.explicitColumns);
         const fromClause = `from ${tableName}`;
 
-        const results = combineResults([
+        return combineResults([
           generateFindById(entity, entityName, selectClause, fromClause),
           generateCreate(entity, entityName, tableName),
           generateUpdate(entity, entityName, tableName),
@@ -794,6 +707,14 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           generateFindByIndexes(entity, entityName, selectClause, fromClause),
           generateCursorPagination(entity, entityName, selectClause, fromClause),
         ]);
+      };
+
+      const cj = yield* Conjure;
+      const statements: n.Statement[] = [];
+
+      for (const entity of tableEntities) {
+        const entityName = entity.name;
+        const results = generateEntityResults(entity);
 
         const pkField = entity.primaryKey?.columns[0]
           ? entity.shapes.row.fields.find(f => f.columnName === entity.primaryKey!.columns[0])
@@ -805,19 +726,20 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           hasCompositePk: (entity.primaryKey?.columns.length ?? 0) > 1,
         };
 
-        return [
-          ...results.symbols,
-          {
-            name: `${entityName}Queries`,
-            capability: `queries:sql:${entityName}`,
-            node: b.emptyStatement(),
-            metadata: entityExtension,
-            exports: false,
-          },
-        ];
-      };
+        // Register each symbol via Conjure
+        for (const info of results.symbolInfos) {
+          const stmt = yield* cj.exp.const(info.name, info.initExpr, {
+            capability: info.capability,
+            ...info.opts,
+          });
+          statements.push(stmt);
+        }
 
-      return tableEntities.flatMap(generateEntitySymbols);
+        // Store entity queries metadata for HTTP plugins
+        extensions.setEntry(ENTITY_QUERIES_KEY, entityName, entityExtension);
+      }
+
+      return statements;
     }),
   };
 }

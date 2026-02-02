@@ -12,8 +12,18 @@
  * { pattern: "type:", fileNaming: ({ name, schema }) => `${name.toLowerCase()}.ts` }
  */
 import { pipe, Array as Arr, Option } from "effect";
-import type { SymbolDeclaration, Capability } from "./types.js";
+import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types.js";
 import type { CoreInflection } from "../services/inflection.js";
+
+/**
+ * Minimal input for file assignment.
+ * Both SymbolDeclaration and RenderedSymbol satisfy this interface.
+ */
+export interface FileAssignmentInput {
+  readonly name: string;
+  readonly capability: Capability;
+  readonly baseEntityName?: string;
+}
 
 /**
  * Context provided to file naming functions
@@ -68,8 +78,8 @@ export function normalizeFileNaming(
 /**
  * A symbol with its assigned output file path.
  */
-export interface AssignedSymbol {
-  readonly declaration: SymbolDeclaration;
+export interface AssignedSymbol<T extends FileAssignmentInput = SymbolDeclaration> {
+  readonly declaration: T;
   readonly filePath: string;
 }
 
@@ -223,11 +233,11 @@ export function parseCapabilityInfo(capability: Capability): {
  * }
  * assignSymbolsToFiles(declarations, config)
  */
-export function assignSymbolsToFiles(
-  declarations: readonly SymbolDeclaration[],
+export function assignSymbolsToFiles<T extends FileAssignmentInput>(
+  declarations: readonly T[],
   config: FileAssignmentConfig,
-): readonly AssignedSymbol[] {
-  return declarations.map((declaration): AssignedSymbol => {
+): readonly AssignedSymbol<T>[] {
+  return declarations.map((declaration): AssignedSymbol<T> => {
     const filePath = getFileForCapability(declaration, config);
     return { declaration, filePath };
   });
@@ -236,9 +246,9 @@ export function assignSymbolsToFiles(
 /**
  * Group assigned symbols by file path.
  */
-export function groupByFile(
-  assigned: readonly AssignedSymbol[],
-): ReadonlyMap<string, readonly AssignedSymbol[]> {
+export function groupByFile<T extends FileAssignmentInput>(
+  assigned: readonly AssignedSymbol<T>[],
+): ReadonlyMap<string, readonly AssignedSymbol<T>[]> {
   return pipe(
     assigned,
     Arr.groupBy(item => item.filePath),
@@ -258,7 +268,7 @@ interface ResolvedEntityInfo {
  * Resolve entity info from registry or capability parsing.
  */
 function resolveEntityInfo(
-  declaration: SymbolDeclaration,
+  declaration: FileAssignmentInput,
   inflection: CoreInflection,
 ): ResolvedEntityInfo {
   // Try to get entity info from registry first (most accurate)
@@ -305,11 +315,11 @@ function resolveEntityInfo(
  * the same folder.
  */
 export function getFileForCapability(
-  declaration: SymbolDeclaration,
+  declaration: FileAssignmentInput & { outputPath?: string },
   config: FileAssignmentConfig,
 ): string {
-  // If declaration has explicit outputPath, use it directly
-  if (declaration.outputPath) {
+  // If declaration has explicit outputPath, use it directly (SymbolDeclaration only)
+  if ("outputPath" in declaration && declaration.outputPath) {
     return declaration.outputPath;
   }
 

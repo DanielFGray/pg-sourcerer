@@ -21,7 +21,7 @@ import { Effect, Layer, Schema, pipe, Array as Arr } from "effect";
 import { Command, FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import type { ResolvedConfig } from "./config.js";
-import type { Plugin, RenderedSymbol } from "./runtime/types.js";
+import type { Plugin, RenderedSymbol, FinalizeHooks, FileOutput } from "./runtime/types.js";
 import { runPlugins, type OrchestratorResult } from "./runtime/orchestrator.js";
 import { emitFiles, type EmittedFile } from "./runtime/emit.js";
 import { ConfigService } from "./services/config.js";
@@ -73,6 +73,11 @@ export class FormatError extends Schema.TaggedError<FormatError>()("FormatError"
   message: Schema.String,
   path: Schema.String,
   cause: Schema.optional(Schema.Unknown),
+}) {}
+
+export class HookValidationError extends Schema.TaggedError<HookValidationError>()("HookValidationError", {
+  message: Schema.String,
+  capability: Schema.optional(Schema.String),
 }) {}
 
 /**
@@ -218,9 +223,36 @@ export const generate = (options: GenerateOptions = {}) =>
       outputDir: config.outputDir,
     });
 
+    // Run finalize hooks
+    const hooks = config.hooks;
+    let finalRendered = pluginResult.rendered;
+
+    // Apply transformSymbol hook
+    if (hooks?.transformSymbol) {
+      yield* Effect.logDebug("Running transformSymbol hook...");
+      finalRendered = finalRendered.map(hooks.transformSymbol);
+    }
+
+    // Run validate hook
+    if (hooks?.validate) {
+      yield* Effect.logDebug("Running validate hook...");
+      const error = hooks.validate(finalRendered);
+      if (error) {
+        yield* Effect.fail(new HookValidationError({
+          message: error.message,
+          capability: error.capability,
+        }));
+      }
+    }
+
+    // Create modified plugin result with transformed symbols
+    const finalPluginResult: OrchestratorResult = finalRendered !== pluginResult.rendered
+      ? { ...pluginResult, rendered: finalRendered }
+      : pluginResult;
+
     // Validate user module imports before emitting
     if (config.configDir) {
-      const userModuleRefs = collectUserModuleRefs(pluginResult.rendered);
+      const userModuleRefs = collectUserModuleRefs(finalPluginResult.rendered);
       if (userModuleRefs.length > 0) {
         yield* Effect.logDebug(`Validating ${userModuleRefs.length} user module import(s)...`);
         yield* validateUserModules(userModuleRefs, config.configDir).pipe(
@@ -229,10 +261,17 @@ export const generate = (options: GenerateOptions = {}) =>
       }
     }
 
-    const emittedFiles = emitFiles(pluginResult, {
+    let emittedFiles = emitFiles(finalPluginResult, {
       configDir: config.configDir,
       outputDir: options.outputDir ?? config.outputDir,
     });
+
+    // Apply transformFile hook
+    if (hooks?.transformFile) {
+      yield* Effect.logDebug("Running transformFile hook...");
+      emittedFiles = emittedFiles.map(hooks.transformFile);
+    }
+
     yield* Effect.log(`Generated ${emittedFiles.length} files`);
 
     const outputDir = options.outputDir ?? config.outputDir;

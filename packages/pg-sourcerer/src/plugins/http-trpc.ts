@@ -17,8 +17,10 @@ import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { QueryMethodKind } from "../ir/extensions/queries.js";
 import { conjure, cast } from "../conjure/index.js";
@@ -27,8 +29,7 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilder, SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
-import type { RenderedSymbol } from "../runtime/types.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder, type SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
@@ -40,7 +41,6 @@ import {
   getMethodCapabilitySuffix,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
 
 const { b, stmt } = conjure;
 
@@ -328,6 +328,7 @@ function buildProcedure(
 
 /**
  * Generate tRPC router for an entity.
+ * Returns the init expression for the router variable (not the full statement).
  */
 function generateTrpcRouter(
   entityName: string,
@@ -335,14 +336,12 @@ function generateTrpcRouter(
   config: ResolvedHttpTrpcConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression;
   imports: ExternalImport[];
 } {
-  const routerName = inflection.variableName(entityName, "Router");
-  const schemaBuilder = getSchemaBuilder(registry);
-
-  const { routerObjBuilder, schemaImports, bodySchemaNames } = queries.methods.reduce(
+  const { routerObjBuilder, schemaImports } = queries.methods.reduce(
     (acc, method) => {
       const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(
         method,
@@ -384,34 +383,30 @@ function generateTrpcRouter(
   const routerCall = b.callExpression(b.identifier("router"), [
     cast.toExpr(routerObjBuilder.build()),
   ]);
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routerName),
-    cast.toExpr(routerCall),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
 
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: routerCall,
     imports: schemaImports,
   };
 }
 
 /**
- * Generate aggregator router that combines all entity routers.
+ * Generate aggregator router init expression.
+ * Returns the init expression for the app router variable (not the full statement).
  */
-function generateAggregator(
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpTrpcConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression | null;
   imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], imports: [] };
+    return { initExpr: null, imports: [] };
   }
 
   const routerObjBuilder = entityEntries.reduce((acc, [entityName]) => {
@@ -427,21 +422,9 @@ function generateAggregator(
   const routerCall = b.callExpression(b.identifier("router"), [
     cast.toExpr(routerObjBuilder.build()),
   ]);
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(config.aggregatorName),
-    cast.toExpr(routerCall),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
-  const typeExport = b.exportNamedDeclaration(
-    b.tsTypeAliasDeclaration(
-      b.identifier("AppRouter"),
-      b.tsTypeQuery(b.identifier(config.aggregatorName)),
-    ),
-  );
 
   return {
-    statements: [variableDeclaration as n.Statement, typeExport as n.Statement],
+    initExpr: routerCall,
     imports: [],
   };
 }
@@ -500,89 +483,64 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
-        name: inflection.variableName(entity.name, "Router"),
-        capability: `http-routes:trpc:${entity.name}`,
-        baseEntityName: entity.name,
-      }));
-
-      return [
-        ...entityDeclarations,
-        {
-          name: resolvedConfig.aggregatorName,
-          capability: "http-routes:trpc:app",
-        },
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const entityQueries = buildEntityQueriesMap(registry);
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
       const trpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.trpcImport
         ? [resolvedConfig.trpcImport]
         : undefined;
 
-      const entitySymbols = [...entityQueries.entries()].flatMap(([entityName, queries]) => {
+      for (const [entityName, queries] of entityQueries.entries()) {
         const entity = ir.entities.get(entityName);
-        if (!entity || !isTableEntity(entity)) return [];
+        if (!entity || !isTableEntity(entity)) continue;
 
         const capability = `http-routes:trpc:${entityName}`;
-        const { statements, imports } = registry.forSymbol(capability, () =>
-          generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection),
+        const { initExpr, imports } = registry.forSymbol(capability, () =>
+          generateTrpcRouter(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
         );
 
-        return [
-          {
-            name: inflection.variableName(entityName, "Router"),
-            capability,
-            node: statements[0] ?? null,
-            exports: "named" as const,
+        const routerStmt = yield* cj.exp.const(
+          inflection.variableName(entityName, "Router"),
+          initExpr,
+          { capability, imports, userImports: trpcUserImports },
+        );
+        statements.push(routerStmt);
+      }
+
+      // Generate aggregator app if we have any routes
+      if (entityQueries.size > 0) {
+        const appCapability = "http-routes:trpc:app";
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, resolvedConfig, registry, inflection),
+        );
+
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const(resolvedConfig.aggregatorName, initExpr, {
+            capability: appCapability,
             imports,
             userImports: trpcUserImports,
-          },
-        ];
-      });
+          });
+          statements.push(appStmt);
 
-      const appSymbols =
-        entityQueries.size > 0
-          ? (() => {
-              const appCapability = "http-routes:trpc:app";
-              const { statements, imports } = registry.forSymbol(appCapability, () =>
-                generateAggregator(entityQueries, resolvedConfig, registry, inflection),
-              );
+          // Add AppRouter type alias export: type AppRouter = typeof aggregatorName
+          const typeStmt = yield* cj.exp.type(
+            "AppRouter",
+            b.tsTypeQuery(b.identifier(resolvedConfig.aggregatorName)),
+            { capability: "http-routes:trpc:app:type" },
+          );
+          statements.push(typeStmt);
+        }
+      }
 
-              return [
-                {
-                  name: resolvedConfig.aggregatorName,
-                  capability: appCapability,
-                  node: statements[0] ?? null,
-                  exports: "named" as const,
-                  imports,
-                  userImports: trpcUserImports,
-                },
-                ...(statements[1]
-                  ? [
-                      {
-                        name: "AppRouter",
-                        capability: "http-routes:trpc:app:type",
-                        node: statements[1],
-                        exports: false as const,
-                      },
-                    ]
-                  : []),
-              ];
-            })()
-          : [];
-
-      return [...entitySymbols, ...appSymbols];
+      return statements;
     }),
   };
 }

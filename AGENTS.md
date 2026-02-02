@@ -9,31 +9,31 @@ This is a monorepo with two packages:
 
 ### Common Workflows
 
-**Making changes to pg-sourcerer:**
+**IMPORTANT: Always run commands from the project root** (`/home/dan/build/pg-sourcerer`), not from subdirectories. The monorepo's package.json delegates to the correct package.
+
 ```bash
-cd packages/pg-sourcerer
-bun run build          # Compile TypeScript
+# From project root - these all work:
+bun run build          # Build pg-sourcerer
 bun run test           # Run unit tests
+bun run typecheck      # Type check
+
+# For example package (still from root):
+bun run --cwd packages/example db:ensure    # Start DB
+bun run --cwd packages/example generate     # Run code generation
 ```
 
-**Testing changes end-to-end:**
-```bash
-cd packages/example
-bun db:ensure          # Start DB if needed (requires Docker)
-bun run generate       # Run code generation with your changes
-```
+**Do NOT cd into packages/\* directories** - this can cause PATH/environment issues.
 
 **Running integration tests** (requires database):
 ```bash
-cd packages/example && bun db:ensure
-cd packages/pg-sourcerer && bun run test:integration
+bun run --cwd packages/example db:ensure && bun run test:integration
 ```
 
 ### Environment Setup
 
 The example package needs a `.env` file with database credentials. If missing:
 ```bash
-cd packages/example && bun run init   # Creates .env, starts DB, runs migrations
+bun run --cwd packages/example init   # Creates .env, starts DB, runs migrations
 ```
 
 Scripts in `packages/example` use `bun --env-file=.env` to load environment variables.
@@ -82,7 +82,7 @@ Release-please walks the full git graph to generate changelogs. Regular merges f
 
 ```bash
 git checkout develop && git pull
-# Run tests locally: cd packages/pg-sourcerer && bun run test
+# Run tests locally: bun run test
 git checkout main && git pull origin main
 git merge --squash develop
 git commit -m "chore: merge develop"
@@ -122,10 +122,10 @@ effect-solutions search retry
 ### Running Tests
 
 ```bash
-cd packages/pg-sourcerer
-bun run test     # never `bun test`
-bun run test:watch  # Watch mode
-bun run typecheck   # Type check without emit
+# From project root:
+bun run test           # Run unit tests (never `bun test`)
+bun run test:watch     # Watch mode
+bun run typecheck      # Type check without emit
 ```
 
 ### Database for Integration Tests
@@ -133,7 +133,7 @@ bun run typecheck   # Type check without emit
 Some tests require the example PostgreSQL database. To start it:
 
 ```bash
-cd packages/example && bun db:ensure
+bun run --cwd packages/example db:ensure
 ```
 
 This runs Docker, initializes database, applies migrations, and post-migration hook runs the generate script. The database stays running for subsequent test runs.
@@ -325,7 +325,7 @@ Read the relevant Conjure documentation at `packages/website/docs/conjure/`:
 If you modified any API that's documented:
 
 1. **Update the website docs** - Keep them in sync with source
-2. **Verify the build** - Run `cd packages/website && bun run build`
+2. **Verify the build** - Run `bun run --cwd packages/website build`
 3. **Check for broken links** - Build will fail on broken internal links
 
 ### Key Documentation Locations
@@ -480,35 +480,38 @@ For interactive browsing: `prog tui` (or `prog ui`)
 
 ### Knowledge Base: `prog learn`
 
-When you research something that future sessions would benefit from, capture it:
+Log learnings at **session end during reflection**, not during active work. By then:
+- The learning is validated through implementation
+- You can synthesize related discoveries into one insight
+- You know what's signal vs noise
 
 ```bash
-# Log a learning linked to a concept
-prog learn "insight here" -c concept-name -p pg-sourcerer
-
-# Check existing learnings before researching
+# Check existing learnings before logging new ones
 prog concepts -p pg-sourcerer
 prog context -c concept-name -p pg-sourcerer --summary
+
+# Log a learning linked to a concept
+prog learn "insight here" -c concept-name -p pg-sourcerer --detail "full explanation"
 ```
 
-**What NOT to capture** (project state that can become stale):
+**Good learnings capture tacit knowledge:**
+- Gotchas and edge cases not obvious from reading code
+- Design rationale that isn't documented
+- External API quirks discovered through trial/error
+- Non-obvious patterns that took time to figure out
 
-- "QueryArtifact is in ir/query-artifact.ts" (file locations change)
-- Task status or progress
-- Implementation details of what you just built (use `prog log` instead)
+**Bad learnings (don't log these):**
+- Things already clear from reading the code
+- Implementation details you just wrote (the code documents itself)
+- File locations or project state (becomes stale)
+- Temporary workarounds (mark as stale instead)
 
-**The key test**: Would this help an agent working on a _different_ task in 6 months?
+**The key test**: Is this something NOT obvious from reading the code that would help an agent on a different task in 6 months?
 
-- YES → `prog learn` (e.g., "Effect has a Graph module at ~/.local/share/effect-solutions/effect/packages/effect/src/Graph.ts")
-- NO → `prog log` (e.g., "Created emit.ts with cross-file import tracking")
-
-**When to use:**
-
-- After researching a library API via Context7 or docs
-- After discovering a non-obvious pattern through trial/error
-- Before ending a session, if you learned something reusable
-
-Good learnings are **stable facts** that won't change with our code.
+- ✓ "Effect's Schema.optionalWith requires a thunk for defaults: `{ default: () => value }`"
+- ✓ "recast silently drops comments when cloning nodes - use visit() to preserve them"
+- ✗ "setRendered now accepts refs parameter" (obvious from reading code)
+- ✗ "Created emit.ts with cross-file import tracking" (use `prog log` instead)
 
 ## Priority Rules: Core > Plugins
 

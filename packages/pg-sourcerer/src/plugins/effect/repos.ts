@@ -7,8 +7,9 @@
 import { Effect, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../../runtime/types.js";
+import type { Plugin, SymbolDeclaration } from "../../runtime/types.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../../runtime/registry.js";
+import { Conjure } from "../../services/conjure.js";
 import { IR } from "../../services/ir.js";
 import { Inflection, type CoreInflection } from "../../services/inflection.js";
 import { isTableEntity, type TableEntity } from "../../ir/semantic-ir.js";
@@ -128,15 +129,15 @@ const buildQueryRepoDecl = (
 };
 
 /**
- * Build the complete repo service class declaration
+ * Build the repo service class declaration (without export)
  */
-const buildRepoServiceClass = (
+const buildRepoServiceClassDecl = (
   entity: TableEntity,
   repoName: string,
   usesModelRepo: boolean,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
-): n.Statement => {
+): n.ClassDeclaration => {
   const repoVarDecl = usesModelRepo
     ? buildModelRepoDecl(entity, repoName, registry)
     : buildQueryRepoDecl(entity, registry, inflection);
@@ -173,13 +174,11 @@ const buildRepoServiceClass = (
   ]);
 
   // Build: class RepoName extends Effect.Service<RepoName>()(...) {}
-  const classDecl = b.classDeclaration(
+  return b.classDeclaration(
     b.identifier(repoName),
     b.classBody([]),
     cast.toExpr(serviceCall),
   );
-
-  return b.exportNamedDeclaration(classDecl, []);
 };
 
 /**
@@ -220,51 +219,35 @@ export function effectRepos(config: ParsedEffectConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-
-      return [...ir.entities.values()]
-        .filter(isTableEntity)
-        .filter(isRepoEligible)
-        .map(
-          (entity): SymbolDeclaration => ({
-            name: `${entity.name}Repo`,
-            capability: `effect:repo:${entity.name}`,
-            baseEntityName: entity.name,
-          }),
-        );
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const cj = yield* Conjure;
 
-      return [...ir.entities.values()]
-        .filter(isTableEntity)
-        .filter(isRepoEligible)
-        .map((entity): RenderedSymbol => {
-          const repoName = `${entity.name}Repo`;
-          const capability = `effect:repo:${entity.name}`;
+      const tables = [...ir.entities.values()].filter(isTableEntity).filter(isRepoEligible);
 
-          // Scope cross-references (model import) to this specific capability
-          const exportedClass = registry.forSymbol(capability, () =>
-            buildRepoServiceClass(entity, repoName, usesModelRepo, registry, inflection),
-          );
+      const repoImports = usesModelRepo
+        ? [
+            { from: "effect", names: ["Effect"] },
+            { from: "@effect/sql", names: ["Model"] },
+          ]
+        : [{ from: "effect", names: ["Effect"] }];
 
-          return {
-            name: repoName,
-            capability,
-            node: exportedClass,
-            exports: "named",
-            imports: usesModelRepo
-              ? [
-                  { from: "effect", names: ["Effect"] },
-                  { from: "@effect/sql", names: ["Model"] },
-                ]
-              : [{ from: "effect", names: ["Effect"] }],
-          };
+      return yield* Effect.forEach(tables, entity => {
+        const repoName = `${entity.name}Repo`;
+        const capability = `effect:repo:${entity.name}`;
+
+        // Scope cross-references (model import) to this specific capability
+        const classDecl = registry.forSymbol(capability, () =>
+          buildRepoServiceClassDecl(entity, repoName, usesModelRepo, registry, inflection),
+        );
+
+        return cj.exp.class(repoName, classDecl, {
+          capability,
+          imports: repoImports,
         });
+      });
     }),
   };
 }

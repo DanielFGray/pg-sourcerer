@@ -50,10 +50,10 @@ describe("Multi-Plugin E2E", () => {
         const ir = yield* buildTestIR;
         const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
-        const typeCapabilities = result.declarations.filter(c =>
+        const typeCapabilities = result.rendered.filter(c =>
           c.capability.startsWith("type:"),
         );
-        const zodCapabilities = result.declarations.filter(c =>
+        const zodCapabilities = result.rendered.filter(c =>
           c.capability.startsWith("schema:"),
         );
 
@@ -66,7 +66,7 @@ describe("Multi-Plugin E2E", () => {
 
         expect(zodCapabilities.length).toBeGreaterThan(0);
 
-        expect(result.declarations.length).toBe(typeCapabilities.length + zodCapabilities.length);
+        expect(result.rendered.length).toBe(typeCapabilities.length + zodCapabilities.length);
       }),
     );
 
@@ -75,7 +75,7 @@ describe("Multi-Plugin E2E", () => {
         const ir = yield* buildTestIR;
         const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
-        const zodInsertDeclarations = result.declarations.filter(
+        const zodInsertDeclarations = result.rendered.filter(
           d => d.capability.startsWith("schema:") && d.capability.includes(":insert"),
         );
 
@@ -185,12 +185,12 @@ describe("Multi-Plugin E2E", () => {
         const ir = yield* buildTestIR;
         const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [zod({ exportTypes: false })] });
 
-        const zodCapabilities = result.declarations.filter(c =>
+        const zodCapabilities = result.rendered.filter(c =>
           c.capability.startsWith("schema:"),
         );
         expect(zodCapabilities.length).toBeGreaterThan(0);
 
-        expect(result.declarations.length).toBeGreaterThan(0);
+        expect(result.rendered.length).toBeGreaterThan(0);
       }),
     );
 
@@ -199,7 +199,7 @@ describe("Multi-Plugin E2E", () => {
         const ir = yield* buildTestIR;
         const result = yield* runPlugins({ ...multiPluginConfig(ir), plugins: [typesPlugin(), zod({ exportTypes: false })] });
 
-        expect(result.declarations.length).toBeGreaterThan(0);
+        expect(result.rendered.length).toBeGreaterThan(0);
         expect(result.rendered.length).toBeGreaterThan(0);
       }),
     );

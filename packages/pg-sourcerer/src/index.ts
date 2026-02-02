@@ -114,6 +114,7 @@ export {
   type FunctionsExtension,
   EntityQueriesExtension as EntityQueriesExtensionSchema,
   FunctionsExtension as FunctionsExtensionSchema,
+  ENTITY_QUERIES_KEY,
 } from "./ir/extensions/queries.js";
 
 // IR Extensions - Schema Builder Contract
@@ -123,10 +124,17 @@ export {
   type SchemaBuilderResult,
   type SchemaBuilder,
   SCHEMA_BUILDER_KIND,
+  SCHEMA_BUILDER_KEY,
 } from "./ir/extensions/schema-builder.js";
 
 // Services - IR
 export { IR } from "./services/ir.js";
+
+// Services - IR Extensions (plugin coordination)
+export {
+  type IRExtensionsService,
+  IRExtensions,
+} from "./services/ir-extensions.js";
 
 // Services - Inflection
 export {
@@ -201,6 +209,9 @@ export type {
   SymbolRef,
   RenderedSymbol,
   SymbolHandle,
+  FinalizeHooks,
+  FileOutput,
+  FinalizeValidationError,
 } from "./runtime/types.js";
 
 // Symbol Factory Functions

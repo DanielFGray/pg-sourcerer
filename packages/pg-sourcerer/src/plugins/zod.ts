@@ -10,20 +10,23 @@
  * - `schema:zod:EntityName:update` for Update shape
  * - `schema:zod:EnumName` for enum entities
  */
-import { Effect, Match, Schema as S, pipe } from "effect";
+import { Effect, Match, Schema as S, pipe, Array as Arr } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
+import { Conjure } from "../services/conjure.js";
 import type { Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
-import type {
-  SchemaBuilder,
-  SchemaBuilderRequest,
-  SchemaBuilderResult,
+import {
+  SCHEMA_BUILDER_KEY,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
 import {
   pgStringTypes,
@@ -381,143 +384,105 @@ export function zod(config?: ZodConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const { enums, domains, tables } = classifyEntities(ir.entities.values());
-
-      // Domains - use domain name directly (e.g., "Url", not "UrlSchema")
-      const domainDeclarations = domains.flatMap(domain => [
-        { name: domain.name, capability: `schema:zod:${domain.name}` },
-        { name: domain.name, capability: `schema:zod:${domain.name}:type` },
-      ]);
-
-      const enumDeclarations = enums.flatMap(entity =>
-        buildEnumDeclarations(entity, "schema:zod"),
-      );
-
-      const tableDeclarations = tables.flatMap(entity =>
-        buildShapeDeclarations(entity, "schema:zod"),
-      );
-
-      return [
-        ...domainDeclarations,
-        ...enumDeclarations,
-        ...tableDeclarations,
-        buildSchemaBuilderDeclaration("zodSchemaBuilder", "schema:zod"),
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
+      const cj = yield* Conjure;
+      const extensions = yield* IRExtensions;
       const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
-      // Helper to render enum entities
-      const renderEnum = (entity: EnumEntity): RenderedSymbol[] => {
-        const enumArray = conjure.asConst(
-          conjure.arr(...entity.values.map(v => conjure.str(v))).build(),
-        );
-        const schemaNode = conjure.id("z").method("enum", [enumArray]).build();
-        const schemaDecl = conjure.export.const(entity.name, schemaNode);
-        const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(entity.name)]);
-        const typeDecl = conjure.export.type(entity.name, inferType);
+      // Render enum entities
+      const renderEnum = (entity: EnumEntity) =>
+        Effect.gen(function* () {
+          const enumArray = conjure.asConst(
+            conjure.arr(...entity.values.map(v => conjure.str(v))).build(),
+          );
+          const schemaInit = conjure.id("z").method("enum", [enumArray]).build();
 
-        return [
-          {
-            name: entity.name,
+          const schemaStmt = yield* cj.exp.const(entity.name, schemaInit, {
             capability: `schema:zod:${entity.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [zodImport],
-            metadata: { consume: createZodConsumeCallback(entity.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: entity.name,
-                capability: `schema:zod:${entity.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [zodImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createZodConsumeCallback(entity.name),
+          });
 
-      // Helper to render domain entities
-      const renderDomain = (domain: DomainEntity): RenderedSymbol[] => {
-        const schemaNode = domainToZodSchema(domain);
-        const schemaDecl = conjure.export.const(domain.name, schemaNode);
-        const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(domain.name)]);
-        const typeDecl = conjure.export.type(domain.name, inferType);
+          const stmts = [schemaStmt];
 
-        return [
-          {
-            name: domain.name,
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(entity.name)]);
+            const typeStmt = yield* cj.exp.type(entity.name, inferType, {
+              capability: `schema:zod:${entity.name}:type`,
+              imports: [zodImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Render domain entities
+      const renderDomain = (domain: DomainEntity) =>
+        Effect.gen(function* () {
+          const schemaInit = domainToZodSchema(domain);
+
+          const schemaStmt = yield* cj.exp.const(domain.name, schemaInit, {
             capability: `schema:zod:${domain.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [zodImport],
-            metadata: { consume: createZodConsumeCallback(domain.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: domain.name,
-                capability: `schema:zod:${domain.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [zodImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createZodConsumeCallback(domain.name),
+          });
 
-      // Helper to render a shape
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>): RenderedSymbol[] => {
-        const capability = `schema:zod:${shape.name}`;
-        const schemaNode = registry.forSymbol(capability, () =>
-          shapeToZodObject(shape, [...enums], [...domains], registry),
-        );
-        const schemaDecl = conjure.export.const(shape.name, schemaNode);
+          const stmts = [schemaStmt];
 
-        return [
-          {
-            name: shape.name,
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(domain.name)]);
+            const typeStmt = yield* cj.exp.type(domain.name, inferType, {
+              capability: `schema:zod:${domain.name}:type`,
+              imports: [zodImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Render a shape
+      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>) =>
+        Effect.gen(function* () {
+          const capability = `schema:zod:${shape.name}`;
+          const schemaInit = registry.forSymbol(capability, () =>
+            shapeToZodObject(shape, [...enums], [...domains], registry),
+          );
+
+          const schemaStmt = yield* cj.exp.const(shape.name, schemaInit, {
             capability,
-            node: schemaDecl,
-            exports: "named",
             imports: [zodImport],
-            metadata: { consume: createZodConsumeCallback(shape.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: shape.name,
-                capability: `schema:zod:${shape.name}:type`,
-                node: conjure.export.type(
-                  shape.name,
-                  conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(shape.name)]),
-                ),
-                exports: "named" as const,
-                imports: [zodImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createZodConsumeCallback(shape.name),
+          });
 
-      // Schema builder symbol (virtual - no node, just metadata)
-      const builderSymbol: RenderedSymbol = {
-        name: "zodSchemaBuilder",
-        capability: "schema:zod:builder",
-        node: null,
-        exports: false,
-        metadata: { builder: zodSchemaBuilder },
-      };
+          const stmts = [schemaStmt];
 
-      return [
-        ...enums.flatMap(renderEnum),
-        ...domains.flatMap(renderDomain),
-        ...tables.flatMap(entity => getEntityShapes(entity).flatMap(renderShape)),
-        builderSymbol,
-      ];
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("z", "infer", [conjure.ts.typeof(shape.name)]);
+            const typeStmt = yield* cj.exp.type(shape.name, inferType, {
+              capability: `schema:zod:${shape.name}:type`,
+              imports: [zodImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Register schema builder with IRExtensions
+      extensions.set(SCHEMA_BUILDER_KEY, zodSchemaBuilder);
+
+      const enumStmts = yield* Effect.forEach(enums, renderEnum);
+      const domainStmts = yield* Effect.forEach(domains, renderDomain);
+      const tableStmts = yield* Effect.forEach(
+        Arr.flatMap(tables, entity => getEntityShapes(entity)),
+        renderShape,
+      );
+
+      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(tableStmts)];
     }),
   };
 }

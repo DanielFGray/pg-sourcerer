@@ -6,11 +6,13 @@ import { isTableEntity } from "../../ir/semantic-ir.js";
 import type { SemanticIR } from "../../ir/semantic-ir.js";
 import type { SchemaImportSpec } from "../../ir/extensions/schema-builder.js";
 import {
+  ENTITY_QUERIES_KEY,
   QueryMethodKind,
   type QueryMethod,
   type QueryMethodParam,
   type EntityQueriesExtension,
 } from "../../ir/extensions/queries.js";
+import type { IRExtensionsService } from "../../services/ir-extensions.js";
 import type { ExternalImport } from "../../runtime/emit.js";
 import type { SymbolHandle, SymbolDeclaration } from "../../runtime/types.js";
 import type { SymbolRegistryService } from "../../runtime/registry.js";
@@ -182,29 +184,19 @@ export function getHttpEligibleEntities(ir: SemanticIR): TableEntity[] {
 // =============================================================================
 
 /**
- * Build a map of entity names to their query extensions from the registry.
- * Looks for capabilities matching `queries:{entityName}` pattern.
+ * Build a map of entity names to their query extensions from IR extensions.
  *
  * @example
  * ```typescript
- * const entityQueries = buildEntityQueriesMap(registry);
+ * const entityQueries = buildEntityQueriesMap(extensions);
  * // Map<"User", { methods: [...] }>
  * ```
  */
 export function buildEntityQueriesMap(
-  registry: SymbolRegistryService,
+  extensions: IRExtensionsService,
 ): Map<string, EntityQueriesExtension> {
-  return registry.query("queries:").reduce((acc, decl) => {
-    const parts = decl.capability.split(":");
-    if (parts.length !== 3) return acc;
-
-    const entityName = parts[2]!;
-    const metadata = registry.getMetadata(decl.capability);
-    if (metadata && typeof metadata === "object" && "methods" in metadata) {
-      acc.set(entityName, metadata as EntityQueriesExtension);
-    }
-    return acc;
-  }, new Map<string, EntityQueriesExtension>());
+  const collection = extensions.getCollection<EntityQueriesExtension>(ENTITY_QUERIES_KEY);
+  return new Map(collection);
 }
 
 // =============================================================================

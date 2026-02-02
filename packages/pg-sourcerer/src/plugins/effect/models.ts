@@ -6,8 +6,9 @@
 import { Effect, Match, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../../runtime/types.js";
+import type { Plugin, SymbolDeclaration } from "../../runtime/types.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../../runtime/registry.js";
+import { Conjure } from "../../services/conjure.js";
 import { IR } from "../../services/ir.js";
 import {
   isTableEntity,
@@ -20,6 +21,11 @@ import { conjure, cast } from "../../conjure/index.js";
 import { fieldToEffectMapping, isDbGenerated, getAutoTimestamp, toExpr } from "./shared.js";
 
 const b = conjure.b;
+
+const modelImports = [
+  { from: "@effect/sql", names: ["Model"] },
+  { from: "effect", names: ["Schema as S"] },
+];
 
 /**
  * Build the schema expression for a single field
@@ -66,11 +72,11 @@ const buildFieldSchema = (
   return b.objectProperty(b.identifier(field.name), toExpr(schemaExpr));
 };
 
-function buildModelClass(
+function buildModelClassNode(
   entity: TableEntity,
   enums: EnumEntity[],
   registry: SymbolRegistryService,
-): n.Statement {
+): n.ClassDeclaration {
   const entityName = entity.name;
   const tableName = entity.pgName;
   const shape = entity.shapes.row;
@@ -93,13 +99,11 @@ function buildModelClass(
   // Call with fields: Model.Class<ClassName>("table_name")({ ... })
   const modelExpr = b.callExpression(modelClassWithType, [fieldsObj]);
 
-  const classDecl = b.classDeclaration(
+  return b.classDeclaration(
     b.identifier(entityName),
     b.classBody([]),
     cast.toExpr(modelExpr),
   );
-
-  return b.exportNamedDeclaration(classDecl, []);
 }
 
 /**
@@ -120,42 +124,26 @@ export function effectModels(): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-
-      return [...ir.entities.values()].filter(isTableEntity).map(
-        (entity): SymbolDeclaration => ({
-          name: entity.name,
-          capability: `effect:model:${entity.name}`,
-          baseEntityName: entity.name,
-        }),
-      );
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
+      const cj = yield* Conjure;
 
       const enums = [...ir.entities.values()].filter(isEnumEntity);
+      const tables = [...ir.entities.values()].filter(isTableEntity);
 
-      return [...ir.entities.values()].filter(isTableEntity).map((entity): RenderedSymbol => {
+      return yield* Effect.forEach(tables, entity => {
         const capability = `effect:model:${entity.name}`;
 
         // Scope cross-references (enum imports) to this specific capability
-        const classDecl = registry.forSymbol(capability, () =>
-          buildModelClass(entity, enums, registry),
+        const classNode = registry.forSymbol(capability, () =>
+          buildModelClassNode(entity, enums, registry),
         );
 
-        return {
-          name: entity.name,
+        return cj.exp.class(entity.name, classNode, {
           capability,
-          node: classDecl,
-          exports: "named",
-          imports: [
-            { from: "@effect/sql", names: ["Model"] },
-            { from: "effect", names: ["Schema as S"] },
-          ],
-        };
+          imports: modelImports,
+        });
       });
     }),
   };

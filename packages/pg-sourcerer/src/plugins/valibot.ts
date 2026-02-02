@@ -10,16 +10,18 @@
  * - `schema:valibot:EntityName:update` for Update shape
  * - `schema:valibot:EnumName` for enum entities
  */
-import { Effect, Match, Schema as S, pipe } from "effect";
+import { Effect, Match, Schema as S, pipe, Array as Arr } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
+import { Conjure } from "../services/conjure.js";
 import type { Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder } from "../ir/extensions/schema-builder.js";
 import {
   PG_STRING_TYPES,
   PG_NUMBER_TYPES,
@@ -356,143 +358,105 @@ export function valibot(config?: ValibotConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const { enums, domains, tables } = classifyEntities(ir.entities.values());
-
-      // Domains - declare schema and type exports
-      const domainDeclarations = domains.flatMap(entity => [
-        { name: entity.name, capability: `schema:valibot:${entity.name}` },
-        { name: entity.name, capability: `schema:valibot:${entity.name}:type` },
-      ]);
-
-      const enumDeclarations = enums.flatMap(entity =>
-        buildEnumDeclarations(entity, "schema:valibot"),
-      );
-
-      const tableDeclarations = tables.flatMap(entity =>
-        buildShapeDeclarations(entity, "schema:valibot"),
-      );
-
-      return [
-        ...domainDeclarations,
-        ...enumDeclarations,
-        ...tableDeclarations,
-        buildSchemaBuilderDeclaration("valibotSchemaBuilder", "schema:valibot"),
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
+      const cj = yield* Conjure;
+      const extensions = yield* IRExtensions;
       const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
-      // Helper to render enum entities
-      const renderEnum = (entity: EnumEntity): RenderedSymbol[] => {
-        const schemaNode = conjure
-          .id("v")
-          .method("picklist", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
-          .build();
-        const schemaDecl = conjure.export.const(entity.name, schemaNode);
-        const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(entity.name)]);
-        const typeDecl = conjure.export.type(entity.name, inferType);
+      // Render enum entities
+      const renderEnum = (entity: EnumEntity) =>
+        Effect.gen(function* () {
+          const schemaInit = conjure
+            .id("v")
+            .method("picklist", [conjure.arr(...entity.values.map(v => conjure.str(v))).build()])
+            .build();
 
-        return [
-          {
-            name: entity.name,
+          const schemaStmt = yield* cj.exp.const(entity.name, schemaInit, {
             capability: `schema:valibot:${entity.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [valibotImport],
-            metadata: { consume: createValibotConsumeCallback(entity.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: entity.name,
-                capability: `schema:valibot:${entity.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [valibotImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createValibotConsumeCallback(entity.name),
+          });
 
-      // Helper to render domain entities
-      const renderDomain = (domain: DomainEntity): RenderedSymbol[] => {
-        const schemaNode = domainToValibotSchema(domain);
-        const schemaDecl = conjure.export.const(domain.name, schemaNode);
-        const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(domain.name)]);
-        const typeDecl = conjure.export.type(domain.name, inferType);
+          const stmts = [schemaStmt];
 
-        return [
-          {
-            name: domain.name,
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(entity.name)]);
+            const typeStmt = yield* cj.exp.type(entity.name, inferType, {
+              capability: `schema:valibot:${entity.name}:type`,
+              imports: [valibotImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Render domain entities
+      const renderDomain = (domain: DomainEntity) =>
+        Effect.gen(function* () {
+          const schemaInit = domainToValibotSchema(domain);
+
+          const schemaStmt = yield* cj.exp.const(domain.name, schemaInit, {
             capability: `schema:valibot:${domain.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [valibotImport],
-            metadata: { consume: createValibotConsumeCallback(domain.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: domain.name,
-                capability: `schema:valibot:${domain.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [valibotImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createValibotConsumeCallback(domain.name),
+          });
 
-      // Helper to render a shape
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>): RenderedSymbol[] => {
-        const capability = `schema:valibot:${shape.name}`;
-        const schemaNode = registry.forSymbol(capability, () =>
-          shapeToValibotObject(shape, enums, domains, registry),
-        );
-        const schemaDecl = conjure.export.const(shape.name, schemaNode);
+          const stmts = [schemaStmt];
 
-        return [
-          {
-            name: shape.name,
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(domain.name)]);
+            const typeStmt = yield* cj.exp.type(domain.name, inferType, {
+              capability: `schema:valibot:${domain.name}:type`,
+              imports: [valibotImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Render a shape
+      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>) =>
+        Effect.gen(function* () {
+          const capability = `schema:valibot:${shape.name}`;
+          const schemaInit = registry.forSymbol(capability, () =>
+            shapeToValibotObject(shape, enums, domains, registry),
+          );
+
+          const schemaStmt = yield* cj.exp.const(shape.name, schemaInit, {
             capability,
-            node: schemaDecl,
-            exports: "named",
             imports: [valibotImport],
-            metadata: { consume: createValibotConsumeCallback(shape.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: shape.name,
-                capability: `schema:valibot:${shape.name}:type`,
-                node: conjure.export.type(
-                  shape.name,
-                  conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(shape.name)]),
-                ),
-                exports: "named" as const,
-                imports: [valibotImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createValibotConsumeCallback(shape.name),
+          });
 
-      // Schema builder symbol (virtual - no node, just metadata)
-      const builderSymbol: RenderedSymbol = {
-        name: "valibotSchemaBuilder",
-        capability: "schema:valibot:builder",
-        node: null,
-        exports: false,
-        metadata: { builder: valibotSchemaBuilder },
-      };
+          const stmts = [schemaStmt];
 
-      return [
-        ...enums.flatMap(renderEnum),
-        ...domains.flatMap(renderDomain),
-        ...tables.flatMap(entity => getEntityShapes(entity).flatMap(renderShape)),
-        builderSymbol,
-      ];
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.qualifiedRef("v", "InferOutput", [conjure.ts.typeof(shape.name)]);
+            const typeStmt = yield* cj.exp.type(shape.name, inferType, {
+              capability: `schema:valibot:${shape.name}:type`,
+              imports: [valibotImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
+
+      // Register schema builder via IRExtensions
+      extensions.set(SCHEMA_BUILDER_KEY, valibotSchemaBuilder);
+
+      const enumStmts = yield* Effect.forEach(enums, renderEnum);
+      const domainStmts = yield* Effect.forEach(domains, renderDomain);
+      const tableStmts = yield* Effect.forEach(
+        Arr.flatMap(tables, entity => getEntityShapes(entity)),
+        renderShape,
+      );
+
+      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(tableStmts)];
     }),
   };
 }

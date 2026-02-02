@@ -18,8 +18,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       const ctx: PluginContext = {
@@ -53,8 +54,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       const ctx: PluginContext = {
@@ -78,8 +80,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       const ctx: PluginContext = {
@@ -108,8 +111,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       // First register a symbol via exp.const
@@ -128,8 +132,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       // Pure builders don't need context
@@ -147,8 +152,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       const ctx: PluginContext = {
@@ -176,8 +182,9 @@ describe("Conjure Service", () => {
       const registry = new SymbolRegistryImpl();
       const service = makeConjureService({
         register: (decl) => registry.register(decl),
-        setRendered: (cap, node, meta) => registry.setRendered(cap, node, meta),
+        storeRenderedSymbol: (symbol) => registry.storeRenderedSymbol(symbol),
         import: (cap) => registry.import(cap),
+        forSymbol: <T>(cap: string, fn: () => T) => registry.forSymbol(cap, fn),
       });
 
       // No context set

@@ -10,19 +10,22 @@
  * - `schema:arktype:EntityName:update` for Update shape
  * - `schema:arktype:EnumName` for enum entities
  */
-import { Effect, Match, Schema as S, pipe } from "effect";
+import { Effect, Match, Schema as S, pipe, Array as Arr } from "effect";
 import type { namedTypes as n } from "ast-types";
 
 import type { Plugin, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
+import { Conjure } from "../services/conjure.js";
 import type { TableEntity, Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
-import type {
-  SchemaBuilder,
-  SchemaBuilderRequest,
-  SchemaBuilderResult,
+import {
+  SCHEMA_BUILDER_KEY,
+  type SchemaBuilder,
+  type SchemaBuilderRequest,
+  type SchemaBuilderResult,
 } from "../ir/extensions/schema-builder.js";
 import {
   pgStringTypes,
@@ -465,195 +468,146 @@ export function arktype(config?: ArkTypeConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const { enums, domains, tables } = classifyEntities(ir.entities.values());
-
-      // Declare domains FIRST (so they can be referenced by tables)
-      const domainDeclarations = domains.flatMap(entity => [
-        { name: entity.name, capability: `schema:arktype:${entity.name}` },
-        { name: entity.name, capability: `schema:arktype:${entity.name}:type` },
-      ]);
-
-      // Table declarations including UpdateInput schemas
-      const tableDeclarations = tables.flatMap(entity => {
-        const shapeDecls = buildShapeDeclarations(entity, "schema:arktype");
-        const updateInputDecls =
-          entity.shapes.update && entity.primaryKey
-            ? (() => {
-                const updateInputName = getUpdateInputName(entity);
-                return [
-                  { name: updateInputName, capability: `schema:arktype:${updateInputName}`, baseEntityName: entity.name },
-                  { name: updateInputName, capability: `schema:arktype:${updateInputName}:type`, baseEntityName: entity.name },
-                ];
-              })()
-            : [];
-        return [...shapeDecls, ...updateInputDecls];
-      });
-
-      const enumDeclarations = enums.flatMap(entity =>
-        buildEnumDeclarations(entity, "schema:arktype"),
-      );
-
-      return [
-        ...domainDeclarations,
-        ...tableDeclarations,
-        ...enumDeclarations,
-        buildSchemaBuilderDeclaration("arkTypeSchemaBuilder", "schema:arktype"),
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
+      const cj = yield* Conjure;
+      const extensions = yield* IRExtensions;
       const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
-      const arktypeImport = { from: "arktype", names: ["type"] };
+      const arktypeImport = { from: "arktype", names: ["type"] } as const;
 
       // Render domain entity
-      const renderDomain = (entity: DomainEntity): RenderedSymbol[] => {
-        const schemaString = domainToArktypeString(entity);
-        const schemaNode = conjure.id("type").call([conjure.str(schemaString)]).build();
-        const schemaDecl = conjure.export.const(entity.name, schemaNode);
-        const inferType = conjure.ts.typeof(`${entity.name}.infer`);
-        const typeDecl = conjure.export.type(entity.name, inferType);
+      const renderDomain = (entity: DomainEntity) =>
+        Effect.gen(function* () {
+          const schemaString = domainToArktypeString(entity);
+          const schemaInit = conjure.id("type").call([conjure.str(schemaString)]).build();
 
-        return [
-          {
-            name: entity.name,
+          const schemaStmt = yield* cj.exp.const(entity.name, schemaInit, {
             capability: `schema:arktype:${entity.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [arktypeImport],
-            metadata: { consume: createArkTypeConsumeCallback(entity.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: entity.name,
-                capability: `schema:arktype:${entity.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [arktypeImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createArkTypeConsumeCallback(entity.name),
+          });
+
+          const stmts = [schemaStmt];
+
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.typeof(`${entity.name}.infer`);
+            const typeStmt = yield* cj.exp.type(entity.name, inferType, {
+              capability: `schema:arktype:${entity.name}:type`,
+              imports: [arktypeImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
 
       // Render enum entity
-      const renderEnum = (entity: EnumEntity): RenderedSymbol[] => {
-        const enumString = entity.values.map(v => `'${v}'`).join(" | ");
-        const schemaNode = conjure.id("type").call([conjure.str(enumString)]).build();
-        const schemaDecl = conjure.export.const(entity.name, schemaNode);
-        const inferType = conjure.ts.typeof(`${entity.name}.infer`);
-        const typeDecl = conjure.export.type(entity.name, inferType);
+      const renderEnum = (entity: EnumEntity) =>
+        Effect.gen(function* () {
+          const enumString = entity.values.map(v => `'${v}'`).join(" | ");
+          const schemaInit = conjure.id("type").call([conjure.str(enumString)]).build();
 
-        return [
-          {
-            name: entity.name,
+          const schemaStmt = yield* cj.exp.const(entity.name, schemaInit, {
             capability: `schema:arktype:${entity.name}`,
-            node: schemaDecl,
-            exports: "named",
             imports: [arktypeImport],
-            metadata: { consume: createArkTypeConsumeCallback(entity.name) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: entity.name,
-                capability: `schema:arktype:${entity.name}:type`,
-                node: typeDecl,
-                exports: "named" as const,
-                imports: [arktypeImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createArkTypeConsumeCallback(entity.name),
+          });
+
+          const stmts = [schemaStmt];
+
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.typeof(`${entity.name}.infer`);
+            const typeStmt = yield* cj.exp.type(entity.name, inferType, {
+              capability: `schema:arktype:${entity.name}:type`,
+              imports: [arktypeImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
 
       // Render a shape (row, insert, update)
-      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>): RenderedSymbol[] => {
-        const isRow = shape.kind === "row";
-        const capability = `schema:arktype:${shape.name}`;
-        const schemaNode = registry.forSymbol(capability, () =>
-          shapeToArkTypeObject(shape, enums, domains, registry),
-        );
-        const schemaDecl = conjure.export.const(shape.name, schemaNode);
+      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>) =>
+        Effect.gen(function* () {
+          const isRow = shape.kind === "row";
+          const capability = `schema:arktype:${shape.name}`;
+          const schemaInit = registry.forSymbol(capability, () =>
+            shapeToArkTypeObject(shape, enums, domains, registry),
+          );
 
-        return [
-          {
-            name: shape.name,
+          const schemaStmt = yield* cj.exp.const(shape.name, schemaInit, {
             capability,
-            node: schemaDecl,
-            exports: "named",
             imports: [arktypeImport],
-            metadata: { consume: createArkTypeConsumeCallback(shape.name) },
-          },
-          ...(resolvedConfig.exportTypes && !isRow
-            ? [{
-                name: shape.name,
-                capability: `schema:arktype:${shape.name}:type`,
-                node: conjure.export.type(shape.name, conjure.ts.typeof(`${shape.name}.infer`)),
-                exports: "named" as const,
-                imports: [arktypeImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createArkTypeConsumeCallback(shape.name),
+          });
+
+          const stmts = [schemaStmt];
+
+          if (resolvedConfig.exportTypes && !isRow) {
+            const inferType = conjure.ts.typeof(`${shape.name}.infer`);
+            const typeStmt = yield* cj.exp.type(shape.name, inferType, {
+              capability: `schema:arktype:${shape.name}:type`,
+              imports: [arktypeImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
 
       // Render UpdateInput schema for a table
-      const renderUpdateInput = (entity: TableEntity): RenderedSymbol[] => {
-        if (!entity.shapes.update || !entity.primaryKey) return [];
+      const renderUpdateInput = (entity: TableEntity) =>
+        Effect.gen(function* () {
+          if (!entity.shapes.update || !entity.primaryKey) return [];
 
-        const updateInputName = getUpdateInputName(entity);
-        const capability = `schema:arktype:${updateInputName}`;
-        const schemaNode = registry.forSymbol(capability, () =>
-          buildUpdateInputSchema(entity, enums, domains, registry),
-        );
+          const updateInputName = getUpdateInputName(entity);
+          const capability = `schema:arktype:${updateInputName}`;
+          const schemaInit = registry.forSymbol(capability, () =>
+            buildUpdateInputSchema(entity, enums, domains, registry),
+          );
 
-        if (!schemaNode) return [];
+          if (!schemaInit) return [];
 
-        const schemaDecl = conjure.export.const(updateInputName, schemaNode);
-
-        return [
-          {
-            name: updateInputName,
+          const schemaStmt = yield* cj.exp.const(updateInputName, schemaInit, {
             capability,
-            node: schemaDecl,
-            exports: "named",
             imports: [arktypeImport],
-            metadata: { consume: createArkTypeConsumeCallback(updateInputName) },
-          },
-          ...(resolvedConfig.exportTypes
-            ? [{
-                name: updateInputName,
-                capability: `schema:arktype:${updateInputName}:type`,
-                node: conjure.export.type(updateInputName, conjure.ts.typeof(`${updateInputName}.infer`)),
-                exports: "named" as const,
-                imports: [arktypeImport],
-              }]
-            : []),
-        ];
-      };
+            consume: createArkTypeConsumeCallback(updateInputName),
+          });
+
+          const stmts = [schemaStmt];
+
+          if (resolvedConfig.exportTypes) {
+            const inferType = conjure.ts.typeof(`${updateInputName}.infer`);
+            const typeStmt = yield* cj.exp.type(updateInputName, inferType, {
+              capability: `schema:arktype:${updateInputName}:type`,
+              imports: [arktypeImport],
+            });
+            stmts.push(typeStmt);
+          }
+
+          return stmts;
+        });
 
       // Render table entity (shapes + UpdateInput)
-      const renderTable = (entity: TableEntity): RenderedSymbol[] => [
-        ...getEntityShapes(entity).flatMap(renderShape),
-        ...renderUpdateInput(entity),
-      ];
+      const renderTable = (entity: TableEntity) =>
+        Effect.gen(function* () {
+          const shapeStmts = yield* Effect.forEach(getEntityShapes(entity), renderShape);
+          const updateInputStmts = yield* renderUpdateInput(entity);
+          return [...Arr.flatten(shapeStmts), ...updateInputStmts];
+        });
 
-      // Schema builder symbol (virtual - no node, just metadata)
-      const builderSymbol: RenderedSymbol = {
-        name: "arkTypeSchemaBuilder",
-        capability: "schema:arktype:builder",
-        node: null,
-        exports: false,
-        metadata: { builder: arkTypeSchemaBuilder },
-      };
+      // Register schema builder with IRExtensions
+      extensions.set(SCHEMA_BUILDER_KEY, arkTypeSchemaBuilder);
 
-      return [
-        ...domains.flatMap(renderDomain),
-        ...tables.flatMap(renderTable),
-        ...enums.flatMap(renderEnum),
-        builderSymbol,
-      ];
+      // Order matters: enums first (no deps), then domains (may ref enums), then tables (may ref both)
+      const enumStmts = yield* Effect.forEach(enums, renderEnum);
+      const domainStmts = yield* Effect.forEach(domains, renderDomain);
+      const tableStmts = yield* Effect.forEach(tables, renderTable);
+
+      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(tableStmts)];
     }),
   };
 }

@@ -134,7 +134,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => d.capability.startsWith("effect:http:"));
+      const httpDecls = result.rendered.filter(d => d.capability.startsWith("effect:http:"));
       
       // Should have 5 declarations per entity (NotFound, ApiGroup, Api, ApiGroupLive, ApiLive) + Server
       expect(httpDecls.length).toBeGreaterThanOrEqual(6);
@@ -168,7 +168,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => 
+      const httpDecls = result.rendered.filter(d => 
         d.capability.startsWith("effect:http:") && d.capability !== "effect:http:server"
       );
       
@@ -191,7 +191,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: false }),
       });
 
-      const httpDecls = result.declarations.filter(d => d.capability.startsWith("effect:http:"));
+      const httpDecls = result.rendered.filter(d => d.capability.startsWith("effect:http:"));
       expect(httpDecls).toHaveLength(0);
     }),
   );
@@ -210,7 +210,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => 
+      const httpDecls = result.rendered.filter(d => 
         d.capability.startsWith("effect:http:") && d.capability !== "effect:http:server"
       );
       expect(httpDecls).toHaveLength(0);

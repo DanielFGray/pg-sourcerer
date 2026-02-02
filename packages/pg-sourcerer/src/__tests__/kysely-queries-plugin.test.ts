@@ -111,7 +111,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       expect(capabilities).toContain("queries:kysely:User:findById");
       // Note: list is no longer generated - replaced by cursor pagination (listBy{Column})
       // which only generates for tables with btree-indexed timestamptz columns
@@ -131,11 +131,11 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
         const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-        const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
+        const queryCapabilities = result.rendered.filter(d => d.capability.startsWith("queries:"));
         // Omitted entities don't get query capabilities, but DB interface is still declared
         expect(queryCapabilities).toHaveLength(0);
         // DB interface is always declared (even if empty)
-        expect(result.declarations.some(d => d.capability === "types:kysely:DB")).toBe(true);
+        expect(result.rendered.some(d => d.capability === "types:kysely:DB")).toBe(true);
       }
     }),
   );
@@ -150,11 +150,11 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
         const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-        const queryCapabilities = result.declarations.filter(d => d.capability.startsWith("queries:"));
+        const queryCapabilities = result.rendered.filter(d => d.capability.startsWith("queries:"));
         // No query capabilities when permissions deny all operations
         expect(queryCapabilities).toHaveLength(0);
         // Type is still declared (for the table interface)
-        expect(result.declarations.some(d => d.capability === "types:kysely:User")).toBe(true);
+        expect(result.rendered.some(d => d.capability === "types:kysely:User")).toBe(true);
       }
     }),
   );
@@ -168,7 +168,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       expect(capabilities).not.toContain("queries:kysely:User:findById");
       expect(capabilities).not.toContain("queries:kysely:User:update");
       expect(capabilities).not.toContain("queries:kysely:User:delete");
@@ -183,7 +183,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       // Users has indexed username column
       expect(capabilities).toContain("queries:kysely:User:findByUsername");
     }),
@@ -195,7 +195,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       // Post table has created_at index (timestamptz)
       expect(capabilities).toContain("queries:kysely:Post:listByCreatedAt");
     }),
@@ -207,7 +207,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       // findByUsername is generated (for lookup), but not listByUsername (not timestamptz)
       expect(capabilities).toContain("queries:kysely:User:findByUsername");
       expect(capabilities).not.toContain("queries:kysely:User:listByUsername");
@@ -237,20 +237,20 @@ describe("Kysely Queries Plugin - Declaration", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       expect(capabilities).not.toContain("queries:kysely:User:listByCreatedAt");
     }),
   );
 
-  it.effect("declares symbols with dependsOn for type references", () =>
+  // Note: dependsOn was removed with declare phase - cross-references are now tracked during render
+  it.effect("registers query symbols with correct capabilities", () =>
     Effect.gen(function* () {
       const ir = yield* testIRFromFixture(["app_public"]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const findByIdDecl = result.declarations.find(d => d.capability === "queries:kysely:User:findById");
+      const findByIdDecl = result.rendered.find(d => d.capability === "queries:kysely:User:findById");
       expect(findByIdDecl).toBeDefined();
-      // Queries depend on their own types (types:kysely:User)
-      expect(findByIdDecl!.dependsOn).toContain("types:kysely:User");
+      expect(findByIdDecl!.name).toBe("userFindById");
     }),
   );
 
@@ -259,7 +259,7 @@ describe("Kysely Queries Plugin - Declaration", () => {
       const ir = yield* testIRFromFixture(["app_public"]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
 
       // Verify pattern
       expect(capabilities).toContain("queries:kysely:User:findById");
@@ -282,7 +282,7 @@ describe("Kysely Queries Plugin - Architecture", () => {
       expect(kysely().provides).toEqual(["queries"]);
       
       // Declarations are dynamically generated from IR
-      expect(result.declarations.length).toBeGreaterThan(0);
+      expect(result.rendered.length).toBeGreaterThan(0);
     }),
   );
 
@@ -292,7 +292,7 @@ describe("Kysely Queries Plugin - Architecture", () => {
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [kysely()] });
 
       // All capabilities should be unique
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       const uniqueCapabilities = new Set(capabilities);
       expect(capabilities.length).toBe(uniqueCapabilities.size);
     }),

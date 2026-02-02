@@ -20,6 +20,7 @@ import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { inflect } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
@@ -27,7 +28,7 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder, type SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import {
@@ -42,7 +43,7 @@ import {
   needsCoercion,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
+import { IRExtensions, type IRExtensionsService } from "../services/ir-extensions.js";
 
 const { b, stmt } = conjure;
 
@@ -304,13 +305,8 @@ function buildRouteCall(
 }
 
 /**
- * Generate Express routes for an entity.
- *
- * @param entityName - The entity name
- * @param queries - Query extension metadata
- * @param config - Plugin config
- * @param registry - Symbol registry for recording cross-references
- * @param inflection - Inflection service for naming
+ * Generate Express routes init expression for an entity.
+ * Returns the init expression (not the full statement).
  */
 function generateExpressRoutes(
   entityName: string,
@@ -318,13 +314,11 @@ function generateExpressRoutes(
   config: ResolvedHttpExpressConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression;
   imports: ExternalImport[];
 } {
-  const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
-  const schemaBuilder = getSchemaBuilder(registry);
-
   const { chainExpr, schemaImports } = queries.methods.reduce<{
     chainExpr: n.Expression;
     schemaImports: ExternalImport[];
@@ -383,32 +377,30 @@ function generateExpressRoutes(
     { chainExpr: b.callExpression(b.identifier("Router"), []), schemaImports: [] },
   );
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routesVarName),
-    cast.toExpr(chainExpr),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports: [{ from: "express", names: ["Router"] }, ...schemaImports],
   };
 }
 
 
-function generateAggregator(
+/**
+ * Generate aggregator init expression.
+ * Returns the init expression (not the full statement).
+ */
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpExpressConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
+  initExpr: n.Expression | null;
   imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], imports: [] };
+    return { initExpr: null, imports: [] };
   }
 
   const chainExpr = entityEntries.reduce<n.Expression>(
@@ -425,11 +417,8 @@ function generateAggregator(
     b.callExpression(b.identifier("Router"), []),
   );
 
-  const variableDeclarator = b.variableDeclarator(b.identifier("api"), cast.toExpr(chainExpr));
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
   return {
-    statements: [variableDeclaration as n.Statement],
+    initExpr: chainExpr,
     imports: [{ from: "express", names: ["Router"] }],
   };
 }
@@ -462,71 +451,51 @@ export function express(config?: HttpExpressConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-
-      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
-        name: `${inflect.uncapitalize(entity.name)}Routes`,
-        capability: `http-routes:express:${entity.name}`,
-        baseEntityName: entity.name,
-      }));
-
-      return [
-        ...entityDeclarations,
-        {
-          name: "api",
-          capability: "http-routes:express:app",
-        },
-      ];
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const entityQueries = buildEntityQueriesMap(registry);
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
-      const entitySymbols = [...entityQueries.entries()].flatMap(([entityName, queries]) => {
+      for (const [entityName, queries] of entityQueries.entries()) {
         const entity = ir.entities.get(entityName);
-        if (!entity || !isTableEntity(entity)) return [];
+        if (!entity || !isTableEntity(entity)) continue;
 
         const capability = `http-routes:express:${entityName}`;
-        const { statements, imports } = registry.forSymbol(capability, () =>
-          generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection),
+        const { initExpr, imports } = registry.forSymbol(capability, () =>
+          generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
         );
 
-        return [
-          {
-            name: `${inflect.uncapitalize(entityName)}Routes`,
-            capability,
-            node: statements[0] ?? null,
-            exports: "named" as const,
+        const routeStmt = yield* cj.exp.const(
+          `${inflect.uncapitalize(entityName)}Routes`,
+          initExpr,
+          { capability, imports },
+        );
+        statements.push(routeStmt);
+      }
+
+      // Generate aggregator app if we have any routes
+      if (entityQueries.size > 0) {
+        const appCapability = "http-routes:express:app";
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, resolvedConfig, registry, inflection),
+        );
+
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const("api", initExpr, {
+            capability: appCapability,
             imports,
-          },
-        ];
-      });
+          });
+          statements.push(appStmt);
+        }
+      }
 
-      const appSymbol =
-        entityQueries.size > 0
-          ? (() => {
-              const appCapability = "http-routes:express:app";
-              const { statements, imports } = registry.forSymbol(appCapability, () =>
-                generateAggregator(entityQueries, resolvedConfig, registry, inflection),
-              );
-              return [
-                {
-                  name: "api",
-                  capability: appCapability,
-                  node: statements[0] ?? null,
-                  exports: "named" as const,
-                  imports,
-                },
-              ];
-            })()
-          : [];
-
-      return [...entitySymbols, ...appSymbol];
+      return statements;
     }),
   };
 }

@@ -57,26 +57,26 @@ describe("Types Plugin Integration", () => {
 
     // Every enum should have a type declaration
     for (const entity of enumEntities) {
-      const decl = result.declarations.find(d => d.capability === `type:${entity.name}`);
+      const decl = result.rendered.find(d => d.capability === `type:${entity.name}`);
       expect(decl, `Enum ${entity.name} should have a type declaration`).toBeDefined();
     }
 
     // Every table entity should have declarations for its shapes
     for (const entity of tableEntities) {
       // Row shape always exists
-      const rowDecl = result.declarations.find(d => d.capability === `type:${entity.shapes.row.name}`);
+      const rowDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.row.name}`);
       expect(rowDecl, `${entity.name} should have a row type declaration`).toBeDefined();
       expect(rowDecl?.name).toBe(entity.shapes.row.name);
 
       // Insert shape if it exists in IR
       if (entity.shapes.insert) {
-        const insertDecl = result.declarations.find(d => d.capability === `type:${entity.shapes.insert.name}`);
+        const insertDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.insert.name}`);
         expect(insertDecl, `${entity.name} should have an insert type declaration`).toBeDefined();
       }
 
       // Update shape if it exists in IR
       if (entity.shapes.update) {
-        const updateDecl = result.declarations.find(d => d.capability === `type:${entity.shapes.update.name}`);
+        const updateDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.update.name}`);
         expect(updateDecl, `${entity.name} should have an update type declaration`).toBeDefined();
       }
     }

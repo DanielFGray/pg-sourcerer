@@ -66,5 +66,13 @@ export interface SchemaBuilder {
 
 /**
  * Service kind for schema-builder.
+ * @deprecated Use SCHEMA_BUILDER_KEY with IRExtensions instead
  */
 export const SCHEMA_BUILDER_KIND = "schema-builder" as const;
+
+/**
+ * IRExtensions key for schema builder.
+ * Schema plugins set: `extensions.set(SCHEMA_BUILDER_KEY, builder)`
+ * HTTP plugins get: `extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY)`
+ */
+export const SCHEMA_BUILDER_KEY = "schema-builder" as const;

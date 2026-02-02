@@ -9,7 +9,7 @@ import type { namedTypes as n } from "ast-types";
 import type { StatementKind, DeclarationKind, ExpressionKind } from "ast-types/lib/gen/kinds.js";
 import { Array as Arr, Option, pipe } from "effect";
 import type { OrchestratorResult } from "./orchestrator";
-import type { SymbolDeclaration, RenderedSymbol, Capability } from "./types";
+import type { RenderedSymbol, Capability } from "./types";
 import type { AssignedSymbol } from "./file-assignment";
 import { ExportCollisionError } from "../errors";
 import conjure from "../conjure";
@@ -77,7 +77,6 @@ function generateCrossFileImports(
   symbolsInFile: readonly AssignedSymbol[],
   references: ReadonlyMap<Capability, readonly Capability[]>,
   fileGroups: ReadonlyMap<string, readonly AssignedSymbol[]>,
-  _allDeclarations: readonly SymbolDeclaration[],
 ): n.ImportDeclaration[] {
   // Build a map: capability -> { name, file }
   const capToLocation = pipe(
@@ -379,7 +378,7 @@ export function emitFiles(
   result: OrchestratorResult,
   config: EmitConfig = {},
 ): readonly EmittedFile[] {
-  const { rendered, fileGroups, references, declarations } = result;
+  const { rendered, fileGroups, references } = result;
 
   // Build map: capability -> rendered symbol
   const capToRendered = pipe(
@@ -400,7 +399,6 @@ export function emitFiles(
         symbols,
         references,
         fileGroups,
-        declarations,
       );
 
       // Collect imports from rendered symbols

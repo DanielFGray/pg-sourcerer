@@ -144,34 +144,27 @@ export function symbol(input: SymbolInput): RenderedSymbol {
 }
 
 /**
- * Create a virtual symbol (metadata-only, no AST node).
+ * @deprecated Virtual symbols have been removed in favor of IRExtensions.
+ * Use `extensions.set()` or `extensions.setEntry()` to share metadata between plugins.
  *
- * Virtual symbols are used for descriptors and contracts that other plugins
- * consume but don't directly emit code. For example, query descriptors that
- * HTTP plugins use to generate endpoints.
- *
- * @example
+ * @example Migration:
  * ```typescript
- * virtualSymbol({
- *   name: "findUserById",
- *   capability: "queries:User:findById",
- *   metadata: {
- *     kind: "select-one",
- *     params: [{ name: "id", type: "string" }],
- *     returnType: "User",
- *   },
- * })
+ * // Before (virtual symbol):
+ * registry.storeRenderedSymbol({
+ *   name: "queries",
+ *   capability: "queries:User",
+ *   node: null,
+ *   metadata: queriesExtension,
+ *   exports: false,
+ * });
+ *
+ * // After (IRExtensions):
+ * extensions.setEntry(ENTITY_QUERIES_KEY, "User", queriesExtension);
  * ```
  */
-export function virtualSymbol(input: VirtualSymbolInput): RenderedSymbol {
-  return {
-    name: input.name,
-    capability: input.capability,
-    node: null,
-    exports: false,
-    metadata: input.metadata,
-    imports: input.imports,
-    userImports: input.userImports,
-    fileHeader: input.fileHeader,
-  };
+export function virtualSymbol(_input: VirtualSymbolInput): never {
+  throw new Error(
+    "virtualSymbol() has been removed. Use IRExtensions.set() or IRExtensions.setEntry() " +
+      "to share metadata between plugins. See docs/ARCHITECTURE.md for the new pattern.",
+  );
 }
