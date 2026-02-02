@@ -13,10 +13,10 @@
  *
  * Routes use @hono/standard-validator for middleware-based validation.
  */
-import { Effect, Match, Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
@@ -27,14 +27,16 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilder, SchemaBuilderRequest } from "../ir/extensions/schema-builder.js";
+import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import {
+  buildEntityQueriesMap,
   buildQueryInvocation,
   coerceParam,
   getBodySchemaName,
+  getHttpEligibleEntities,
+  getMethodCapabilitySuffix,
   getRoutePath,
-  hasAnyPermission,
   kindToHttpMethod,
   listByRouteFromName,
   toExternalImport,
@@ -422,39 +424,6 @@ function generateHonoRoutes(
   };
 }
 
-/**
- * Get the capability suffix for a query method.
- */
-function getMethodCapabilitySuffix(
-  method: QueryMethod,
-  entityName: string,
-  inflection: CoreInflection,
-): string {
-  const extractListBySuffix = (): string => {
-    const prefix = inflection.variableName(entityName, "");
-    const remainder = method.name.startsWith(prefix)
-      ? method.name.slice(prefix.length)
-      : "";
-    return remainder.startsWith("ListBy") && remainder.length > "ListBy".length
-      ? `listBy${remainder.slice("ListBy".length)}`
-      : "list";
-  };
-
-  return Match.value(method.kind).pipe(
-    Match.when("read", () => "findById"),
-    Match.when("list", extractListBySuffix),
-    Match.when("create", () => "create"),
-    Match.when("update", () => "update"),
-    Match.when("delete", () => "delete"),
-    Match.when("lookup", () =>
-      method.lookupField
-        ? `findBy${inflection.pascalCase(method.lookupField)}`
-        : "lookup",
-    ),
-    Match.when("function", () => method.name),
-    Match.exhaustive,
-  );
-}
 
 /**
  * Get the schema builder from registry if available.
@@ -540,15 +509,11 @@ export function hono(config?: HttpHonoConfig): Plugin {
       const ir = yield* IR;
       const inflection = yield* Inflection;
 
-      const entityDeclarations = [...ir.entities.values()]
-        .filter(isTableEntity)
-        .filter(entity => entity.tags.omit !== true)
-        .filter(hasAnyPermission)
-        .map(entity => ({
-          name: inflection.variableName(entity.name, "Routes"),
-          capability: `http-routes:hono:${entity.name}`,
-          baseEntityName: entity.name,
-        }));
+      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
+        name: inflection.variableName(entity.name, "Routes"),
+        capability: `http-routes:hono:${entity.name}`,
+        baseEntityName: entity.name,
+      }));
 
       return [
         ...entityDeclarations,
@@ -561,19 +526,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      // Build entity queries map from registry
-      const entityQueries = new Map(
-        registry
-          .query("queries:")
-          .filter(decl => decl.capability.split(":").length === 3)
-          .flatMap(decl => {
-            const entityName = decl.capability.split(":")[2]!;
-            const metadata = registry.getMetadata(decl.capability);
-            return metadata && typeof metadata === "object" && "methods" in metadata
-              ? [[entityName, metadata as EntityQueriesExtension] as const]
-              : [];
-          }),
-      );
+      const entityQueries = buildEntityQueriesMap(registry);
 
       // Generate routes for each entity, tracking which need sValidator
       const routeResults = [...entityQueries.entries()]

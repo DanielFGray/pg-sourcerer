@@ -12,10 +12,10 @@
  * - Calls registry.import(queryCapability).ref() during render
  * - Emit phase generates imports from the recorded references
  */
-import { Effect, Match, Schema as S, pipe, Array as Arr } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { inflect } from "../services/inflection.js";
@@ -31,11 +31,13 @@ import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import {
+  buildEntityQueriesMap,
   buildQueryInvocation,
   coerceParam,
   getBodySchemaName,
+  getHttpEligibleEntities,
+  getMethodCapabilitySuffix,
   getRoutePath,
-  hasAnyPermission,
   kindToHttpMethod,
   needsCoercion,
   toExternalImport,
@@ -393,40 +395,6 @@ function generateExpressRoutes(
   };
 }
 
-/**
- * Get the capability suffix for a query method.
- * E.g., "findById", "list", "create", "update", "delete", "findByEmail"
- */
-function getMethodCapabilitySuffix(
-  method: QueryMethod,
-  entityName: string,
-  inflection: CoreInflection,
-): string {
-  return Match.value(method.kind).pipe(
-    Match.when("read", () => "findById"),
-    Match.when("list", () => {
-      const prefix = inflection.variableName(entityName, "");
-      if (method.name.startsWith(prefix)) {
-        const remainder = method.name.slice(prefix.length);
-        if (remainder.startsWith("ListBy")) {
-          const suffix = remainder.slice("ListBy".length);
-          if (suffix.length > 0) {
-            return `listBy${suffix}`;
-          }
-        }
-      }
-      return "list";
-    }),
-    Match.when("create", () => "create"),
-    Match.when("update", () => "update"),
-    Match.when("delete", () => "delete"),
-    Match.when("lookup", () =>
-      method.lookupField ? `findBy${inflection.pascalCase(method.lookupField)}` : "lookup",
-    ),
-    Match.when("function", () => method.name),
-    Match.exhaustive,
-  );
-}
 
 function generateAggregator(
   entities: Map<string, EntityQueriesExtension>,
@@ -496,17 +464,12 @@ export function express(config?: HttpExpressConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
-      const inflection = yield* Inflection;
 
-      const entityDeclarations = [...ir.entities.values()]
-        .filter(isTableEntity)
-        .filter(e => e.tags.omit !== true)
-        .filter(hasAnyPermission)
-        .map(entity => ({
-          name: `${inflect.uncapitalize(entity.name)}Routes`,
-          capability: `http-routes:express:${entity.name}`,
-          baseEntityName: entity.name,
-        }));
+      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
+        name: `${inflect.uncapitalize(entity.name)}Routes`,
+        capability: `http-routes:express:${entity.name}`,
+        baseEntityName: entity.name,
+      }));
 
       return [
         ...entityDeclarations,
@@ -522,19 +485,7 @@ export function express(config?: HttpExpressConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      const queryCapabilities = registry.query("queries:");
-
-      const entityQueries = queryCapabilities.reduce((acc, decl) => {
-        const parts = decl.capability.split(":");
-        if (parts.length !== 3) return acc;
-
-        const entityName = parts[2]!;
-        const metadata = registry.getMetadata(decl.capability);
-        if (metadata && typeof metadata === "object" && "methods" in metadata) {
-          acc.set(entityName, metadata as EntityQueriesExtension);
-        }
-        return acc;
-      }, new Map<string, EntityQueriesExtension>());
+      const entityQueries = buildEntityQueriesMap(registry);
 
       const entitySymbols = [...entityQueries.entries()].flatMap(([entityName, queries]) => {
         const entity = ir.entities.get(entityName);

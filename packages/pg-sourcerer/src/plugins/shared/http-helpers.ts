@@ -1,11 +1,20 @@
 import type { namedTypes as n } from "ast-types";
-import { Predicate } from "effect";
+import { Match, Predicate } from "effect";
 
-import type { EntityPermissions } from "../../ir/semantic-ir.js";
+import type { EntityPermissions, TableEntity } from "../../ir/semantic-ir.js";
+import { isTableEntity } from "../../ir/semantic-ir.js";
+import type { SemanticIR } from "../../ir/semantic-ir.js";
 import type { SchemaImportSpec } from "../../ir/extensions/schema-builder.js";
-import { QueryMethodKind, type QueryMethod, type QueryMethodParam } from "../../ir/extensions/queries.js";
+import {
+  QueryMethodKind,
+  type QueryMethod,
+  type QueryMethodParam,
+  type EntityQueriesExtension,
+} from "../../ir/extensions/queries.js";
 import type { ExternalImport } from "../../runtime/emit.js";
-import type { SymbolHandle } from "../../runtime/types.js";
+import type { SymbolHandle, SymbolDeclaration } from "../../runtime/types.js";
+import type { SymbolRegistryService } from "../../runtime/registry.js";
+import type { CoreInflection } from "../../services/inflection.js";
 import { conjure } from "../../conjure/index.js";
 
 // =============================================================================
@@ -145,4 +154,109 @@ export function getBodySchemaName(method: { kind: QueryMethodKind }, entityName:
     return `${entityName}Update`;
   }
   return null;
+}
+
+// =============================================================================
+// Entity Filtering
+// =============================================================================
+
+/**
+ * Get table entities eligible for HTTP route generation.
+ * Filters out entities with `@omit` tag and those without any CRUD permissions.
+ *
+ * @example
+ * ```typescript
+ * const entities = getHttpEligibleEntities(ir);
+ * // Returns TableEntity[] with canSelect/canInsert/canUpdate/canDelete
+ * ```
+ */
+export function getHttpEligibleEntities(ir: SemanticIR): TableEntity[] {
+  return [...ir.entities.values()]
+    .filter(isTableEntity)
+    .filter(e => e.tags.omit !== true)
+    .filter(hasAnyPermission);
+}
+
+// =============================================================================
+// Registry Helpers
+// =============================================================================
+
+/**
+ * Build a map of entity names to their query extensions from the registry.
+ * Looks for capabilities matching `queries:{entityName}` pattern.
+ *
+ * @example
+ * ```typescript
+ * const entityQueries = buildEntityQueriesMap(registry);
+ * // Map<"User", { methods: [...] }>
+ * ```
+ */
+export function buildEntityQueriesMap(
+  registry: SymbolRegistryService,
+): Map<string, EntityQueriesExtension> {
+  return registry.query("queries:").reduce((acc, decl) => {
+    const parts = decl.capability.split(":");
+    if (parts.length !== 3) return acc;
+
+    const entityName = parts[2]!;
+    const metadata = registry.getMetadata(decl.capability);
+    if (metadata && typeof metadata === "object" && "methods" in metadata) {
+      acc.set(entityName, metadata as EntityQueriesExtension);
+    }
+    return acc;
+  }, new Map<string, EntityQueriesExtension>());
+}
+
+// =============================================================================
+// Method Capability Mapping
+// =============================================================================
+
+/**
+ * Get the capability suffix for a query method.
+ *
+ * Maps method kinds to capability names:
+ * - read → "findById"
+ * - list → "list" or "listBy{Field}"
+ * - create → "create"
+ * - update → "update"
+ * - delete → "delete"
+ * - lookup → "findBy{Field}"
+ * - function → method.name
+ *
+ * @example
+ * ```typescript
+ * const suffix = getMethodCapabilitySuffix(method, "User", inflection);
+ * // "findById", "list", "listByEmail", "create", etc.
+ * const capability = `queries:${entityName}:${suffix}`;
+ * ```
+ */
+export function getMethodCapabilitySuffix(
+  method: QueryMethod,
+  entityName: string,
+  inflection: CoreInflection,
+): string {
+  return Match.value(method.kind).pipe(
+    Match.when("read", () => "findById"),
+    Match.when("list", () => {
+      const prefix = inflection.variableName(entityName, "");
+      if (method.name.startsWith(prefix)) {
+        const remainder = method.name.slice(prefix.length);
+        if (remainder.startsWith("ListBy")) {
+          const suffix = remainder.slice("ListBy".length);
+          if (suffix.length > 0) {
+            return `listBy${suffix}`;
+          }
+        }
+      }
+      return "list";
+    }),
+    Match.when("create", () => "create"),
+    Match.when("update", () => "update"),
+    Match.when("delete", () => "delete"),
+    Match.when("lookup", () =>
+      method.lookupField ? `findBy${inflection.pascalCase(method.lookupField)}` : "lookup",
+    ),
+    Match.when("function", () => method.name),
+    Match.exhaustive,
+  );
 }

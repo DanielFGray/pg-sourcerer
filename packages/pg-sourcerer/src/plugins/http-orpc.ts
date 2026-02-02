@@ -12,11 +12,10 @@
  * - Calls registry.import(queryCapability).ref() during render
  * - Emit phase generates imports from the recorded references
  */
-import { Effect, Match, Schema as S, pipe } from "effect";
+import { Effect, Schema as S, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, SymbolHandle } from "../runtime/types.js";
-import type { RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
@@ -32,9 +31,11 @@ import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import { type UserModuleRef } from "../user-module.js";
 import {
+  buildEntityQueriesMap,
   buildQueryInvocation,
   getBodySchemaName,
-  hasAnyPermission,
+  getHttpEligibleEntities,
+  getMethodCapabilitySuffix,
   toExternalImport,
 } from "./shared/http-helpers.js";
 import { getSchemaBuilder } from "./shared/schema-builder.js";
@@ -309,39 +310,6 @@ function buildProcedure(
   return { procedureExpr, bodySchemaName, imports };
 }
 
-/**
- * Get the capability suffix for a query method.
- */
-function getMethodCapabilitySuffix(
-  method: QueryMethod,
-  entityName: string,
-  inflection: CoreInflection,
-): string {
-  return Match.value(method.kind).pipe(
-    Match.when("read", () => "findById"),
-    Match.when("list", () => {
-      const prefix = inflection.variableName(entityName, "");
-      if (method.name.startsWith(prefix)) {
-        const remainder = method.name.slice(prefix.length);
-        if (remainder.startsWith("ListBy")) {
-          const suffix = remainder.slice("ListBy".length);
-          if (suffix.length > 0) {
-            return `listBy${suffix}`;
-          }
-        }
-      }
-      return "list";
-    }),
-    Match.when("create", () => "create"),
-    Match.when("update", () => "update"),
-    Match.when("delete", () => "delete"),
-    Match.when("lookup", () =>
-      method.lookupField ? `findBy${inflection.pascalCase(method.lookupField)}` : "lookup",
-    ),
-    Match.when("function", () => method.name),
-    Match.exhaustive,
-  );
-}
 
 /**
  * Generate oRPC router for an entity.
@@ -513,15 +481,11 @@ export function orpc(config?: HttpOrpcConfig): Plugin {
       const ir = yield* IR;
       const inflection = yield* Inflection;
 
-      const entityDeclarations = [...ir.entities.values()]
-        .filter(isTableEntity)
-        .filter(e => e.tags.omit !== true)
-        .filter(hasAnyPermission)
-        .map(entity => ({
-          name: inflection.variableName(entity.name, "Router"),
-          capability: `http-routes:orpc:${entity.name}`,
-          baseEntityName: entity.name,
-        }));
+      const entityDeclarations = getHttpEligibleEntities(ir).map(entity => ({
+        name: inflection.variableName(entity.name, "Router"),
+        capability: `http-routes:orpc:${entity.name}`,
+        baseEntityName: entity.name,
+      }));
 
       return [
         ...entityDeclarations,
@@ -537,19 +501,7 @@ export function orpc(config?: HttpOrpcConfig): Plugin {
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
 
-      const queryCapabilities = registry.query("queries:");
-
-      const entityQueries = queryCapabilities.reduce((acc, decl) => {
-        const parts = decl.capability.split(":");
-        if (parts.length !== 3) return acc;
-
-        const entityName = parts[2]!;
-        const metadata = registry.getMetadata(decl.capability);
-        if (metadata && typeof metadata === "object" && "methods" in metadata) {
-          acc.set(entityName, metadata as EntityQueriesExtension);
-        }
-        return acc;
-      }, new Map<string, EntityQueriesExtension>());
+      const entityQueries = buildEntityQueriesMap(registry);
 
       const orpcUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.orpcImport
         ? [resolvedConfig.orpcImport]
