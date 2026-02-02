@@ -13,19 +13,11 @@
 import { Effect, Match, Schema as S, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
-import {
-  isTableEntity,
-  isEnumEntity,
-  isDomainEntity,
-  type TableEntity,
-  type Field,
-  type EnumEntity,
-  type DomainEntity,
-} from "../ir/semantic-ir.js";
+import type { Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type { SchemaBuilder } from "../ir/extensions/schema-builder.js";
 import {
@@ -41,6 +33,16 @@ import {
   buildSchemaBuilderDeclaration,
   buildShapeDeclarations,
 } from "./shared/schema-declarations.js";
+import {
+  classifyEntities,
+  getEntityShapes,
+  applyModifiers,
+  applyDomainValidations,
+  type ModifierAdapter,
+  type ValidationAdapter,
+  type BaseTypeAdapter,
+  domainBaseSchema,
+} from "./shared/schema-entities.js";
 
 const b = conjure.b;
 
@@ -68,8 +70,8 @@ type ValibotMapping =
 
 function fieldToValibotMapping(
   field: Field,
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
 ): ValibotMapping {
   const resolved = resolveFieldTypeInfo(field);
   if (!resolved) {
@@ -102,8 +104,8 @@ function fieldToValibotMapping(
 function baseTypeToValibotMapping(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
 ): ValibotMapping {
   const normalized = typeName.toLowerCase();
 
@@ -156,23 +158,36 @@ function baseTypeToValibotMapping(
   return { kind: "schema", schema: conjure.id("v").method("unknown").build() };
 }
 
+// Valibot-specific adapters for shared helpers
+const valibotBaseTypeAdapter: BaseTypeAdapter<n.Expression> = {
+  string: () => conjure.id("v").method("string").build(),
+  uuid: () =>
+    conjure
+      .id("v")
+      .method("pipe", [
+        conjure.id("v").method("string").build(),
+        conjure.id("v").method("uuid").build(),
+      ])
+      .build(),
+  number: () => conjure.id("v").method("number").build(),
+  boolean: () => conjure.id("v").method("boolean").build(),
+  date: () => conjure.id("v").method("date").build(),
+  json: () => conjure.id("v").method("unknown").build(),
+  unknown: () => conjure.id("v").method("unknown").build(),
+};
+
+const valibotModifierAdapter: ModifierAdapter<n.Expression> = {
+  array: s => conjure.id("v").method("array", [s]).build(),
+  nullable: s => conjure.id("v").method("nullable", [s]).build(),
+  optional: s => conjure.id("v").method("optional", [s]).build(),
+};
+
 /**
  * Convert a domain entity to a Valibot schema with constraints.
  * Uses v.pipe() to chain validators.
  */
 function domainToValibotSchema(domain: DomainEntity): n.Expression {
-  const baseType = domain.baseTypeName.toLowerCase();
-
-  // Get base type validator
-  const baseValidator = PG_STRING_TYPES.has(baseType)
-    ? conjure.id("v").method("string").build()
-    : PG_NUMBER_TYPES.has(baseType)
-      ? conjure.id("v").method("number").build()
-      : PG_BOOLEAN_TYPES.has(baseType)
-        ? conjure.id("v").method("boolean").build()
-        : PG_DATE_TYPES.has(baseType)
-          ? conjure.id("v").method("date").build()
-          : conjure.id("v").method("unknown").build();
+  const baseValidator = domainBaseSchema(domain, valibotBaseTypeAdapter);
 
   // Convert validation to valibot validator expression
   const validationToValidator = (
@@ -213,21 +228,13 @@ function domainToValibotSchema(domain: DomainEntity): n.Expression {
 }
 
 /** Apply Valibot modifiers (array, nullable, optional) to a base expression */
-const applyValibotModifiers = (
-  base: n.Expression,
-  field: { isArray?: boolean; nullable?: boolean; optional?: boolean },
-): n.Expression =>
-  pipe(
-    base,
-    v => (field.isArray ? conjure.id("v").method("array", [v]).build() : v),
-    v => (field.nullable ? conjure.id("v").method("nullable", [v]).build() : v),
-    v => (field.optional ? conjure.id("v").method("optional", [v]).build() : v),
-  );
+const applyValibotModifiers = (base: n.Expression, field: Field): n.Expression =>
+  applyModifiers(base, field, valibotModifierAdapter);
 
 function shapeToValibotObject(
   shape: { fields: readonly Field[] },
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
 ): n.Expression {
   const properties = shape.fields.map(field => {
@@ -351,21 +358,21 @@ export function valibot(config?: ValibotConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
-      const entities = [...ir.entities.values()];
+      const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
       // Domains - declare schema and type exports
-      const domainDeclarations = entities.filter(isDomainEntity).flatMap(entity => [
+      const domainDeclarations = domains.flatMap(entity => [
         { name: entity.name, capability: `schema:valibot:${entity.name}` },
         { name: entity.name, capability: `schema:valibot:${entity.name}:type` },
       ]);
 
-      const enumDeclarations = entities
-        .filter(isEnumEntity)
-        .flatMap(entity => buildEnumDeclarations(entity, "schema:valibot"));
+      const enumDeclarations = enums.flatMap(entity =>
+        buildEnumDeclarations(entity, "schema:valibot"),
+      );
 
-      const tableDeclarations = entities
-        .filter(isTableEntity)
-        .flatMap(entity => buildShapeDeclarations(entity, "schema:valibot"));
+      const tableDeclarations = tables.flatMap(entity =>
+        buildShapeDeclarations(entity, "schema:valibot"),
+      );
 
       return [
         ...domainDeclarations,
@@ -378,11 +385,7 @@ export function valibot(config?: ValibotConfig): Plugin {
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
-
-      const entities = [...ir.entities.values()];
-      const enums = entities.filter(isEnumEntity);
-      const domains = entities.filter(isDomainEntity);
-      const tables = entities.filter(isTableEntity);
+      const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
       // Helper to render enum entities
       const renderEnum = (entity: EnumEntity): RenderedSymbol[] => {
@@ -443,15 +446,8 @@ export function valibot(config?: ValibotConfig): Plugin {
         ];
       };
 
-      // Helper to get shapes from a table entity
-      const getEntityShapes = (entity: TableEntity) => [
-        entity.shapes.row,
-        entity.shapes.insert,
-        entity.shapes.update,
-      ].filter(Boolean) as NonNullable<TableEntity["shapes"]["row"]>[];
-
       // Helper to render a shape
-      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>): RenderedSymbol[] => {
+      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>): RenderedSymbol[] => {
         const capability = `schema:valibot:${shape.name}`;
         const schemaNode = registry.forSymbol(capability, () =>
           shapeToValibotObject(shape, enums, domains, registry),

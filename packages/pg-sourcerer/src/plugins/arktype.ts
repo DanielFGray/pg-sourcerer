@@ -13,19 +13,11 @@
 import { Effect, Match, Schema as S, pipe } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol } from "../runtime/types.js";
+import type { Plugin, RenderedSymbol } from "../runtime/types.js";
 import { normalizeFileNaming, type FileNaming } from "../runtime/file-assignment.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
 import { IR } from "../services/ir.js";
-import {
-  isTableEntity,
-  isEnumEntity,
-  isDomainEntity,
-  type TableEntity,
-  type Field,
-  type EnumEntity,
-  type DomainEntity,
-} from "../ir/semantic-ir.js";
+import type { TableEntity, Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
   SchemaBuilder,
@@ -45,6 +37,16 @@ import {
   buildSchemaBuilderDeclaration,
   buildShapeDeclarations,
 } from "./shared/schema-declarations.js";
+import {
+  classifyEntities,
+  getEntityShapes,
+  applyModifiers,
+  applyDomainValidations,
+  type ModifierAdapter,
+  type ValidationAdapter,
+  type BaseTypeAdapter,
+  domainBaseSchema,
+} from "./shared/schema-entities.js";
 
 const { b } = conjure;
 
@@ -160,7 +162,7 @@ type ArkTypeMapping =
   | { kind: "enumRef"; enumRef: string; typeString?: undefined; domainRef?: undefined }
   | { kind: "domainRef"; domainRef: string; typeString?: undefined; enumRef?: undefined };
 
-function fieldToArkType(field: Field, enums: EnumEntity[], domains: DomainEntity[]): ArkTypeMapping {
+function fieldToArkType(field: Field, enums: readonly EnumEntity[], domains: readonly DomainEntity[]): ArkTypeMapping {
   const resolved = resolveFieldTypeInfo(field);
   if (!resolved) {
     return { kind: "string", typeString: "unknown" };
@@ -186,8 +188,8 @@ function fieldToArkType(field: Field, enums: EnumEntity[], domains: DomainEntity
 function baseTypeToArkType(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
 ): ArkTypeMapping {
   const normalized = typeName.toLowerCase();
 
@@ -243,8 +245,8 @@ function baseTypeToArkType(
 
 function shapeToArkTypeObject(
   shape: { fields: readonly Field[] },
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
 ): n.Expression {
   // Apply nullable modifier to an expression
@@ -357,8 +359,8 @@ function domainToArktypeString(domain: DomainEntity): string {
 
 function buildUpdateInputSchema(
   entity: TableEntity,
-  enums: EnumEntity[],
-  domains: DomainEntity[],
+  enums: readonly EnumEntity[],
+  domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
 ): n.Expression | null {
   const updateShape = entity.shapes.update;
@@ -465,16 +467,16 @@ export function arktype(config?: ArkTypeConfig): Plugin {
 
     declare: Effect.gen(function* () {
       const ir = yield* IR;
-      const entities = [...ir.entities.values()];
+      const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
       // Declare domains FIRST (so they can be referenced by tables)
-      const domainDeclarations = entities.filter(isDomainEntity).flatMap(entity => [
+      const domainDeclarations = domains.flatMap(entity => [
         { name: entity.name, capability: `schema:arktype:${entity.name}` },
         { name: entity.name, capability: `schema:arktype:${entity.name}:type` },
       ]);
 
       // Table declarations including UpdateInput schemas
-      const tableDeclarations = entities.filter(isTableEntity).flatMap(entity => {
+      const tableDeclarations = tables.flatMap(entity => {
         const shapeDecls = buildShapeDeclarations(entity, "schema:arktype");
         const updateInputDecls =
           entity.shapes.update && entity.primaryKey
@@ -489,9 +491,9 @@ export function arktype(config?: ArkTypeConfig): Plugin {
         return [...shapeDecls, ...updateInputDecls];
       });
 
-      const enumDeclarations = entities
-        .filter(isEnumEntity)
-        .flatMap(entity => buildEnumDeclarations(entity, "schema:arktype"));
+      const enumDeclarations = enums.flatMap(entity =>
+        buildEnumDeclarations(entity, "schema:arktype"),
+      );
 
       return [
         ...domainDeclarations,
@@ -504,11 +506,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
-
-      const entities = [...ir.entities.values()];
-      const enums = entities.filter(isEnumEntity);
-      const domains = entities.filter(isDomainEntity);
-      const tables = entities.filter(isTableEntity);
+      const { enums, domains, tables } = classifyEntities(ir.entities.values());
 
       const arktypeImport = { from: "arktype", names: ["type"] };
 
@@ -634,11 +632,6 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             : []),
         ];
       };
-
-      // Get shapes from table entity
-      const getEntityShapes = (entity: TableEntity) =>
-        [entity.shapes.row, entity.shapes.insert, entity.shapes.update]
-          .filter(Boolean) as NonNullable<TableEntity["shapes"]["row"]>[];
 
       // Render table entity (shapes + UpdateInput)
       const renderTable = (entity: TableEntity): RenderedSymbol[] => [
