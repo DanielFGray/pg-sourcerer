@@ -472,24 +472,6 @@ function generateTableInterface(entity: TableEntity, ctx: TypeContext): n.Statem
 /**
  * Generate DB interface: `export interface DB { table_name: TableType }`
  */
-function generateDBInterface(entities: readonly TableEntity[], defaultSchemas: readonly string[]): n.Statement {
-  const byName = Order.mapInput(Order.string, (p: { name: string }) => p.name);
-
-  const properties = pipe(
-    entities,
-    A.filter(entity => entity.permissions.canSelect),
-    A.map(entity => ({
-      name: defaultSchemas.includes(entity.schemaName)
-        ? entity.pgName
-        : `${entity.schemaName}.${entity.pgName}`,
-      type: ts.ref(entity.name),
-    })),
-    A.sort(byName),
-  );
-
-  return conjure.export.interface("DB", properties);
-}
-
 // ============================================================================
 // Type Generation Helpers for Conjure exp.* methods
 // ============================================================================
@@ -532,17 +514,14 @@ function generateTableProps(entity: TableEntity, ctx: TypeContext): InterfacePro
 /**
  * Generate DB interface properties.
  */
-function generateDBProps(
-  entities: readonly TableEntity[],
-  defaultSchemas: readonly string[],
-): InterfaceProp[] {
+function generateDBProps(entities: readonly TableEntity[]): InterfaceProp[] {
   const byName = Order.mapInput(Order.string, (p: { name: string }) => p.name);
 
   return pipe(
     entities,
     A.filter(entity => entity.permissions.canSelect),
     A.map(entity => ({
-      name: defaultSchemas.includes(entity.schemaName)
+      name: entity.schemaName === "public"
         ? entity.pgName
         : `${entity.schemaName}.${entity.pgName}`,
       type: ts.ref(entity.name),
@@ -794,7 +773,6 @@ export function kysely(config?: KyselyConfig): Plugin {
       const enumEntities = getEnumEntities(ir);
       const compositeEntities = getCompositeEntities(ir).filter(e => e.tags.omit !== true);
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
-      const defaultSchemas = ir.schemas;
 
       const typeCtx: TypeContext = {
         enums: enumEntities,
@@ -812,6 +790,9 @@ export function kysely(config?: KyselyConfig): Plugin {
 
       const typesExternalImports: ExternalImport[] =
         kyselyTypeImports.length > 0 ? [{ from: "kysely", types: kyselyTypeImports }] : [];
+
+      // Build helper type header (Generated<T>, ArrayType<T>, etc.)
+      const typesHeader = buildTypesHeader(typeImports);
 
       // Generate enum types
       const enumStmts = yield* Effect.forEach(
@@ -831,16 +812,17 @@ export function kysely(config?: KyselyConfig): Plugin {
         }),
       );
 
-      // Generate table interfaces
-      const tableTypeStmts = yield* Effect.forEach(tableEntities, entity =>
+      // Generate table interfaces (attach file header to first for helper type defs)
+      const tableTypeStmts = yield* Effect.forEach(tableEntities, (entity, i) =>
         cj.exp.interface(entity.name, generateTableProps(entity, typeCtx), {
           capability: `types:kysely:${entity.name}`,
           imports: typesExternalImports,
+          fileHeader: i === 0 && typesHeader ? typesHeader : undefined,
         }),
       );
 
       // Generate DB interface
-      const dbStmt = yield* cj.exp.interface("DB", generateDBProps(tableEntities, defaultSchemas), {
+      const dbStmt = yield* cj.exp.interface("DB", generateDBProps(tableEntities), {
         capability: "types:kysely:DB",
         imports: typesExternalImports,
       });
@@ -876,7 +858,7 @@ export function kysely(config?: KyselyConfig): Plugin {
       const queryResults = yield* Effect.forEach(tableEntities, entity =>
         Effect.gen(function* () {
           const entityName = entity.name;
-          const tableName = ir.schemas.includes(entity.schemaName)
+          const tableName = entity.schemaName === "public"
             ? entity.pgName
             : `${entity.schemaName}.${entity.pgName}`;
           const methods: QueryMethod[] = [];

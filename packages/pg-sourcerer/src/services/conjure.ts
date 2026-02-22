@@ -59,6 +59,12 @@ export interface ExpOpts {
    * For shapes like "CommentInsert", this would be "Comment".
    */
   baseEntityName?: string;
+
+  /**
+   * Raw code to prepend to the output file (e.g., helper type definitions).
+   * Deduplicated across symbols in the same file.
+   */
+  fileHeader?: string;
 }
 
 
@@ -252,6 +258,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
           refs,
           userImports: opts?.userImports,
           baseEntityName: opts?.baseEntityName,
+          fileHeader: opts?.fileHeader,
         });
 
         return node;
@@ -280,6 +287,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
           refs,
           userImports: opts?.userImports,
           baseEntityName: opts?.baseEntityName,
+          fileHeader: opts?.fileHeader,
         });
 
         return node;
@@ -308,6 +316,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
           refs,
           userImports: opts?.userImports,
           baseEntityName: opts?.baseEntityName,
+          fileHeader: opts?.fileHeader,
         });
 
         return node;
@@ -344,6 +353,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
           refs,
           userImports: opts?.userImports,
           baseEntityName: opts?.baseEntityName,
+          fileHeader: opts?.fileHeader,
         });
 
         return node;
@@ -374,6 +384,7 @@ export function makeConjureService(registry: ConjureRegistry): ConjureService {
           refs,
           userImports: opts?.userImports,
           baseEntityName: opts?.baseEntityName,
+          fileHeader: opts?.fileHeader,
         });
 
         return node;

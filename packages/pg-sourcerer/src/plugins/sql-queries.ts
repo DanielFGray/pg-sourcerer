@@ -164,8 +164,8 @@ function buildSelectClause(entity: TableEntity, explicitColumns: boolean): strin
   return explicitColumns ? `select ${buildColumnList(entity.shapes.row.fields)}` : "select *";
 }
 
-function buildTableName(entity: TableEntity, defaultSchemas: readonly string[]): string {
-  return defaultSchemas.includes(entity.schemaName)
+function buildTableName(entity: TableEntity): string {
+  return entity.schemaName === "public"
     ? entity.pgName
     : `${entity.schemaName}.${entity.pgName}`;
 }
@@ -306,7 +306,6 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
       const extensions = yield* IRExtensions;
 
       const tableEntities = getTableEntities(ir).filter(e => e.tags.omit !== true);
-      const defaultSchemas = ir.schemas;
 
       const queryUserImports: readonly UserModuleRef[] | undefined = resolvedConfig.sqlImport
         ? [resolvedConfig.sqlImport]
@@ -695,7 +694,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
 
       const generateEntityResults = (entity: TableEntity): QueryGenResult => {
         const entityName = entity.name;
-        const tableName = buildTableName(entity, defaultSchemas);
+        const tableName = buildTableName(entity);
         const selectClause = buildSelectClause(entity, resolvedConfig.explicitColumns);
         const fromClause = `from ${tableName}`;
 

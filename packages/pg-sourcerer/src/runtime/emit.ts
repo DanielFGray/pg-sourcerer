@@ -154,12 +154,13 @@ function computeRelativePath(fromFile: string, toFile: string): string {
   );
 
   // Build relative path: ".." for each remaining fromPart, then remaining toParts
-  const upParts = Arr.replicate("..", fromParts.length - commonLen);
+  const upCount = fromParts.length - commonLen;
+  const upParts = upCount > 0 ? Arr.replicate("..", upCount) : [];
   const downParts = toParts.slice(commonLen);
   const parts = [...upParts, ...downParts, toFileName.replace(/\.ts$/, ".js")];
 
   // Ensure relative path starts with ./ if not already ../
-  return parts[0] !== ".." ? ["..", ...parts].join("/").replace(/^\.\.\//, "./") : parts.join("/");
+  return parts[0] !== ".." ? `./${parts.join("/")}` : parts.join("/");
 }
 
 /**
@@ -593,17 +594,38 @@ export function emitFiles(
 
     // Build the program
     // Order: user module imports, external imports, cross-file imports
-    const allImports = [...collected.userModuleImports, ...externalImportStatements, ...crossImports];
+    // Deduplicate: collect all names already imported by external/user imports
+    const alreadyImported = new Set<string>();
+    for (const imp of [...collected.userModuleImports, ...externalImportStatements]) {
+      for (const spec of (imp as n.ImportDeclaration).specifiers ?? []) {
+        if (spec.type === "ImportSpecifier" && spec.local?.name) {
+          alreadyImported.add(spec.local.name as string);
+        }
+      }
+    }
+    // Filter cross-file imports, removing specifiers already covered
+    const dedupedCrossImports = crossImports.flatMap(imp => {
+      const decl = imp as n.ImportDeclaration;
+      const filtered = (decl.specifiers ?? []).filter(
+        spec => spec.type !== "ImportSpecifier" || !spec.local?.name || !alreadyImported.has(spec.local.name as string),
+      );
+      if (filtered.length === 0) return [];
+      decl.specifiers = filtered;
+      return [decl];
+    });
+    const allImports = [...collected.userModuleImports, ...externalImportStatements, ...dedupedCrossImports];
     const program = b.program([...allImports, ...bodyStatements]);
 
-    // Serialize and add headers
-    const baseCode = conjure.print(program);
-    const withFileHeaders = collected.fileHeaders.length > 0
-      ? collected.fileHeaders.join("\n") + "\n\n" + baseCode
-      : baseCode;
+    // Serialize: imports first, then file headers, then body
+    const importProgram = b.program(allImports);
+    const bodyProgram = b.program(bodyStatements);
+    const importCode = allImports.length > 0 ? conjure.print(importProgram) : "";
+    const headerCode = collected.fileHeaders.length > 0 ? collected.fileHeaders.join("\n") : "";
+    const bodyCode = conjure.print(bodyProgram);
+    const baseCode = [importCode, headerCode, bodyCode].filter(Boolean).join("\n\n");
     const code = config.headerComment
-      ? config.headerComment + "\n\n" + withFileHeaders
-      : withFileHeaders;
+      ? config.headerComment + "\n\n" + baseCode
+      : baseCode;
 
     emitted.push({ path: filePath, content: code });
   }

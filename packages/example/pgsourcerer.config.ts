@@ -20,5 +20,11 @@ export default defineConfig({
   schemas: ["app_public", "app_private"],
   outputDir: "./generated",
   formatter: "bunx oxfmt --write",
-  plugins: [kysely(), zod(), elysia()],
+  plugins: [
+    kysely({
+      dbImport: userModule("./db.ts", { named: ["db"] }),
+    }),
+    zod(),
+    elysia(),
+  ],
 });

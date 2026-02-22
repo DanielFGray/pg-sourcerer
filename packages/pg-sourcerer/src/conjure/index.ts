@@ -1300,7 +1300,10 @@ const exportHelpers = {
     properties: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[],
   ): n.ExportNamedDeclaration => {
     const members = properties.map((p): InterfaceBodyMember => {
-      const sig = b.tsPropertySignature(b.identifier(p.name), b.tsTypeAnnotation(toTSType(p.type)));
+      const key = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(p.name)
+        ? b.identifier(p.name)
+        : b.stringLiteral(p.name);
+      const sig = b.tsPropertySignature(key, b.tsTypeAnnotation(toTSType(p.type)));
       if (p.optional) sig.optional = true;
       if (p.readonly) sig.readonly = true;
       return sig;
