@@ -486,7 +486,7 @@ export function orpc(config?: HttpOrpcConfig): Plugin {
         const routerStmt = yield* cj.exp.const(
           inflection.variableName(entityName, "Router"),
           initExpr,
-          { capability, imports, userImports: orpcUserImports },
+          { capability, imports, userImports: orpcUserImports, baseEntityName: entityName },
         );
         statements.push(routerStmt);
       }

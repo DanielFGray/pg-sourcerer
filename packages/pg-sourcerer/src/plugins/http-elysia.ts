@@ -509,7 +509,7 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
         const routeStmt = yield* cj.exp.const(
           inflection.variableName(entityName, "Routes"),
           initExpr,
-          { capability, imports },
+          { capability, imports, baseEntityName: entityName },
         );
         statements.push(routeStmt);
       }

@@ -143,6 +143,7 @@ export function effectModels(): Plugin {
         return cj.exp.class(entity.name, classNode, {
           capability,
           imports: modelImports,
+          baseEntityName: entity.name,
         });
       });
     }),

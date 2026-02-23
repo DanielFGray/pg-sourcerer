@@ -730,6 +730,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           const stmt = yield* cj.exp.const(info.name, info.initExpr, {
             capability: info.capability,
             ...info.opts,
+            baseEntityName: entityName,
           });
           statements.push(stmt);
         }

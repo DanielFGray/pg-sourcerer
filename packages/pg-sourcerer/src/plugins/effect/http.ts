@@ -612,6 +612,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
                 {
                   capability: `effect:http:${entityName}:NotFound`,
                   imports: [platformImports, effectImports],
+                  baseEntityName: entityName,
                 },
               ),
           );
@@ -627,6 +628,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
                 {
                   capability: `effect:http:${entityName}:ApiGroup`,
                   imports: [platformImports, effectImports],
+                  baseEntityName: entityName,
                 },
               );
             },
@@ -636,6 +638,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
           const apiStmt = yield* cj.exp.const(`${entityName}Api`, buildApiExpr(entityName), {
             capability: `effect:http:${entityName}:Api`,
             imports: [platformImports, effectImports],
+            baseEntityName: entityName,
           });
 
           // ApiGroupLive (handlers) - needs model and repo imports
@@ -650,6 +653,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
                 {
                   capability: `effect:http:${entityName}:ApiGroupLive`,
                   imports: [platformImports, effectImports],
+                  baseEntityName: entityName,
                 },
               );
             },
@@ -664,6 +668,7 @@ export function effectHttp(config: ParsedEffectConfig): Plugin {
               return cj.exp.const(`${entityName}ApiLive`, buildApiLiveExpr(entityName), {
                 capability: `effect:http:${entityName}:ApiLive`,
                 imports: [platformImports, effectImports],
+                baseEntityName: entityName,
               });
             },
           );

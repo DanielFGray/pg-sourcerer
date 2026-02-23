@@ -801,6 +801,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           cj.exp.type(enumEntity.name, generateEnumUnionType(enumEntity), {
             capability: `types:kysely:${enumEntity.name}`,
             imports: typesExternalImports,
+            baseEntityName: enumEntity.name,
           }),
       );
 
@@ -809,6 +810,7 @@ export function kysely(config?: KyselyConfig): Plugin {
         cj.exp.interface(composite.name, generateCompositeProps(composite, typeCtx), {
           capability: `types:kysely:${composite.name}`,
           imports: typesExternalImports,
+          baseEntityName: composite.name,
         }),
       );
 
@@ -818,6 +820,7 @@ export function kysely(config?: KyselyConfig): Plugin {
           capability: `types:kysely:${entity.name}`,
           imports: typesExternalImports,
           fileHeader: i === 0 && typesHeader ? typesHeader : undefined,
+          baseEntityName: entity.name,
         }),
       );
 
@@ -846,12 +849,14 @@ export function kysely(config?: KyselyConfig): Plugin {
         fnExpr: n.Expression,
         method: QueryMethod,
         imports: ExternalImport[],
+        baseEntityName: string,
       ) =>
         cj.exp.const(name, fnExpr, {
           capability,
           imports,
           userImports: queryUserImports,
           consume: createQueryConsume(method),
+          baseEntityName,
         });
 
       // Generate queries for each entity
@@ -897,6 +902,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 fnExpr,
                 method,
                 kyselyImport,
+                entityName,
               );
               stmts.push(s);
             }
@@ -969,6 +975,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               fnExpr,
               method,
               kyselyImport,
+              entityName,
             );
             stmts.push(s);
           }
@@ -1000,7 +1007,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:create`, fnExpr, method, [
               { from: "kysely", names: resolvedConfig.dbAsParameter ? ["Kysely"] : [], types: ["Insertable"] },
               { from: resolvedConfig.typesFile, types: [entityName] },
-            ]);
+            ], entityName);
             stmts.push(s);
           }
 
@@ -1037,7 +1044,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:update`, fnExpr, method, [
                 { from: "kysely", names: resolvedConfig.dbAsParameter ? ["Kysely"] : [], types: ["Updateable"] },
                 { from: resolvedConfig.typesFile, types: [entityName] },
-              ]);
+              ], entityName);
               stmts.push(s);
             }
           }
@@ -1068,7 +1075,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 .body(stmt.return(queryExpr))
                 .build();
 
-              const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:delete`, fnExpr, method, kyselyImport);
+              const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:delete`, fnExpr, method, kyselyImport, entityName);
               stmts.push(s);
             }
           }
@@ -1120,6 +1127,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 fnExpr,
                 method,
                 kyselyImport,
+                entityName,
               );
               stmts.push(s);
             }

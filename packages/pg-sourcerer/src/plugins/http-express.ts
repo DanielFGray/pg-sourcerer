@@ -474,7 +474,7 @@ export function express(config?: HttpExpressConfig): Plugin {
         const routeStmt = yield* cj.exp.const(
           `${inflect.uncapitalize(entityName)}Routes`,
           initExpr,
-          { capability, imports },
+          { capability, imports, baseEntityName: entityName },
         );
         statements.push(routeStmt);
       }

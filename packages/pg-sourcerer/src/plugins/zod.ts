@@ -403,6 +403,7 @@ export function zod(config?: ZodConfig): Plugin {
             capability: `schema:zod:${entity.name}`,
             imports: [zodImport],
             consume: createZodConsumeCallback(entity.name),
+            baseEntityName: entity.name,
           });
 
           const stmts = [schemaStmt];
@@ -412,6 +413,7 @@ export function zod(config?: ZodConfig): Plugin {
             const typeStmt = yield* cj.exp.type(entity.name, inferType, {
               capability: `schema:zod:${entity.name}:type`,
               imports: [zodImport],
+              baseEntityName: entity.name,
             });
             stmts.push(typeStmt);
           }
@@ -428,6 +430,7 @@ export function zod(config?: ZodConfig): Plugin {
             capability: `schema:zod:${domain.name}`,
             imports: [zodImport],
             consume: createZodConsumeCallback(domain.name),
+            baseEntityName: domain.name,
           });
 
           const stmts = [schemaStmt];
@@ -437,6 +440,7 @@ export function zod(config?: ZodConfig): Plugin {
             const typeStmt = yield* cj.exp.type(domain.name, inferType, {
               capability: `schema:zod:${domain.name}:type`,
               imports: [zodImport],
+              baseEntityName: domain.name,
             });
             stmts.push(typeStmt);
           }
@@ -444,8 +448,8 @@ export function zod(config?: ZodConfig): Plugin {
           return stmts;
         });
 
-      // Render a shape
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>) =>
+      // Render a shape (baseEntityName is the parent entity's name)
+      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>, baseEntityName: string) =>
         Effect.gen(function* () {
           const capability = `schema:zod:${shape.name}`;
           const schemaInit = registry.forSymbol(capability, () =>
@@ -456,6 +460,7 @@ export function zod(config?: ZodConfig): Plugin {
             capability,
             imports: [zodImport],
             consume: createZodConsumeCallback(shape.name),
+            baseEntityName,
           });
 
           const stmts = [schemaStmt];
@@ -465,6 +470,7 @@ export function zod(config?: ZodConfig): Plugin {
             const typeStmt = yield* cj.exp.type(shape.name, inferType, {
               capability: `schema:zod:${shape.name}:type`,
               imports: [zodImport],
+              baseEntityName,
             });
             stmts.push(typeStmt);
           }
@@ -477,12 +483,11 @@ export function zod(config?: ZodConfig): Plugin {
 
       const enumStmts = yield* Effect.forEach(enums, renderEnum);
       const domainStmts = yield* Effect.forEach(domains, renderDomain);
-      const tableStmts = yield* Effect.forEach(
-        Arr.flatMap(tables, entity => getEntityShapes(entity)),
-        renderShape,
+      const tableStmts = yield* Effect.forEach(tables, entity =>
+        Effect.forEach(getEntityShapes(entity), shape => renderShape(shape, entity.name)),
       );
 
-      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(tableStmts)];
+      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(Arr.flatten(tableStmts))];
     }),
   };
 }

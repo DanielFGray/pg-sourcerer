@@ -510,7 +510,7 @@ export function trpc(config?: HttpTrpcConfig): Plugin {
         const routerStmt = yield* cj.exp.const(
           inflection.variableName(entityName, "Router"),
           initExpr,
-          { capability, imports, userImports: trpcUserImports },
+          { capability, imports, userImports: trpcUserImports, baseEntityName: entityName },
         );
         statements.push(routerStmt);
       }

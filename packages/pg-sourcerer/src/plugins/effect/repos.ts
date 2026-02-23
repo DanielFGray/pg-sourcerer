@@ -246,6 +246,7 @@ export function effectRepos(config: ParsedEffectConfig): Plugin {
         return cj.exp.class(repoName, classDecl, {
           capability,
           imports: repoImports,
+          baseEntityName: entity.name,
         });
       });
     }),

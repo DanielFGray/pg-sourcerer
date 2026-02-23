@@ -174,7 +174,9 @@ export function mergeFileRules(
  * - "schema:zod:User" → entity is "User"
  * - "http-routes:elysia:Post" → entity is "Post"
  *
- * The entity is the first PascalCase part after known prefixes and provider names.
+ * Heuristic: Entity names are PascalCase (start with uppercase) or contain
+ * a schema qualifier (dot). Categories, providers, and methods are lowercase.
+ * No hardcoded knowledge of specific plugins or providers is needed.
  */
 export function parseCapabilityInfo(capability: Capability): {
   entityName: string;
@@ -182,37 +184,23 @@ export function parseCapabilityInfo(capability: Capability): {
 } {
   const parts = capability.split(":");
 
-  // Known category prefixes that should be skipped
-  const knownCategories = new Set([
-    "type", "types", "schema", "schemas", "query", "queries",
-    "http-routes", "http-router", "http",
-  ]);
+  // Find the first segment that looks like an entity name:
+  // 1. Contains a dot → schema-qualified name (e.g., "custom_schema.User")
+  // 2. Starts with an uppercase letter → PascalCase entity name
+  const isEntityPart = (part: string): boolean =>
+    part.includes(".") || /^[A-Z]/.test(part);
 
-  // Known provider names that should be skipped
-  const knownProviders = new Set([
-    "kysely", "drizzle", "effect-sql", "sql", "prisma",
-    "zod", "arktype", "effect", "valibot", "yup", "typebox",
-    "elysia", "hono", "fastify", "express", "trpc",
-  ]);
-
-  const isKnownPart = (part: string): boolean => {
-    const lower = part.toLowerCase();
-    return knownCategories.has(lower) || knownProviders.has(lower);
-  };
-
-  // Find the first part that looks like an entity name (not a known prefix/provider)
   return pipe(
     parts,
-    Arr.findFirst(part => !isKnownPart(part)),
+    Arr.findFirst(isEntityPart),
     Option.map(part => {
-      // Check if part contains a schema qualifier (e.g., "public.User")
       if (part.includes(".")) {
         const [schemaPart, entityNamePart] = part.split(".");
         return { entityName: entityNamePart ?? part, schema: schemaPart ?? "public" };
       }
       return { entityName: part, schema: "public" };
     }),
-    // Fallback: use the last part
+    // Fallback: use the last part (for aggregators like "app")
     Option.getOrElse(() => ({
       entityName: parts[parts.length - 1] ?? capability,
       schema: "public",

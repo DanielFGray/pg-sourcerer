@@ -377,6 +377,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             capability: `schema:valibot:${entity.name}`,
             imports: [valibotImport],
             consume: createValibotConsumeCallback(entity.name),
+            baseEntityName: entity.name,
           });
 
           const stmts = [schemaStmt];
@@ -386,6 +387,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             const typeStmt = yield* cj.exp.type(entity.name, inferType, {
               capability: `schema:valibot:${entity.name}:type`,
               imports: [valibotImport],
+              baseEntityName: entity.name,
             });
             stmts.push(typeStmt);
           }
@@ -402,6 +404,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             capability: `schema:valibot:${domain.name}`,
             imports: [valibotImport],
             consume: createValibotConsumeCallback(domain.name),
+            baseEntityName: domain.name,
           });
 
           const stmts = [schemaStmt];
@@ -411,6 +414,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             const typeStmt = yield* cj.exp.type(domain.name, inferType, {
               capability: `schema:valibot:${domain.name}:type`,
               imports: [valibotImport],
+              baseEntityName: domain.name,
             });
             stmts.push(typeStmt);
           }
@@ -418,8 +422,8 @@ export function valibot(config?: ValibotConfig): Plugin {
           return stmts;
         });
 
-      // Render a shape
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>) =>
+      // Render a shape (baseEntityName is the parent entity's name)
+      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>, baseEntityName: string) =>
         Effect.gen(function* () {
           const capability = `schema:valibot:${shape.name}`;
           const schemaInit = registry.forSymbol(capability, () =>
@@ -430,6 +434,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             capability,
             imports: [valibotImport],
             consume: createValibotConsumeCallback(shape.name),
+            baseEntityName,
           });
 
           const stmts = [schemaStmt];
@@ -439,6 +444,7 @@ export function valibot(config?: ValibotConfig): Plugin {
             const typeStmt = yield* cj.exp.type(shape.name, inferType, {
               capability: `schema:valibot:${shape.name}:type`,
               imports: [valibotImport],
+              baseEntityName,
             });
             stmts.push(typeStmt);
           }
@@ -451,12 +457,11 @@ export function valibot(config?: ValibotConfig): Plugin {
 
       const enumStmts = yield* Effect.forEach(enums, renderEnum);
       const domainStmts = yield* Effect.forEach(domains, renderDomain);
-      const tableStmts = yield* Effect.forEach(
-        Arr.flatMap(tables, entity => getEntityShapes(entity)),
-        renderShape,
+      const tableStmts = yield* Effect.forEach(tables, entity =>
+        Effect.forEach(getEntityShapes(entity), shape => renderShape(shape, entity.name)),
       );
 
-      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(tableStmts)];
+      return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(Arr.flatten(tableStmts))];
     }),
   };
 }

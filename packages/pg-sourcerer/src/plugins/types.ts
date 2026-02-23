@@ -174,6 +174,7 @@ export function typesPlugin(): Plugin {
       const enumStatements = yield* Effect.forEach(enumEntities, entity =>
         cj.exp.type(entity.name, enumToUnionType(entity), {
           capability: `type:${entity.name}`,
+          baseEntityName: entity.name,
         }),
       );
 
@@ -181,6 +182,7 @@ export function typesPlugin(): Plugin {
       const domainStatements = yield* Effect.forEach(domainEntities, entity =>
         cj.exp.type(entity.name, domainToTsType(entity), {
           capability: `type:${entity.name}`,
+          baseEntityName: entity.name,
         }),
       );
 
@@ -188,17 +190,17 @@ export function typesPlugin(): Plugin {
       const getEntityShapes = (entity: TableEntity): Shape[] =>
         [entity.shapes.row, entity.shapes.update, entity.shapes.insert].filter(Boolean) as Shape[];
 
-      const tableStatements = yield* Effect.forEach(
-        Arr.flatMap(tableEntities, entity => getEntityShapes(entity)),
-        shape =>
+      const tableStatements = yield* Effect.forEach(tableEntities, entity =>
+        Effect.forEach(getEntityShapes(entity), shape =>
           cj.exp.interface(
             shape.name,
             shapeToInterfaceProps(shape, enumMap, domainMap, shape.kind === "row"),
-            { capability: `type:${shape.name}` },
+            { capability: `type:${shape.name}`, baseEntityName: entity.name },
           ),
+        ),
       );
 
-      return [...enumStatements, ...domainStatements, ...tableStatements];
+      return [...enumStatements, ...domainStatements, ...Arr.flatten(tableStatements)];
     }),
   };
 }

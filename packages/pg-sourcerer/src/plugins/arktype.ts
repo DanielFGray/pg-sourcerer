@@ -487,6 +487,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             capability: `schema:arktype:${entity.name}`,
             imports: [arktypeImport],
             consume: createArkTypeConsumeCallback(entity.name),
+            baseEntityName: entity.name,
           });
 
           const stmts = [schemaStmt];
@@ -496,6 +497,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             const typeStmt = yield* cj.exp.type(entity.name, inferType, {
               capability: `schema:arktype:${entity.name}:type`,
               imports: [arktypeImport],
+              baseEntityName: entity.name,
             });
             stmts.push(typeStmt);
           }
@@ -513,6 +515,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             capability: `schema:arktype:${entity.name}`,
             imports: [arktypeImport],
             consume: createArkTypeConsumeCallback(entity.name),
+            baseEntityName: entity.name,
           });
 
           const stmts = [schemaStmt];
@@ -522,6 +525,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             const typeStmt = yield* cj.exp.type(entity.name, inferType, {
               capability: `schema:arktype:${entity.name}:type`,
               imports: [arktypeImport],
+              baseEntityName: entity.name,
             });
             stmts.push(typeStmt);
           }
@@ -529,8 +533,8 @@ export function arktype(config?: ArkTypeConfig): Plugin {
           return stmts;
         });
 
-      // Render a shape (row, insert, update)
-      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>) =>
+      // Render a shape (row, insert, update) with baseEntityName from parent entity
+      const renderShape = (shape: NonNullable<TableEntity["shapes"]["row"]>, baseEntityName: string) =>
         Effect.gen(function* () {
           const isRow = shape.kind === "row";
           const capability = `schema:arktype:${shape.name}`;
@@ -542,6 +546,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             capability,
             imports: [arktypeImport],
             consume: createArkTypeConsumeCallback(shape.name),
+            baseEntityName,
           });
 
           const stmts = [schemaStmt];
@@ -551,6 +556,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             const typeStmt = yield* cj.exp.type(shape.name, inferType, {
               capability: `schema:arktype:${shape.name}:type`,
               imports: [arktypeImport],
+              baseEntityName,
             });
             stmts.push(typeStmt);
           }
@@ -575,6 +581,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             capability,
             imports: [arktypeImport],
             consume: createArkTypeConsumeCallback(updateInputName),
+            baseEntityName: entity.name,
           });
 
           const stmts = [schemaStmt];
@@ -584,6 +591,7 @@ export function arktype(config?: ArkTypeConfig): Plugin {
             const typeStmt = yield* cj.exp.type(updateInputName, inferType, {
               capability: `schema:arktype:${updateInputName}:type`,
               imports: [arktypeImport],
+              baseEntityName: entity.name,
             });
             stmts.push(typeStmt);
           }
@@ -594,7 +602,10 @@ export function arktype(config?: ArkTypeConfig): Plugin {
       // Render table entity (shapes + UpdateInput)
       const renderTable = (entity: TableEntity) =>
         Effect.gen(function* () {
-          const shapeStmts = yield* Effect.forEach(getEntityShapes(entity), renderShape);
+          const shapeStmts = yield* Effect.forEach(
+            getEntityShapes(entity),
+            shape => renderShape(shape, entity.name),
+          );
           const updateInputStmts = yield* renderUpdateInput(entity);
           return [...Arr.flatten(shapeStmts), ...updateInputStmts];
         });

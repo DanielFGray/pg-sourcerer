@@ -46,6 +46,22 @@ describe("parseCapabilityInfo", () => {
     const info = parseCapabilityInfo("http-routes:elysia:Post");
     expect(info.entityName).toBe("Post");
   });
+
+  it("works with unknown category/provider (no hardcoded knowledge)", () => {
+    const info = parseCapabilityInfo("widgets:foobar:Order");
+    expect(info.entityName).toBe("Order");
+    expect(info.schema).toBe("public");
+  });
+
+  it("uses PascalCase heuristic for entity detection", () => {
+    expect(parseCapabilityInfo("custom-category:Widget").entityName).toBe("Widget");
+    expect(parseCapabilityInfo("foo:bar:baz:Qux").entityName).toBe("Qux");
+  });
+
+  it("falls back to last part for all-lowercase capabilities", () => {
+    const info = parseCapabilityInfo("http-routes:elysia:app");
+    expect(info.entityName).toBe("app");
+  });
 });
 
 describe("normalizeFileNaming", () => {

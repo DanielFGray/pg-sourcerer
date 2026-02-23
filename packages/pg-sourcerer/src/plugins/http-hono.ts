@@ -526,7 +526,7 @@ export function hono(config?: HttpHonoConfig): Plugin {
         const routeStmt = yield* cj.exp.const(
           inflection.variableName(entityName, "Routes"),
           initExpr,
-          { capability, imports: finalImports },
+          { capability, imports: finalImports, baseEntityName: entityName },
         );
         statements.push(routeStmt);
       }

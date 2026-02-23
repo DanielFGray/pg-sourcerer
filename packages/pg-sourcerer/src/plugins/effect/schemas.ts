@@ -61,6 +61,7 @@ export function effectSchemas(config: ParsedEffectConfig): Plugin {
         cj.exp.const(entity.name, buildEnumSchemaExpr(entity), {
           capability: `effect:schema:${entity.name}`,
           imports: effectSchemaImports,
+          baseEntityName: entity.name,
         }),
       );
 
@@ -73,6 +74,7 @@ export function effectSchemas(config: ParsedEffectConfig): Plugin {
         cj.exp.type(`${entity.name}Type`, buildInferredType(entity.name), {
           capability: `effect:schema:${entity.name}:type`,
           imports: effectSchemaImports,
+          baseEntityName: entity.name,
         }),
       );
 

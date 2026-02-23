@@ -247,22 +247,32 @@ export class SymbolRegistryImpl {
    * Refs are identifier names extracted from AST; we find matching
    * symbol declarations by name and prefer schema/type capabilities.
    *
+   * Filters out self-references (where refName matches the symbol's own name)
+   * to avoid false positives from class/interface declarations that contain
+   * their own name in the AST (e.g., `Model.Class<User>`).
+   *
    * @param capability - The capability being rendered
    * @param node - The rendered AST node
    * @param metadata - Optional metadata from the plugin
    * @param refs - Identifier names referenced by this symbol
+   * @param symbolName - The name of the symbol being stored (for self-ref filtering)
    */
   setRendered(
     capability: Capability,
     node: unknown,
     metadata?: unknown,
     refs?: readonly string[],
+    symbolName?: string,
   ): void {
     this.rendered.set(capability, { node, metadata });
 
     // Record cross-file references from provided refs
     if (refs && refs.length > 0) {
       for (const refName of refs) {
+        // Skip self-references: the symbol's own name appears in its AST
+        // (e.g., class User extends Model.Class<User>)
+        if (symbolName && refName === symbolName) continue;
+
         // Find candidate declarations with the referenced name
         const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
         if (candidates.length === 0) continue;
@@ -294,6 +304,12 @@ export class SymbolRegistryImpl {
   /**
    * Store a complete RenderedSymbol. Called by Conjure's exp.* methods.
    * This is the primary storage for automatic symbol tracking.
+   *
+   * Records cross-file references from the symbol's refs field, but filters:
+   * - Self-references (refName === symbol.name) to avoid false positives from
+   *   class/interface declarations that contain their own name in the AST
+   * - Same-entity references when both source and target share a baseEntityName,
+   *   since same-entity symbols are grouped in the same file
    */
   storeRenderedSymbol(symbol: RenderedSymbol): void {
     // Register in symbols map so import() can find it
@@ -312,6 +328,9 @@ export class SymbolRegistryImpl {
     // Record cross-file references from provided refs
     if (symbol.refs && symbol.refs.length > 0) {
       for (const refName of symbol.refs) {
+        // Skip self-references: the symbol's own name appears in its AST
+        if (refName === symbol.name) continue;
+
         const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
         if (candidates.length === 0) continue;
 
@@ -321,6 +340,16 @@ export class SymbolRegistryImpl {
           candidates[0];
 
         if (chosen && chosen.capability !== symbol.capability) {
+          // Skip same-entity references: symbols sharing a baseEntityName
+          // are grouped in the same file, so cross-file imports aren't needed
+          if (
+            symbol.baseEntityName &&
+            chosen.baseEntityName &&
+            symbol.baseEntityName === chosen.baseEntityName
+          ) {
+            continue;
+          }
+
           if (!this.references.has(symbol.capability)) {
             this.references.set(symbol.capability, new Set());
           }
