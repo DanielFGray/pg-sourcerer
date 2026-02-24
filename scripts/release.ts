@@ -117,7 +117,7 @@ const ensureDevelopAheadOfMain = async () => {
 const runTests = async () => {
   console.log("\nRunning tests...");
   await run(["bun", "run", "typecheck"], "packages/pg-sourcerer");
-  await run(["bun", "run", "test:unit"], "packages/pg-sourcerer");
+  await run(["bun", "run", "test"], "packages/pg-sourcerer");
 };
 
 const getCommitSummary = async (): Promise<string> => {
