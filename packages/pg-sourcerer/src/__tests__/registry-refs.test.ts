@@ -130,26 +130,27 @@ describe("storeRenderedSymbol ref filtering", () => {
     }),
   );
 
-  it.effect("prefers schema capabilities over type capabilities", () =>
+  it.effect("prefers same-plugin-family capabilities over other providers", () =>
     Effect.gen(function* () {
       const registry = new SymbolRegistryImpl();
 
-      // Register both schema and type for same name
-      yield* registry.register({ name: "Status", capability: "schema:Status", baseEntityName: "Status" });
-      yield* registry.register({ name: "Status", capability: "type:Status", baseEntityName: "Status" });
+      // Register both effect and kysely versions of same name
+      yield* registry.register({ name: "Status", capability: "effect:schema:Status", baseEntityName: "Status" });
+      yield* registry.register({ name: "Status", capability: "types:kysely:Status", baseEntityName: "Status" });
 
+      // Effect symbol should prefer effect candidate
       registry.storeRenderedSymbol(
         makeSymbol({
           name: "User",
-          capability: "type:User",
+          capability: "effect:model:User",
           baseEntityName: "User",
           refs: ["Status"],
         }),
       );
 
-      const refs = registry.getReferences("type:User");
-      expect(refs).toContain("schema:Status");
-      expect(refs).not.toContain("type:Status");
+      const refs = registry.getReferences("effect:model:User");
+      expect(refs).toContain("effect:schema:Status");
+      expect(refs).not.toContain("types:kysely:Status");
     }),
   );
 });

@@ -312,11 +312,18 @@ export class SymbolRegistryImpl {
    *   since same-entity symbols are grouped in the same file
    */
   storeRenderedSymbol(symbol: RenderedSymbol): void {
-    // Register in symbols map so import() can find it
-    if (!this.symbols.has(symbol.capability)) {
+    // Register or update in symbols map so import() can find it.
+    // Always update baseEntityName since declare phase doesn't have it.
+    const existing = this.symbols.get(symbol.capability);
+    if (!existing) {
       this.symbols.set(symbol.capability, {
         name: symbol.name,
         capability: symbol.capability,
+        baseEntityName: symbol.baseEntityName,
+      });
+    } else if (symbol.baseEntityName && !existing.baseEntityName) {
+      this.symbols.set(symbol.capability, {
+        ...existing,
         baseEntityName: symbol.baseEntityName,
       });
     }
@@ -334,7 +341,11 @@ export class SymbolRegistryImpl {
         const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
         if (candidates.length === 0) continue;
 
+        // Prefer candidates from the same plugin family (matching first capability segment).
+        // E.g., effect:model:User prefers effect:schema:UserRole over types:kysely:UserRole.
+        const sourcePrefix = symbol.capability.split(":")[0] + ":";
         const chosen =
+          candidates.find(c => c.capability.startsWith(sourcePrefix)) ||
           candidates.find(c => c.capability.startsWith("schema:")) ||
           candidates.find(c => c.capability.startsWith("type:")) ||
           candidates[0];
