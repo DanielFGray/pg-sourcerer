@@ -891,9 +891,9 @@ export function kysely(config?: KyselyConfig): Plugin {
                 .build();
 
               const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter)
-                .rawParam(buildDestructuredParam([pkParam]))
+                .rawParam(param.pick([pkField.name], entityName))
                 .arrow()
-                .body(stmt.return(queryExpr))
+                .expr(queryExpr)
                 .build();
 
               const s = yield* generateQuery(
@@ -901,7 +901,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 `queries:kysely:${entityName}:findById`,
                 fnExpr,
                 method,
-                kyselyImport,
+                [...kyselyImport, { from: resolvedConfig.typesFile, types: [entityName] }],
                 entityName,
               );
               stmts.push(s);
@@ -956,10 +956,10 @@ export function kysely(config?: KyselyConfig): Plugin {
                   b.binaryExpression("!==", b.identifier(cursorColumnParamName), b.identifier("undefined")),
                   b.binaryExpression("!==", b.identifier(cursorPkParamName), b.identifier("undefined")),
                 ),
-                fn().param("qb").arrow().body(
-                  stmt.return(chain(b.identifier("qb") as n.Expression)
+                fn().param("qb").arrow().expr(
+                  chain(b.identifier("qb") as n.Expression)
                     .method("where", [(b.arrowFunctionExpression([b.identifier("eb")], cast.toExpr(whereClause)) as n.Expression)])
-                    .build()),
+                    .build(),
                 ).build(),
               ] as n.Expression[])
               .method("orderBy", [str(candidate.cursorColumnName), str(orderDirection)])
@@ -967,7 +967,7 @@ export function kysely(config?: KyselyConfig): Plugin {
               .method("limit", [b.identifier("limit")])
               .build();
 
-            const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter).rawParam(cursorParam).arrow().body(stmt.return(queryExpr)).build();
+            const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter).rawParam(cursorParam).arrow().expr(queryExpr).build();
 
             const s = yield* generateQuery(
               method.name,
@@ -1001,7 +1001,7 @@ export function kysely(config?: KyselyConfig): Plugin {
             const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter)
               .param("data", ts.ref("Insertable", [ts.ref(entityName)]))
               .arrow()
-              .body(stmt.return(queryExpr))
+              .expr(queryExpr)
               .build();
 
             const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:create`, fnExpr, method, [
@@ -1034,12 +1034,15 @@ export function kysely(config?: KyselyConfig): Plugin {
                 .method("returningAll", [])
                 .build();
 
-              const destructuredParam = param.withRest(
-                [{ name: pkField.name, type: ts.ref(pkParam.type) }],
-                "data",
-                ts.ref("Omit", [ts.ref("Updateable", [ts.ref(entityName)]), ts.literal(pkField.name)]),
-              );
-              const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter).rawParam(destructuredParam).arrow().body(stmt.return(queryExpr)).build();
+              // Build { id, ...data }: Pick<User, "id"> & Omit<Updateable<User>, "id">
+              const pkProp = b.objectProperty(b.identifier(pkField.name), b.identifier(pkField.name));
+              pkProp.shorthand = true;
+              const pattern = b.objectPattern([pkProp, b.restElement(b.identifier("data"))]);
+              const pickType = ts.ref("Pick", [ts.ref(entityName), ts.literal(pkField.name)]);
+              const omitType = ts.ref("Omit", [ts.ref("Updateable", [ts.ref(entityName)]), ts.literal(pkField.name)]);
+              pattern.typeAnnotation = b.tsTypeAnnotation(b.tsIntersectionType([pickType, omitType]));
+              const destructuredParam = pattern;
+              const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter).rawParam(destructuredParam).arrow().expr(queryExpr).build();
 
               const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:update`, fnExpr, method, [
                 { from: "kysely", names: resolvedConfig.dbAsParameter ? ["Kysely"] : [], types: ["Updateable"] },
@@ -1070,12 +1073,12 @@ export function kysely(config?: KyselyConfig): Plugin {
                 .build();
 
               const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter)
-                .rawParam(buildDestructuredParam([pkParam]))
+                .rawParam(param.pick([pkField.name], entityName))
                 .arrow()
-                .body(stmt.return(queryExpr))
+                .expr(queryExpr)
                 .build();
 
-              const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:delete`, fnExpr, method, kyselyImport, entityName);
+              const s = yield* generateQuery(method.name, `queries:kysely:${entityName}:delete`, fnExpr, method, [...kyselyImport, { from: resolvedConfig.typesFile, types: [entityName] }], entityName);
               stmts.push(s);
             }
           }
@@ -1116,9 +1119,9 @@ export function kysely(config?: KyselyConfig): Plugin {
                 .build();
 
               const fnExpr = createFnBuilder(resolvedConfig.dbAsParameter)
-                .rawParam(buildDestructuredParam([lookupParam]))
+                .rawParam(param.pick([field.name], entityName))
                 .arrow()
-                .body(stmt.return(queryExpr))
+                .expr(queryExpr)
                 .build();
 
               const s = yield* generateQuery(
@@ -1126,7 +1129,7 @@ export function kysely(config?: KyselyConfig): Plugin {
                 `queries:kysely:${entityName}:findBy${pascalColumn}`,
                 fnExpr,
                 method,
-                kyselyImport,
+                [...kyselyImport, { from: resolvedConfig.typesFile, types: [entityName] }],
                 entityName,
               );
               stmts.push(s);
