@@ -288,7 +288,6 @@ function buildRouteCall(
  * @param queries - Query extension metadata
  * @param config - Plugin config
  * @param registry - Symbol registry for recording cross-references
- * @param schemaBuilder - Schema builder for validation schemas
  */
 function generateElysiaRoutes(
   entityName: string,
