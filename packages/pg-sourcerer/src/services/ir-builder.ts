@@ -5,7 +5,8 @@
  * Builds entities (tables, views, composites), shapes, fields,
  * relations, and enums.
  */
-import { Context, Effect, Layer, pipe, Array as Arr, Option, Console } from "effect";
+import { Context, Effect, Layer, pipe, Array as Arr, Option, Console, Match } from "effect";
+import { parseDomainExpression } from "../lib/domain-constraint-parser.js";
 import type {
   Introspection,
   PgAttribute,
@@ -22,6 +23,7 @@ import type {
   EnumEntity,
   DomainEntity,
   DomainConstraint,
+  CheckConstraint,
   CompositeEntity,
   ExtensionInfo,
   Field,
@@ -84,13 +86,10 @@ export class IRBuilderSvc extends Context.Tag("IRBuilder")<IRBuilderSvc, IRBuild
  */
 function shapesEqual(a: Shape, b: Shape): boolean {
   if (a.fields.length !== b.fields.length) return false;
-  for (let i = 0; i < a.fields.length; i++) {
-    const fieldA = a.fields[i];
-    const fieldB = b.fields[i];
-    if (fieldA === undefined || fieldB === undefined) return false;
-    if (fieldA.name !== fieldB.name || fieldA.optional !== fieldB.optional) return false;
-  }
-  return true;
+  return pipe(
+    Arr.zip(a.fields, b.fields),
+    Arr.every(([fieldA, fieldB]) => fieldA.name === fieldB.name && fieldA.optional === fieldB.optional),
+  );
 }
 
 // ============================================================================
@@ -254,19 +253,12 @@ function buildField(
     // In insert shape, fields with defaults are optional
     // In update shape, all fields are optional
     // In row shape, only nullable fields are optional
-    let optional: boolean;
-    switch (kind) {
-      case "insert":
-        optional = hasDefault || isGenerated || isIdentity || nullable;
-        break;
-      case "update":
-        optional = true;
-        break;
-      case "row":
-      default:
-        optional = nullable;
-        break;
-    }
+    const optional = pipe(
+      Match.value(kind),
+      Match.when("insert", () => hasDefault || isGenerated || isIdentity || nullable),
+      Match.when("update", () => true),
+      Match.orElse(() => false),
+    );
 
     // Compute field permissions from column ACL or fallback to table-level
     const permissions = computeFieldPermissions(introspection, attr, role);
@@ -274,7 +266,7 @@ function buildField(
     // Resolve domain base type for proper type mapping
     const domainBaseType = resolveDomainBaseType(pgType, introspection);
 
-    const field: Field = {
+    const baseField: Field = {
       name: inflection.fieldName(attr, tags),
       columnName: attr.attname,
       pgAttribute: attr,
@@ -290,15 +282,11 @@ function buildField(
     };
 
     // Build result with optional properties (exactOptionalPropertyTypes)
-    let result = field;
-    if (elementType?.typname !== undefined) {
-      result = { ...result, elementTypeName: elementType.typname };
-    }
-    if (domainBaseType !== undefined) {
-      result = { ...result, domainBaseType };
-    }
-
-    return result;
+    return {
+      ...baseField,
+      ...(elementType?.typname !== undefined ? { elementTypeName: elementType.typname } : {}),
+      ...(domainBaseType !== undefined ? { domainBaseType } : {}),
+    };
   });
 }
 
@@ -309,16 +297,13 @@ function buildField(
  * - update shape requires canUpdate
  */
 function hasPermissionForShape(permissions: FieldPermissions, kind: ShapeKind): boolean {
-  switch (kind) {
-    case "row":
-      return permissions.canSelect;
-    case "insert":
-      return permissions.canInsert;
-    case "update":
-      return permissions.canUpdate;
-    default:
-      return true;
-  }
+  return pipe(
+    Match.value(kind),
+    Match.when("row", () => permissions.canSelect),
+    Match.when("insert", () => permissions.canInsert),
+    Match.when("update", () => permissions.canUpdate),
+    Match.orElse(() => true),
+  );
 }
 
 /**
@@ -368,15 +353,12 @@ function buildShape(
  * Determine entity kind from pg_class relkind
  */
 function entityKind(relkind: string): "table" | "view" {
-  switch (relkind) {
-    case "r":
-      return "table";
-    case "v":
-    case "m": // materialized view
-      return "view";
-    default:
-      return "table";
-  }
+  return pipe(
+    Match.value(relkind),
+    Match.when("r", () => "table" as const),
+    Match.whenOr("v", "m", () => "view" as const), // m = materialized view
+    Match.orElse(() => "table" as const),
+  );
 }
 
 /**
@@ -477,6 +459,9 @@ function buildEntity(
     // Build indexes
     const indexes = yield* buildIndexes(pgClass);
 
+    // Build check constraints
+    const checkConstraints = yield* buildCheckConstraints(pgClass);
+
     // Build primary key
     const primaryKey = buildPrimaryKey(pgClass, tableTags);
 
@@ -489,46 +474,57 @@ function buildEntity(
     //   1. They have fields (role has permission)
     //   2. They're structurally different from previous shape
     // - Patch is always identical to update (both have all fields optional), so we never emit it
-    let shapes: TableEntity["shapes"];
-    if (kind === "table") {
-      const insertShape = yield* buildShape(
-        name,
-        "insert",
-        attributes,
-        attributeTags,
-        introspection,
-        role,
-      );
-      const updateShape = yield* buildShape(
-        name,
-        "update",
-        attributes,
-        attributeTags,
-        introspection,
-        role,
-      );
+    const shapes: TableEntity["shapes"] = yield* pipe(
+      Match.value(kind),
+      Match.when("table", () =>
+        Effect.gen(function* () {
+          const insertShape = yield* buildShape(
+            name,
+            "insert",
+            attributes,
+            attributeTags,
+            introspection,
+            role,
+          );
+          const updateShape = yield* buildShape(
+            name,
+            "update",
+            attributes,
+            attributeTags,
+            introspection,
+            role,
+          );
 
-      // Only include insert if it has fields and is different from row
-      const includeInsert = insertShape.fields.length > 0 && !shapesEqual(rowShape, insertShape);
-      // Only include update if it has fields and is different from insert (or row if insert not included)
-      const includeUpdate =
-        updateShape.fields.length > 0 &&
-        (includeInsert
-          ? !shapesEqual(insertShape, updateShape)
-          : !shapesEqual(rowShape, updateShape));
+          // Only include insert if it has fields and is different from row
+          const includeInsert = insertShape.fields.length > 0 && !shapesEqual(rowShape, insertShape);
+          // Only include update if it has fields and is different from insert (or row if insert not included)
+          const includeUpdate =
+            updateShape.fields.length > 0 &&
+            (includeInsert
+              ? !shapesEqual(insertShape, updateShape)
+              : !shapesEqual(rowShape, updateShape));
 
-      if (includeInsert && includeUpdate) {
-        shapes = { row: rowShape, insert: insertShape, update: updateShape };
-      } else if (includeInsert) {
-        shapes = { row: rowShape, insert: insertShape };
-      } else if (includeUpdate) {
-        shapes = { row: rowShape, update: updateShape };
-      } else {
-        shapes = { row: rowShape };
-      }
-    } else {
-      shapes = { row: rowShape };
-    }
+          return pipe(
+            Match.value({ includeInsert, includeUpdate }),
+            Match.when({ includeInsert: true, includeUpdate: true }, () => ({
+              row: rowShape,
+              insert: insertShape,
+              update: updateShape,
+            })),
+            Match.when({ includeInsert: true }, () => ({
+              row: rowShape,
+              insert: insertShape,
+            })),
+            Match.when({ includeUpdate: true }, () => ({
+              row: rowShape,
+              update: updateShape,
+            })),
+            Match.orElse(() => ({ row: rowShape })),
+          );
+        }),
+      ),
+      Match.orElse(() => Effect.succeed({ row: rowShape })),
+    );
 
     // Build entity conditionally to satisfy exactOptionalPropertyTypes
     const baseEntity = {
@@ -540,6 +536,7 @@ function buildEntity(
       shapes,
       relations,
       indexes,
+      checkConstraints,
       tags: tableTags,
       permissions,
     };
@@ -620,24 +617,19 @@ function buildRelation(
  * Get the index method from the index class's access method
  */
 function getIndexMethod(pgClass: PgClass): IndexDef["method"] {
-  const accessMethod = pgClass.getAccessMethod();
-  if (!accessMethod || !accessMethod.amname) {
-    return "btree"; // Default to btree if unknown
-  }
-
-  // Map common access method names to our IndexMethod type
-  const methodName = accessMethod.amname.toLowerCase();
-  switch (methodName) {
-    case "btree":
-    case "gin":
-    case "gist":
-    case "hash":
-    case "brin":
-    case "spgist":
-      return methodName as IndexDef["method"];
-    default:
-      return "btree";
-  }
+  return pipe(
+    Option.fromNullable(pgClass.getAccessMethod()),
+    Option.flatMap(am => Option.fromNullable(am.amname)),
+    Option.map(name => name.toLowerCase()),
+    Option.flatMap(name =>
+      pipe(
+        Match.value(name),
+        Match.whenOr("btree", "gin", "gist", "hash", "brin", "spgist", n => Option.some(n as IndexDef["method"])),
+        Match.orElse(() => Option.none()),
+      ),
+    ),
+    Option.getOrElse(() => "btree" as const),
+  );
 }
 
 /**
@@ -696,6 +688,35 @@ function buildIndexes(pgClass: PgClass): Effect.Effect<readonly IndexDef[], neve
 }
 
 // ============================================================================
+// Check Constraints
+// ============================================================================
+
+/**
+ * Build check constraints from pg_constraint
+ */
+function buildCheckConstraints(
+  pgClass: PgClass,
+): Effect.Effect<readonly import("../ir/semantic-ir.js").CheckConstraint[], never, Inflection> {
+  return Effect.gen(function* () {
+    const inflection = yield* Inflection;
+
+    const constraints = pgClass.getConstraints().filter(c => c.contype === "c");
+
+    return constraints.map(constraint => {
+      // Get column names from conkey
+      const attrs = constraint.getAttributes() ?? [];
+      const columns = attrs.map(attr => inflection.fieldName(attr, {}));
+
+      return {
+        name: constraint.conname,
+        definition: constraint.condef,
+        columns,
+      };
+    });
+  });
+}
+
+// ============================================================================
 // Enums
 // ============================================================================
 
@@ -745,12 +766,17 @@ function getDomainConstraints(
   return introspection.constraints
     .filter(c => c.contypid === domainOid && c.contype === "c") // CHECK constraints
     .map(c => {
+      // Parse validations from the constraint expression
+      const validations = c.condef ? parseDomainExpression(c.condef) : [];
+
       const constraint: DomainConstraint = {
         name: c.conname,
+        validations,
       };
       // Add expression only if present (exactOptionalPropertyTypes)
-      if (c.consrc) {
-        return { ...constraint, expression: c.consrc };
+      // Use condef which contains the output from pg_get_constraintdef()
+      if (c.condef) {
+        return { ...constraint, expression: c.condef };
       }
       return constraint;
     });
@@ -827,7 +853,7 @@ function buildCompositeField(
     const nullable = !(attr.attnotnull ?? false);
 
     // Composite fields use Field interface with defaults for inapplicable properties
-    const field: Field = {
+    const baseField: Field = {
       name: inflection.fieldName(attr, tags),
       columnName: attr.attname,
       pgAttribute: attr,
@@ -843,15 +869,11 @@ function buildCompositeField(
     };
 
     // Build result with optional properties (exactOptionalPropertyTypes)
-    let result = field;
-    if (elementType?.typname !== undefined) {
-      result = { ...result, elementTypeName: elementType.typname };
-    }
-    if (domainBaseType !== undefined) {
-      result = { ...result, domainBaseType };
-    }
-
-    return result;
+    return {
+      ...baseField,
+      ...(elementType?.typname !== undefined ? { elementTypeName: elementType.typname } : {}),
+      ...(domainBaseType !== undefined ? { domainBaseType } : {}),
+    };
   });
 }
 

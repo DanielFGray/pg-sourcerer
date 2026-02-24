@@ -64,6 +64,7 @@ export {
   type EnumEntity,
   type DomainEntity,
   type DomainConstraint,
+  type DomainValidation,
   type CompositeEntity,
   type Shape,
   type Field,
@@ -113,6 +114,7 @@ export {
   type FunctionsExtension,
   EntityQueriesExtension as EntityQueriesExtensionSchema,
   FunctionsExtension as FunctionsExtensionSchema,
+  ENTITY_QUERIES_KEY,
 } from "./ir/extensions/queries.js";
 
 // IR Extensions - Schema Builder Contract
@@ -122,10 +124,17 @@ export {
   type SchemaBuilderResult,
   type SchemaBuilder,
   SCHEMA_BUILDER_KIND,
+  SCHEMA_BUILDER_KEY,
 } from "./ir/extensions/schema-builder.js";
 
 // Services - IR
 export { IR } from "./services/ir.js";
+
+// Services - IR Extensions (plugin coordination)
+export {
+  type IRExtensionsService,
+  IRExtensions,
+} from "./services/ir-extensions.js";
 
 // Services - Inflection
 export {
@@ -179,13 +188,17 @@ export {
   parseCapabilityInfo,
 } from "./runtime/file-assignment.js";
 
+// Constraint Parsers
+export {
+  parseDomainExpression,
+} from "./lib/domain-constraint-parser.js";
+
 // Runtime Emit
 export {
   emitFiles,
   type EmittedFile,
   type EmitConfig,
   type ExternalImport,
-  type RenderedSymbolWithImports,
 } from "./runtime/emit.js";
 
 // Plugin Types (for custom plugin authors)
@@ -196,7 +209,38 @@ export type {
   SymbolRef,
   RenderedSymbol,
   SymbolHandle,
+  FinalizeHooks,
+  FileOutput,
+  FinalizeValidationError,
 } from "./runtime/types.js";
+
+// Symbol Factory Functions
+export {
+  symbol,
+  virtualSymbol,
+  type SymbolInput,
+  type VirtualSymbolInput,
+} from "./runtime/symbol.js";
+
+// =============================================================================
+// Conjure - AST Builder DSL for Plugin Authors
+// =============================================================================
+
+export {
+  // Main API
+  conjure,
+  // Casting utilities for recast interop
+  cast,
+  // Ref extraction for cross-file import tracking
+  extractIdentifierRefs,
+  // Types (ExternalImport and RenderedSymbol exported from runtime modules above)
+  type ConjureApi,
+  type SymbolOpts,
+  type ChainBuilder,
+  type ObjBuilder,
+  type ArrBuilder,
+  type FnBuilder,
+} from "./conjure/index.js";
 
 // =============================================================================
 // Plugins

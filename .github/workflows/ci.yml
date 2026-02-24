@@ -35,8 +35,8 @@ jobs:
         run: bun run build
         working-directory: packages/pg-introspection
 
-      - name: Run unit tests
-        run: bun run test:unit
+      - name: Run tests
+        run: bun run test
 
       - name: Type check
         run: bun run typecheck

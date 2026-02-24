@@ -331,25 +331,35 @@ const makeRolePrompt = () =>
   }).pipe(Prompt.map((s) => s.trim() || undefined));
 
 const makeSchemasPrompt = (introspection: Introspection) => {
-  const schemaCounts = new Map<string, number>();
+  const isUserSchema = (name: string) => !name.startsWith("pg_") && name !== "information_schema";
+  const isTableLike = (relkind: string) => ["r", "v", "m", "p"].includes(relkind);
 
-  for (const schema of introspection.namespaces) {
-    if (schema.nspname.startsWith("pg_") || schema.nspname === "information_schema") continue;
-    schemaCounts.set(schema.nspname, 0);
-  }
+  // Initialize counts for all user schemas
+  const initialCounts = pipe(
+    introspection.namespaces,
+    Array.filter(ns => isUserSchema(ns.nspname)),
+    Array.map(ns => [ns.nspname, 0 as number] as const),
+    entries => new Map(entries),
+  );
 
-  for (const c of introspection.classes) {
-    if (c.relkind !== "r" && c.relkind !== "v" && c.relkind !== "m" && c.relkind !== "p") continue;
-    const schema = c.getNamespace()?.nspname;
-    if (!schema || schema.startsWith("pg_") || schema === "information_schema") continue;
-    schemaCounts.set(schema, (schemaCounts.get(schema) ?? 0) + 1);
-  }
+  // Count tables/views per schema
+  const schemaCounts = pipe(
+    introspection.classes,
+    Array.filter(c => isTableLike(c.relkind)),
+    Array.reduce(initialCounts, (acc, c) => {
+      const schema = c.getNamespace()?.nspname;
+      if (schema && isUserSchema(schema) && acc.has(schema)) {
+        acc.set(schema, acc.get(schema)! + 1);
+      }
+      return acc;
+    }),
+  );
 
-  const schemas = [...schemaCounts.entries()].sort((a, b) => {
-    if (a[0] === "public") return -1;
-    if (b[0] === "public") return 1;
-    if (b[1] !== a[1]) return b[1] - a[1];
-    return a[0].localeCompare(b[0]);
+  const schemas = Array.fromIterable(schemaCounts.entries()).sort(([aName, aCount], [bName, bCount]) => {
+    if (aName === "public") return -1;
+    if (bName === "public") return 1;
+    if (bCount !== aCount) return bCount - aCount;
+    return aName.localeCompare(bName);
   });
 
   if (schemas.length === 0) {

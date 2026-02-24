@@ -54,7 +54,7 @@ const combos: PluginCombo[] = [
       kysely({ dbImport: userModule("./db", { named: ["db"] }) }),
       express({}),
     ],
-    expectedFilePatterns: ["schemas", "routes", "db", "queries"],
+    expectedFilePatterns: ["schemas", "routes", "DB", "queries"],
     expectedContentPatterns: ["z.object", "z.infer", "Router()", "export const commentRoutes"],
   },
   {
@@ -64,7 +64,7 @@ const combos: PluginCombo[] = [
       kysely({ dbImport: userModule("./db", { named: ["db"] }) }),
       elysia({}),
     ],
-    expectedFilePatterns: ["schemas", "routes", "db", "queries"],
+    expectedFilePatterns: ["schemas", "routes", "DB", "queries"],
     expectedContentPatterns: ["v.object", "v.InferOutput", "new Elysia", ".get"],
   },
   {
@@ -76,7 +76,7 @@ const combos: PluginCombo[] = [
         trpcImport: userModule("./trpc", { named: ["router", "publicProcedure"] }),
       }),
     ],
-    expectedFilePatterns: ["types", "trpc", "db", "queries"],
+    expectedFilePatterns: ["types", "trpc", "DB", "queries"],
     expectedContentPatterns: ["export interface", "publicProcedure", ".query"],
   },
   {
@@ -137,7 +137,7 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          expect(result.declarations.length).toBeGreaterThan(0);
+          expect(result.rendered.length).toBeGreaterThan(0);
           expect(result.rendered.length).toBeGreaterThan(0);
         }),
       );
@@ -151,10 +151,11 @@ describe("Plugin Combinations Integration", () => {
           });
 
           const files = emitFiles(result);
+          const filePaths = files.map(f => f.path).join(", ");
 
           for (const pattern of combo.expectedFilePatterns) {
             const matchingFile = files.find((f) => f.path.includes(pattern));
-            expect(matchingFile).toBeDefined();
+            expect(matchingFile, `Expected file matching "${pattern}". Actual files: ${filePaths}`).toBeDefined();
           }
         }),
       );
@@ -203,11 +204,11 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          const unsatisfiedDeps = result.declarations.filter(
+          const unsatisfiedDeps = result.rendered.filter(
             (d) =>
               d.dependsOn &&
               d.dependsOn.some(
-                (dep) => !result.declarations.some((other) => other.capability === dep),
+                (dep) => !result.rendered.some((other) => other.capability === dep),
               ),
           );
 
@@ -228,7 +229,7 @@ describe("Plugin Combinations Integration", () => {
             plugins: combo.plugins,
           });
 
-          const caps = result.declarations.map((d) => d.capability);
+          const caps = result.rendered.map((d) => d.capability);
           const uniqueCaps = new Set(caps);
           expect(caps.length).toBe(uniqueCaps.size);
         }

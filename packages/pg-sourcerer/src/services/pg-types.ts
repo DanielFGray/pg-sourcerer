@@ -4,7 +4,7 @@
  * Provides well-known PostgreSQL type OIDs and a default mapping to TypeScript types.
  * Plugins can use these as a starting point and override as needed.
  */
-import { Array as Arr, Option, pipe } from "effect";
+import { Array as Arr, Option, pipe, Match } from "effect";
 
 /**
  * Well-known PostgreSQL built-in type OIDs.
@@ -114,106 +114,95 @@ export interface TypeMappingResult {
 }
 
 /**
+ * Declarative mapping from PostgreSQL type OID to TypeScript type.
+ * Organized by category for maintainability.
+ */
+const PgToTsMapping: ReadonlyMap<number, TsType> = new Map([
+  // Boolean
+  [PgTypeOid.Bool, TsType.Boolean],
+
+  // Integer types → number
+  [PgTypeOid.Int2, TsType.Number],
+  [PgTypeOid.Int4, TsType.Number],
+  [PgTypeOid.Oid, TsType.Number],
+
+  // Floating point → number
+  [PgTypeOid.Float4, TsType.Number],
+  [PgTypeOid.Float8, TsType.Number],
+
+  // Big integers → string (to avoid precision loss)
+  // Plugins like Kysely may override to bigint
+  [PgTypeOid.Int8, TsType.String],
+  [PgTypeOid.Numeric, TsType.String],
+  [PgTypeOid.Money, TsType.String],
+
+  // Text types → string
+  [PgTypeOid.Char, TsType.String],
+  [PgTypeOid.BpChar, TsType.String],
+  [PgTypeOid.VarChar, TsType.String],
+  [PgTypeOid.Text, TsType.String],
+  [PgTypeOid.Name, TsType.String],
+  [PgTypeOid.Xml, TsType.String],
+  [PgTypeOid.Bit, TsType.String],
+  [PgTypeOid.VarBit, TsType.String],
+
+  // UUID → string
+  [PgTypeOid.Uuid, TsType.String],
+
+  // Network types → string
+  [PgTypeOid.Inet, TsType.String],
+  [PgTypeOid.Cidr, TsType.String],
+  [PgTypeOid.MacAddr, TsType.String],
+  [PgTypeOid.MacAddr8, TsType.String],
+
+  // Date/Time with date component → Date
+  [PgTypeOid.Date, TsType.Date],
+  [PgTypeOid.Timestamp, TsType.Date],
+  [PgTypeOid.TimestampTz, TsType.Date],
+
+  // Time without date → string
+  [PgTypeOid.Time, TsType.String],
+  [PgTypeOid.TimeTz, TsType.String],
+  [PgTypeOid.Interval, TsType.String],
+
+  // JSON → unknown
+  [PgTypeOid.Json, TsType.Unknown],
+  [PgTypeOid.JsonB, TsType.Unknown],
+  [PgTypeOid.JsonPath, TsType.Unknown],
+
+  // Binary → Buffer
+  [PgTypeOid.Bytea, TsType.Buffer],
+
+  // Geometric types → string (typically serialized)
+  [PgTypeOid.Point, TsType.String],
+  [PgTypeOid.Line, TsType.String],
+  [PgTypeOid.LSeg, TsType.String],
+  [PgTypeOid.Box, TsType.String],
+  [PgTypeOid.Path, TsType.String],
+  [PgTypeOid.Polygon, TsType.String],
+  [PgTypeOid.Circle, TsType.String],
+
+  // Range types → string
+  [PgTypeOid.Int4Range, TsType.String],
+  [PgTypeOid.Int8Range, TsType.String],
+  [PgTypeOid.NumRange, TsType.String],
+  [PgTypeOid.TsRange, TsType.String],
+  [PgTypeOid.TsTzRange, TsType.String],
+  [PgTypeOid.DateRange, TsType.String],
+
+  // Full-text search → string
+  [PgTypeOid.TsVector, TsType.String],
+  [PgTypeOid.TsQuery, TsType.String],
+]);
+
+/**
  * Default mapping from PostgreSQL type OID to TypeScript type.
  *
  * Plugins can use this as a base and override specific mappings.
  * Returns undefined for unmapped types (enums, domains, custom types).
  */
 export function defaultPgToTs(oid: number): Option.Option<TsType> {
-  switch (oid) {
-    // Boolean
-    case PgTypeOid.Bool:
-      return Option.some(TsType.Boolean);
-
-    // Integer types → number
-    case PgTypeOid.Int2:
-    case PgTypeOid.Int4:
-    case PgTypeOid.Oid:
-      return Option.some(TsType.Number);
-
-    // Floating point → number
-    case PgTypeOid.Float4:
-    case PgTypeOid.Float8:
-      return Option.some(TsType.Number);
-
-    // Big integers → string (to avoid precision loss)
-    // Plugins like Kysely may override to bigint
-    case PgTypeOid.Int8:
-    case PgTypeOid.Numeric:
-    case PgTypeOid.Money:
-      return Option.some(TsType.String);
-
-    // Text types → string
-    case PgTypeOid.Char:
-    case PgTypeOid.BpChar:
-    case PgTypeOid.VarChar:
-    case PgTypeOid.Text:
-    case PgTypeOid.Name:
-    case PgTypeOid.Xml:
-    case PgTypeOid.Bit:
-    case PgTypeOid.VarBit:
-      return Option.some(TsType.String);
-
-    // UUID → string
-    case PgTypeOid.Uuid:
-      return Option.some(TsType.String);
-
-    // Network types → string
-    case PgTypeOid.Inet:
-    case PgTypeOid.Cidr:
-    case PgTypeOid.MacAddr:
-    case PgTypeOid.MacAddr8:
-      return Option.some(TsType.String);
-
-    // Date/Time with date component → Date
-    case PgTypeOid.Date:
-    case PgTypeOid.Timestamp:
-    case PgTypeOid.TimestampTz:
-      return Option.some(TsType.Date);
-
-    // Time without date → string
-    case PgTypeOid.Time:
-    case PgTypeOid.TimeTz:
-    case PgTypeOid.Interval:
-      return Option.some(TsType.String);
-
-    // JSON → unknown
-    case PgTypeOid.Json:
-    case PgTypeOid.JsonB:
-    case PgTypeOid.JsonPath:
-      return Option.some(TsType.Unknown);
-
-    // Binary → Buffer
-    case PgTypeOid.Bytea:
-      return Option.some(TsType.Buffer);
-
-    // Geometric types → string (typically serialized)
-    case PgTypeOid.Point:
-    case PgTypeOid.Line:
-    case PgTypeOid.LSeg:
-    case PgTypeOid.Box:
-    case PgTypeOid.Path:
-    case PgTypeOid.Polygon:
-    case PgTypeOid.Circle:
-      return Option.some(TsType.String);
-
-    // Range types → string
-    case PgTypeOid.Int4Range:
-    case PgTypeOid.Int8Range:
-    case PgTypeOid.NumRange:
-    case PgTypeOid.TsRange:
-    case PgTypeOid.TsTzRange:
-    case PgTypeOid.DateRange:
-      return Option.some(TsType.String);
-
-    // Full-text search → string
-    case PgTypeOid.TsVector:
-    case PgTypeOid.TsQuery:
-      return Option.some(TsType.String);
-
-    default:
-      return Option.none();
-  }
+  return Option.fromNullable(PgToTsMapping.get(oid));
 }
 
 /**

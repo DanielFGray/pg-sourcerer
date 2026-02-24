@@ -2,13 +2,25 @@
  * Runtime Types for Two-Phase Plugin Execution
  */
 import type { Effect } from "effect";
+import type { namedTypes as n } from "ast-types";
 import type { IR } from "../services/ir.js";
 import type { Inflection } from "../services/inflection.js";
 import type { TypeHints } from "../services/type-hints.js";
-import type { SymbolRegistry } from "./registry.js";
-import type { DeclareError, RenderError } from "./errors.js";
+import type { SymbolRegistry, SymbolCollision } from "./registry.js";
+import type { Conjure } from "../services/conjure.js";
+import type { IRExtensions } from "../services/ir-extensions.js";
+import type { RenderError } from "./errors.js";
+
+/**
+ * Union of errors that can occur during render phase.
+ * Includes RenderError for plugin-level failures and SymbolCollision
+ * for duplicate capability registration (via Conjure's exp.* methods).
+ */
+export type RenderPhaseError = RenderError | SymbolCollision;
 import type { ExternalImport } from "./emit.js";
 import type { FileRule } from "./file-assignment.js";
+import type { UserModuleRef } from "../user-module.js";
+import type recast from "recast";
 
 /**
  * Capability identifier for symbol categorization.
@@ -77,17 +89,43 @@ export interface RenderedSymbol {
   /** Capability identifier */
   readonly capability: Capability;
 
-  /** AST node (recast/AST types - kept loose for flexibility) */
-  readonly node: unknown;
+  /** AST node for this symbol */
+  readonly node: recast.types.ASTNode;
 
-  /** Export behavior: false=internal, true='named', 'default'=default export */
-  readonly exports?: boolean | "default" | "named";
+  /** Export behavior: 'named' | 'default' | false (false = internal/not exported) */
+  readonly exports: "named" | "default" | false;
 
   /** Plugin-specific metadata for consumers (e.g., QueryDescriptor for query plugins) */
   readonly metadata?: unknown;
 
-  /** External imports needed by this symbol */
-  readonly externalImports?: readonly ExternalImport[];
+  /** External imports needed by this symbol (e.g., from npm packages) */
+  readonly imports?: readonly ExternalImport[];
+
+  /**
+   * Identifier names referenced in this symbol's AST.
+   * Used for automatic cross-file import tracking.
+   * Populated by conjure.symbol.* or extracted from node.
+   */
+  readonly refs?: readonly string[];
+
+  /**
+   * User module imports for this symbol.
+   * These are resolved relative to the config file and converted to
+   * correct relative paths for each output file at emit time.
+   */
+  readonly userImports?: readonly UserModuleRef[];
+
+  /**
+   * @deprecated Use `userImports` instead. Raw code to prepend to the file.
+   */
+  readonly fileHeader?: string;
+
+  /**
+   * The base entity name for file grouping purposes.
+   * For shapes like "CommentInsert", this would be "Comment".
+   * Used by file assignment to group related symbols.
+   */
+  readonly baseEntityName?: string;
 }
 
 /**
@@ -106,11 +144,11 @@ export interface SymbolHandle {
   /** Plugin-specific metadata (e.g., QueryDescriptor for query symbols) */
   readonly metadata?: unknown;
 
-  /** Use as type reference - returns AST node and tracks reference */
-  ref: () => unknown;
+  /** Use as identifier - returns AST node and tracks reference */
+  ref: () => recast.types.ASTNode;
 
   /** Use as call expression - returns AST node and tracks reference */
-  call: (...args: unknown[]) => unknown;
+  call: (...args: recast.types.ASTNode[]) => recast.types.ASTNode;
 
   /**
    * Consume/validate input through this symbol.
@@ -125,7 +163,82 @@ export interface SymbolHandle {
    *
    * Returns undefined if this symbol doesn't support consumption (e.g., types).
    */
-  consume?: (input: unknown) => unknown;
+  consume?: (input: recast.types.ASTNode) => recast.types.ASTNode;
+}
+
+// =============================================================================
+// Finalize Hooks
+// =============================================================================
+
+/**
+ * A file before writing to disk.
+ * Used by transformFile hook.
+ */
+export interface FileOutput {
+  /** Output path relative to outputDir */
+  readonly path: string;
+  /** Generated TypeScript code */
+  readonly content: string;
+}
+
+/**
+ * Error that can be returned from validate hook.
+ */
+export interface FinalizeValidationError {
+  readonly message: string;
+  readonly capability?: Capability;
+}
+
+/**
+ * Hooks for transforming output before emit.
+ *
+ * Use cases:
+ * - Custom formatting
+ * - Adding license headers
+ * - Removing debug code
+ * - Additional validation rules
+ * - Metrics/logging
+ *
+ * @example
+ * ```typescript
+ * defineConfig({
+ *   hooks: {
+ *     // Add license header to all files
+ *     transformFile: (file) => ({
+ *       ...file,
+ *       content: `// Copyright 2024 My Company\n\n${file.content}`,
+ *     }),
+ *
+ *     // Validate no console.log statements
+ *     validate: (symbols) => {
+ *       for (const sym of symbols) {
+ *         // custom validation logic
+ *       }
+ *     },
+ *   },
+ * })
+ * ```
+ */
+export interface FinalizeHooks {
+  /**
+   * Transform individual symbols after render, before emit.
+   * Called for each rendered symbol. Return the transformed symbol.
+   */
+  readonly transformSymbol?: (symbol: RenderedSymbol) => RenderedSymbol;
+
+  /**
+   * Transform entire file before writing.
+   * Called for each file after all symbols are collected.
+   * Return the transformed file.
+   */
+  readonly transformFile?: (file: FileOutput) => FileOutput;
+
+  /**
+   * Validate rendered symbols.
+   * Called after render but before emit.
+   * Throw or return an error to fail generation.
+   */
+  readonly validate?: (symbols: readonly RenderedSymbol[]) => void | FinalizeValidationError;
 }
 
 // =============================================================================
@@ -133,43 +246,37 @@ export interface SymbolHandle {
 // =============================================================================
 
 /**
- * Services available during declare phase.
+ * Services available during render phase.
  * Plugins access these via `yield* ServiceTag`.
  */
-export type DeclareServices = IR | Inflection | TypeHints;
-
-/**
- * Services available during render phase.
- * Includes DeclareServices plus SymbolRegistry for cross-plugin references.
- */
-export type RenderServices = DeclareServices | SymbolRegistry;
+export type RenderServices = IR | Inflection | TypeHints | SymbolRegistry | Conjure | IRExtensions;
 
 // =============================================================================
 // Plugin Interface
 // =============================================================================
 
 /**
- * Plugin interface for two-phase code generation.
+ * Plugin interface for render-first code generation.
  *
- * Plugins are Effects that access services and return immutable data.
+ * Plugins are Effects that access services and return AST statements.
+ * Symbol registration happens automatically via Conjure's exp.* methods.
  *
  * Example:
  * ```typescript
  * const typesPlugin: Plugin = {
  *   name: "types",
- *   provides: ["type:User"],
- *
- *   declare: Effect.gen(function* () {
- *     const ir = yield* IR
- *     return Array.from(ir.entities.values())
- *       .filter(isTableEntity)
- *       .map(e => ({ name: e.name, capability: `type:${e.name}` }))
- *   }),
+ *   provides: ["type"],
  *
  *   render: Effect.gen(function* () {
  *     const ir = yield* IR
- *     // ... generate AST
- *     return renderedSymbols
+ *     const cj = yield* Conjure
+ *
+ *     const statements: n.Statement[] = []
+ *     for (const entity of ir.entities.values()) {
+ *       if (!isTableEntity(entity)) continue
+ *       statements.push(yield* cj.exp.interface(entity.name, [...]))
+ *     }
+ *     return statements
  *   }),
  * }
  * ```
@@ -210,9 +317,11 @@ export interface Plugin {
    */
   readonly fileDefaults?: readonly FileRule[];
 
-  /** Phase 1: Declare symbols (Effect with DeclareServices) */
-  readonly declare: Effect.Effect<readonly SymbolDeclaration[], DeclareError, DeclareServices>;
-
-  /** Phase 2: Render symbol bodies (Effect with RenderServices) */
-  readonly render: Effect.Effect<readonly RenderedSymbol[], RenderError, RenderServices>;
+  /**
+   * Render phase: Generate AST via Conjure (Effect with RenderServices).
+   *
+   * Returns AST statements. Symbol registration happens automatically
+   * via Conjure's exp.* methods which populate the registry.
+   */
+  readonly render: Effect.Effect<readonly n.Statement[], RenderPhaseError, RenderServices>;
 }

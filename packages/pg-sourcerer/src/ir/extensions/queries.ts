@@ -139,6 +139,13 @@ export const EntityQueriesExtension = S.Struct({
 });
 export type EntityQueriesExtension = S.Schema.Type<typeof EntityQueriesExtension>;
 
+/**
+ * IRExtensions collection key for entity queries.
+ * Query plugins set: `extensions.setEntry(ENTITY_QUERIES_KEY, entityName, ext)`
+ * HTTP plugins get: `extensions.getCollection<EntityQueriesExtension>(ENTITY_QUERIES_KEY)`
+ */
+export const ENTITY_QUERIES_KEY = "entity-queries" as const;
+
 // ============================================================================
 // Standalone Functions Extension
 // ============================================================================

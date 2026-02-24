@@ -107,6 +107,7 @@ function mockTableEntity(name: string, rowFields: Field[], opts?: {
     pgClass: mockPgClass({ relname: name.toLowerCase() }),
     primaryKey: opts?.primaryKey ?? { columns: ["id"], isVirtual: false },
     indexes: [],
+    checkConstraints: [],
     shapes: { row: rowShape },
     relations: [],
     tags: { omit: opts?.omit },
@@ -134,7 +135,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => d.capability.startsWith("effect:http:"));
+      const httpDecls = result.rendered.filter(d => d.capability.startsWith("effect:http:"));
       
       // Should have 5 declarations per entity (NotFound, ApiGroup, Api, ApiGroupLive, ApiLive) + Server
       expect(httpDecls.length).toBeGreaterThanOrEqual(6);
@@ -168,7 +169,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => 
+      const httpDecls = result.rendered.filter(d => 
         d.capability.startsWith("effect:http:") && d.capability !== "effect:http:server"
       );
       
@@ -191,8 +192,61 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: false }),
       });
 
-      const httpDecls = result.declarations.filter(d => d.capability.startsWith("effect:http:"));
+      const httpDecls = result.rendered.filter(d => d.capability.startsWith("effect:http:"));
       expect(httpDecls).toHaveLength(0);
+    }),
+  );
+
+  it.effect("does not declare repos or HTTP when repos config is disabled", () =>
+    Effect.gen(function* () {
+      const userFields = [
+        mockField("id", "uuid", { hasDefault: true }),
+        mockField("email", "text"),
+      ];
+
+      const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
+
+      const result = yield* runPlugins({
+        ...testConfig(ir),
+        plugins: effect({ repos: false, http: { enabled: true } }),
+      });
+
+      const repoDecls = result.rendered.filter(d => d.capability.startsWith("effect:repo:"));
+      const httpDecls = result.rendered.filter(d => d.capability.startsWith("effect:http:"));
+
+      expect(repoDecls).toHaveLength(0);
+      expect(httpDecls).toHaveLength(0);
+    }),
+  );
+
+  it.effect("skips model/repo/http generation for unreadable entities", () =>
+    Effect.gen(function* () {
+      const readableFields = [
+        mockField("id", "uuid", { hasDefault: true }),
+        mockField("email", "text"),
+      ];
+
+      const ir = testIRWithEntities([
+        mockTableEntity("User", readableFields),
+        mockTableEntity("UserSecret", [], {
+          permissions: { canSelect: false, canInsert: false, canUpdate: false, canDelete: false },
+        }),
+      ]);
+
+      const result = yield* runPlugins({
+        ...testConfig(ir),
+        plugins: effect({ http: { enabled: true } }),
+      });
+
+      const caps = result.rendered.map(d => d.capability);
+
+      expect(caps).toContain("effect:model:User");
+      expect(caps).toContain("effect:repo:User");
+      expect(caps.some(c => c.startsWith("effect:http:User:"))).toBe(true);
+
+      expect(caps).not.toContain("effect:model:UserSecret");
+      expect(caps).not.toContain("effect:repo:UserSecret");
+      expect(caps.some(c => c.startsWith("effect:http:UserSecret:"))).toBe(false);
     }),
   );
 
@@ -210,7 +264,7 @@ describe("Effect HTTP Plugin - Declare", () => {
         plugins: effect({ http: { enabled: true } }),
       });
 
-      const httpDecls = result.declarations.filter(d => 
+      const httpDecls = result.rendered.filter(d => 
         d.capability.startsWith("effect:http:") && d.capability !== "effect:http:server"
       );
       expect(httpDecls).toHaveLength(0);

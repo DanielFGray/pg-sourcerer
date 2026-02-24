@@ -53,15 +53,32 @@ describe("Types Plugin Integration", () => {
 
     // Get expected entities from IR
     const tableEntities = Array.from(ir.entities.values()).filter(isTableEntity);
+    const enumEntities = Array.from(ir.entities.values()).filter(e => e._tag === "EnumEntity");
 
-    // Should have one declaration per table entity
-    expect(result.declarations.length).toBe(tableEntities.length);
+    // Every enum should have a type declaration
+    for (const entity of enumEntities) {
+      const decl = result.rendered.find(d => d.capability === `type:${entity.name}`);
+      expect(decl, `Enum ${entity.name} should have a type declaration`).toBeDefined();
+    }
 
-    // Every table entity should have a corresponding type declaration
+    // Every table entity should have declarations for its shapes
     for (const entity of tableEntities) {
-      const decl = result.declarations.find(d => d.capability === `type:${entity.name}`);
-      expect(decl).toBeDefined();
-      expect(decl?.name).toBe(entity.name);
+      // Row shape always exists
+      const rowDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.row.name}`);
+      expect(rowDecl, `${entity.name} should have a row type declaration`).toBeDefined();
+      expect(rowDecl?.name).toBe(entity.shapes.row.name);
+
+      // Insert shape if it exists in IR
+      if (entity.shapes.insert) {
+        const insertDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.insert.name}`);
+        expect(insertDecl, `${entity.name} should have an insert type declaration`).toBeDefined();
+      }
+
+      // Update shape if it exists in IR
+      if (entity.shapes.update) {
+        const updateDecl = result.rendered.find(d => d.capability === `type:${entity.shapes.update.name}`);
+        expect(updateDecl, `${entity.name} should have an update type declaration`).toBeDefined();
+      }
     }
   });
 
@@ -77,13 +94,8 @@ describe("Types Plugin Integration", () => {
 
     const content = typesFile!.content;
 
-    // Should have User interface
+    // Should have User interface (readme-spec validates actual structure)
     expect(content).toContain("export interface User");
-
-    // User should have expected fields based on the example schema
-    // Note: The actual fields depend on what's in the example database
-    expect(content).toContain("readonly id:");
-    expect(content).toContain("readonly email:");
   });
 
   it("renders all table entities to the types file", async () => {
@@ -102,26 +114,7 @@ describe("Types Plugin Integration", () => {
     }
   });
 
-  it("handles nullable fields correctly", async () => {
-    const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));
-
-    const files = emitFiles(result);
-    const content = files[0]!.content;
-
-    // Check for nullable fields (which should have | null)
-    const tableEntities = Array.from(ir.entities.values()).filter(isTableEntity);
-
-    for (const entity of tableEntities) {
-      for (const field of entity.shapes.row.fields) {
-        if (field.nullable) {
-          // Nullable fields should have `| null` in their type
-          // Look for pattern: fieldName: something | null
-          const fieldPattern = new RegExp(`readonly ${field.name}:.*\\| null`);
-          expect(content).toMatch(fieldPattern);
-        }
-      }
-    }
-  });
+  // Removed: nullable field formatting is validated by readme-spec
 
   it("emits TypeScript that could type-check (well-formed AST)", async () => {
     const result = await Effect.runPromise(runPlugins({ ...testConfig(), plugins: [typesPlugin()] }));

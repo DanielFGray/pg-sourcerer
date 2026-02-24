@@ -1,6 +1,6 @@
 # Design Decisions
 
-Resolved architectural decisions with rationale. These emerged from design discussions in SYMBOLS_CONJURE_REDESIGN.md and DATA_SOURCE_AGNOSTICISM.md.
+Resolved architectural decisions with rationale. These emerged from design discussions in ARCHITECTURE.md and DATA_SOURCE_AGNOSTICISM.md.
 
 ## Plugin System
 
@@ -11,7 +11,7 @@ Resolved architectural decisions with rationale. These emerged from design discu
 **Rationale**:
 - `Effect.fn` provides automatic tracing/logging
 - Services via `yield*` give clean dependency injection
-- Immutable return data (SymbolDeclaration[], RenderedSymbol[]) enables validation between phases
+- Immutable return data (SymbolDeclaration[], n.Statement[]) enables validation between phases
 - `Data.TaggedError` for typed errors integrates with Effect's error handling
 
 **Implication**: Plugin authors must understand basic Effect patterns, but get tracing/error-handling for free.
@@ -112,39 +112,6 @@ interface ParamDescriptor {
 
 **Implication**: Plugins that need runtime validation get it from descriptors. Plugins that don't can ignore the field.
 
-## QueryIdea Design
-
-### Flat Discriminated Union
-
-**Decision**: QueryIdea is a discriminated union, extensible per-operation.
-
-```typescript
-type QueryIdea = 
-  | FindOneIdea 
-  | FindManyIdea 
-  | CreateIdea 
-  | UpdateIdea 
-  | DeleteIdea 
-  | CustomIdea
-```
-
-**Rationale**:
-- Each operation variant carries operation-specific fields
-- Downstream plugins can switch on operation type
-- Extensible without bloating base interface
-
-### Custom Query Support
-
-**Decision**: Custom queries use `{ operation: "custom", name, spec }`.
-
-**Rationale**:
-- Aggregations, reports, custom joins are real needs
-- Ideation plugin shouldn't invent these
-- Smart tags can hint custom queries: `@query findActiveByRegion(region: text)`
-- Plugins can inject custom QueryIdeas directly
-
-**Implication**: Custom queries bypass ideation's pattern matching. They're explicit escape hatches.
-
 ## Data Source Agnosticism
 
 ### Postgres-First, Capability-Gated
@@ -193,12 +160,8 @@ entity.shapes.insert  // omit generated, require non-nullable without defaults
 entity.shapes.update  // all optional
 entity.shapes.patch   // partial
 
-// Query signatures reference shapes
-signature.params = [{ name: "data", shape: "User:insert" }]
-signature.returns = { shape: "User:row", mode: "one" }
-
 // Schema plugins generate validators for shapes
-// HTTP plugins reference schemas by shape name
+// HTTP plugins reference schemas by shape name (e.g., "UserInsert", "UserUpdate")
 ```
 
 **Rationale**:
@@ -206,7 +169,7 @@ signature.returns = { shape: "User:row", mode: "one" }
 - Decouples query plugins from schema plugins from HTTP plugins
 - Each plugin only needs to understand shape names, not internal structures
 
-**Implication**: SignatureDef references shapes by name. Plugins don't pass raw field lists around.
+**Implication**: Plugins reference shapes by naming convention. Schema plugins generate `UserInsert`, `UserUpdate`, etc.
 
 ### Consumer Callbacks for Library-Specific Operations
 
@@ -250,6 +213,29 @@ const executed = query.consume(conjure.id("params"))
 
 **Implication**: Plugins that produce "partial" symbols (needing completion) implement `consume()`. Consumers call it without knowing library specifics.
 
+### QueryMethod as Query-HTTP Interface
+
+**Decision**: `QueryMethod` is the interface between query plugins and HTTP plugins.
+
+```typescript
+interface QueryMethod {
+  name: string                    // "findUserById"
+  kind: QueryMethodKind           // read/list/create/update/delete/lookup/function
+  params: QueryMethodParam[]      // { name, type, required, source: "pk"|"body"|... }
+  returns: QueryMethodReturn      // { type, nullable, isArray }
+  lookupField?: string            // For lookup queries
+  callSignature?: CallSignature   // { style: "named"|"positional" }
+}
+```
+
+**Rationale**:
+- `kind` determines HTTP method and route structure
+- `params.source` tells HTTP plugins where to extract values (path, query, body)
+- `callSignature` enables correct function invocation generation
+- Evolved from implementation experience with 5 HTTP frameworks
+
+**Implication**: Query plugins register `QueryMethod` via `EntityQueriesExtension`. HTTP plugins consume without knowing query implementation details.
+
 ### Plugin Data Flow
 
 **Decision**: Plugins form a pipeline where each layer consumes the previous layer's **symbols**, not internal data structures.
@@ -258,15 +244,15 @@ const executed = query.consume(conjure.id("params"))
 IR (entities, shapes)
     ↓
 Query Plugin
-    provides: function symbols with SignatureDef
-    SignatureDef references shapes ("User:insert", "User:row")
+    provides: function symbols with QueryMethod metadata
+    registers via EntityQueriesExtension
     ↓
 Schema Plugin
     provides: schema symbols for each shape
     consumer callback: consume(input) → validated output
     ↓
 HTTP Plugin
-    consumes: query functions (by SignatureDef)
+    consumes: query functions (via QueryMethod)
     consumes: schemas (by shape name, uses consume() callback)
     provides: route handler symbols
     ↓
@@ -282,3 +268,143 @@ Client SDK Plugin
 - Consumer callbacks bridge library-specific APIs
 
 **Implication**: Plugins are loosely coupled. Adding a new schema library means implementing one plugin with the right `consume()` callback. HTTP plugins work unchanged.
+
+## Conjure Service
+
+### Conjure as Effect Service (Not Pure Module)
+
+**Decision**: Conjure is an Effect service (`yield* Conjure`), not a pure module import.
+
+**Rationale**:
+- Symbol tracking requires registry access, which is a runtime concern
+- Effect's context system provides clean dependency injection
+- Plugins get a pre-wired Conjure instance with no manual setup
+- Enables automatic symbol registration without leaking implementation details
+
+**Implication**: Plugins must `yield* Conjure` to access AST builders. This is intentional—it ensures tracking happens.
+
+### exp.* Methods Return Effects
+
+**Decision**: `exp.const()`, `exp.type()`, etc. return `Effect<n.Statement>`, not plain statements.
+
+```typescript
+// Plugin code
+const { exp } = yield* Conjure
+statements.push(yield* exp.const("User", schemaExpr, { imports: [...] }))
+```
+
+**Rationale**:
+- Effectful return makes tracking explicit
+- Enables future middleware (logging, metrics, etc.)
+- Consistent with Effect-first design philosophy
+- Type system enforces correct usage
+
+**Implication**: Plugin render code uses `yield*` for exports. Pure AST building (id, obj, ts) remains synchronous.
+
+### Single API Surface (No Dual Pure/Effectful)
+
+**Decision**: There is ONE way to build exports—through the Conjure service. No pure `conjure.export.*` fallback.
+
+**Rationale**:
+- Multiple ways to do the same thing increases cognitive load
+- Plugin authors shouldn't choose between "tracked" and "untracked"
+- Pure AST builders (id, obj, ts) remain available for expressions
+- Exports always need tracking, so always use the service
+
+**Implication**: Old `conjure.export.*` helpers are removed or internal-only. Plugins use `yield* Conjure` exclusively.
+
+### Plugins Return Statements, Not RenderedSymbol
+
+**Decision**: `render()` returns `Effect<n.Statement[]>`, not `Effect<RenderedSymbol[]>`.
+
+**Rationale**:
+- RenderedSymbol is an implementation detail (capability, imports, refs, metadata)
+- Plugins shouldn't manually construct this boilerplate
+- `exp.*` methods handle all tracking internally
+- Statements are what plugins conceptually produce
+
+**Implication**: `RenderedSymbol` becomes internal to the runtime. Plugins never see it.
+
+### use() for Cross-Plugin References
+
+**Decision**: Cross-plugin references use `use("capability")` on Conjure, not direct registry access.
+
+```typescript
+const { use } = yield* Conjure
+const userSchema = use("schema:zod:User")
+const validated = userSchema.consume?.(inputExpr)
+```
+
+**Rationale**:
+- Single entry point for all plugin needs (AST building + cross-refs)
+- Hides registry implementation from plugins
+- Consistent API surface
+- Reference tracking happens automatically
+
+**Implication**: `registry.import()` becomes internal. Plugins use `use()` exclusively.
+
+### Conjure Service Uses FiberRef for Scoping
+
+**Decision**: The Conjure service uses FiberRef to track current plugin context, not per-plugin layers.
+
+**Rationale**:
+- FiberRef aligns with Effect idioms for contextual state
+- Avoids overhead of creating new service instances per plugin
+- Orchestrator updates context before each plugin runs
+- Plugin code remains clean—just `yield* Conjure`
+
+**Implication**: Orchestrator sets FiberRef before running each plugin's render. Conjure reads from FiberRef to determine capability prefixes.
+
+### Capability Inference with Liskov Substitution
+
+**Decision**: Capabilities are inferred from plugin provides by default. Consumer plugins reference abstract capabilities, not specific implementations.
+
+```typescript
+// Provider declares what it provides
+provides: ["schema"]  // Zod plugin provides schemas
+
+// Consumer declares what it needs (abstract)
+consumes: ["schema"]  // HTTP plugin needs schemas, doesn't care if Zod or Effect Schema
+
+// exp.* infers capability from plugin context
+yield* exp.const("User", schemaExpr)  // Becomes "schema:zod:User" automatically
+```
+
+**Rationale**:
+- Liskov Substitution Principle: consumers shouldn't know or care about the specific implementation
+- A schema is a schema—whether Zod, Valibot, ArkType, or Effect Schema
+- Reduces coupling between plugins
+- Explicit override available for edge cases (multi-capability plugins)
+
+**Implication**: Plugins providing multiple capabilities may need explicit capability in `exp.*` calls. Single-capability plugins get automatic inference.
+
+### Plugin Return Type is Effect<n.Statement[]>
+
+**Decision**: `render()` returns `Effect<n.Statement[]>`.
+
+**Rationale**:
+- Explicit about what's emitted
+- Aids debugging—can inspect returned statements
+- Enables ordering control
+- Registry tracking happens via `exp.*` calls regardless
+
+**Implication**: Plugins collect statements and return them. Both the return value AND registry contain the output (redundant but useful for debugging).
+
+## Smart Tags
+
+### JSON Syntax for Smart Tags
+
+**Decision**: Smart tags use JSON in SQL comments.
+
+```sql
+COMMENT ON TABLE users IS '{ "description": "User accounts", "sourcerer": { "omit": true } }';
+COMMENT ON COLUMN users.email IS '{ "description": "Primary contact email" }';
+```
+
+**Rationale**:
+- JSON is universally understood, parseable, tooling-friendly
+- Structured data supports complex configurations
+- Clear schema: `{ description: string, sourcerer?: {...} }`
+- If parse fails as JSON, treat entire comment as string description
+
+**Implication**: Smart tag parser tries JSON first. Plain strings become `{ description: "..." }`.

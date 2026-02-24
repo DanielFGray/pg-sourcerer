@@ -138,6 +138,8 @@ create view app_public.recent_posts as
   order by created_at desc
   limit 100;
 
+grant select on app_public.recent_posts to :DATABASE_VISITOR;
+
 create view app_public.top_tags as
   select
     unnest(tags) as tag,
@@ -149,3 +151,4 @@ create view app_public.top_tags as
   order by
     count desc;
 
+grant select on app_public.top_tags to :DATABASE_VISITOR;

@@ -1,8 +1,8 @@
-import recast from "recast";
+import * as recast from "recast";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
-import { Context, Effect, Schema } from "effect";
-import type { Capability, SymbolDeclaration, SymbolRef, SymbolHandle } from "./types.js";
+import { Context, Effect, Schema, pipe, Array as Arr } from "effect";
+import type { Capability, SymbolDeclaration, SymbolRef, SymbolHandle, RenderedSymbol } from "./types.js";
 
 const b = recast.types.builders;
 
@@ -54,7 +54,7 @@ export class CategoryConflict extends Schema.TaggedError<CategoryConflict>()("Ca
  * Schema plugins use this to provide validation wrappers.
  */
 interface ConsumeableMetadata {
-  consume?: (input: unknown) => unknown;
+  consume?: (input: recast.types.ASTNode) => recast.types.ASTNode;
   [key: string]: unknown;
 }
 
@@ -89,7 +89,7 @@ export function createSymbolHandle(
       );
     },
     consume: consumeFn
-      ? (input: unknown) => {
+      ? (input: recast.types.ASTNode) => {
           onReference?.(decl.capability);
           return consumeFn(input);
         }
@@ -142,6 +142,12 @@ export interface SymbolRegistryService {
    * ```
    */
   readonly forSymbol: <T>(capability: Capability, fn: () => T) => T;
+
+  /**
+   * Store a complete RenderedSymbol directly.
+   * Used for virtual symbols that have no AST node (e.g., schema builders).
+   */
+  readonly storeRenderedSymbol: (symbol: RenderedSymbol) => void;
 }
 
 /**
@@ -171,6 +177,12 @@ export class SymbolRegistryImpl {
   private symbols = new Map<Capability, SymbolDeclaration>();
   private rendered = new Map<Capability, { node: unknown; metadata?: unknown }>();
   private referenceCallbacks = new Map<Capability, Set<(capability: Capability) => void>>();
+
+  /**
+   * Full RenderedSymbol storage for automatic symbol tracking.
+   * Populated by Conjure service's exp.* methods during render phase.
+   */
+  private renderedSymbols = new Map<Capability, RenderedSymbol>();
 
   /**
    * Category providers: Maps category name -> provider plugin name.
@@ -213,6 +225,10 @@ export class SymbolRegistryImpl {
     return Effect.gen(this, function* () {
       if (this.symbols.has(decl.capability)) {
         const existing = this.symbols.get(decl.capability)!;
+        // Idempotent: if same name, already registered - skip
+        if (existing.name === decl.name) {
+          return;
+        }
         return yield* new SymbolCollision({
           message: `Capability "${decl.capability}" already registered by symbol "${existing.name}"`,
           capability: decl.capability,
@@ -226,9 +242,56 @@ export class SymbolRegistryImpl {
 
   /**
    * Store rendered output for a symbol. Called during render phase.
+   *
+   * Also records cross-file references from the symbol's refs field.
+   * Refs are identifier names extracted from AST; we find matching
+   * symbol declarations by name and prefer schema/type capabilities.
+   *
+   * Filters out self-references (where refName matches the symbol's own name)
+   * to avoid false positives from class/interface declarations that contain
+   * their own name in the AST (e.g., `Model.Class<User>`).
+   *
+   * @param capability - The capability being rendered
+   * @param node - The rendered AST node
+   * @param metadata - Optional metadata from the plugin
+   * @param refs - Identifier names referenced by this symbol
+   * @param symbolName - The name of the symbol being stored (for self-ref filtering)
    */
-  setRendered(capability: Capability, node: unknown, metadata?: unknown): void {
+  setRendered(
+    capability: Capability,
+    node: unknown,
+    metadata?: unknown,
+    refs?: readonly string[],
+    symbolName?: string,
+  ): void {
     this.rendered.set(capability, { node, metadata });
+
+    // Record cross-file references from provided refs
+    if (refs && refs.length > 0) {
+      for (const refName of refs) {
+        // Skip self-references: the symbol's own name appears in its AST
+        // (e.g., class User extends Model.Class<User>)
+        if (symbolName && refName === symbolName) continue;
+
+        // Find candidate declarations with the referenced name
+        const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
+        if (candidates.length === 0) continue;
+
+        // Prefer schema/type capabilities when ambiguous
+        const chosen =
+          candidates.find(c => c.capability.startsWith("schema:")) ||
+          candidates.find(c => c.capability.startsWith("type:")) ||
+          candidates[0];
+
+        // Record cross-file reference: capability -> chosen.capability
+        if (chosen && chosen.capability !== capability) {
+          if (!this.references.has(capability)) {
+            this.references.set(capability, new Set());
+          }
+          this.references.get(capability)!.add(chosen.capability);
+        }
+      }
+    }
   }
 
   /**
@@ -236,6 +299,95 @@ export class SymbolRegistryImpl {
    */
   getRenderedMetadata(capability: Capability): unknown {
     return this.rendered.get(capability)?.metadata;
+  }
+
+  /**
+   * Store a complete RenderedSymbol. Called by Conjure's exp.* methods.
+   * This is the primary storage for automatic symbol tracking.
+   *
+   * Records cross-file references from the symbol's refs field, but filters:
+   * - Self-references (refName === symbol.name) to avoid false positives from
+   *   class/interface declarations that contain their own name in the AST
+   * - Same-entity references when both source and target share a baseEntityName,
+   *   since same-entity symbols are grouped in the same file
+   */
+  storeRenderedSymbol(symbol: RenderedSymbol): void {
+    // Register or update in symbols map so import() can find it.
+    // Always update baseEntityName since declare phase doesn't have it.
+    const existing = this.symbols.get(symbol.capability);
+    if (!existing) {
+      this.symbols.set(symbol.capability, {
+        name: symbol.name,
+        capability: symbol.capability,
+        baseEntityName: symbol.baseEntityName,
+      });
+    } else if (symbol.baseEntityName && !existing.baseEntityName) {
+      this.symbols.set(symbol.capability, {
+        ...existing,
+        baseEntityName: symbol.baseEntityName,
+      });
+    }
+
+    this.renderedSymbols.set(symbol.capability, symbol);
+    // Also update legacy rendered map for backward compatibility
+    this.rendered.set(symbol.capability, { node: symbol.node, metadata: symbol.metadata });
+
+    // Record cross-file references from provided refs
+    if (symbol.refs && symbol.refs.length > 0) {
+      for (const refName of symbol.refs) {
+        // Skip self-references: the symbol's own name appears in its AST
+        if (refName === symbol.name) continue;
+
+        const candidates = Array.from(this.symbols.values()).filter(d => d.name === refName);
+        if (candidates.length === 0) continue;
+
+        // Prefer candidates from the same plugin family (matching first capability segment).
+        // E.g., effect:model:User prefers effect:schema:UserRole over types:kysely:UserRole.
+        const sourcePrefix = symbol.capability.split(":")[0] + ":";
+        const chosen =
+          candidates.find(c => c.capability.startsWith(sourcePrefix)) ||
+          candidates.find(c => c.capability.startsWith("schema:")) ||
+          candidates.find(c => c.capability.startsWith("type:")) ||
+          candidates[0];
+
+        if (chosen && chosen.capability !== symbol.capability) {
+          // Skip same-entity references: symbols sharing a baseEntityName
+          // are grouped in the same file, so cross-file imports aren't needed
+          if (
+            symbol.baseEntityName &&
+            chosen.baseEntityName &&
+            symbol.baseEntityName === chosen.baseEntityName
+          ) {
+            continue;
+          }
+
+          if (!this.references.has(symbol.capability)) {
+            this.references.set(symbol.capability, new Set());
+          }
+          this.references.get(symbol.capability)!.add(chosen.capability);
+        }
+      }
+    }
+  }
+
+  /**
+   * Get rendered symbols for specific capabilities.
+   * Used by orchestrator to collect symbols after render phase.
+   */
+  getRenderedSymbols(capabilities: readonly Capability[]): readonly RenderedSymbol[] {
+    return pipe(
+      capabilities,
+      Arr.map(cap => this.renderedSymbols.get(cap)),
+      Arr.filter((s): s is RenderedSymbol => s !== undefined),
+    );
+  }
+
+  /**
+   * Get all rendered symbols from all plugins.
+   * Used by orchestrator when collecting final results.
+   */
+  getAllRenderedSymbols(): readonly RenderedSymbol[] {
+    return Arr.fromIterable(this.renderedSymbols.values());
   }
 
   /**
@@ -284,9 +436,13 @@ export class SymbolRegistryImpl {
   /**
    * Resolve a generic capability to implementation-specific.
    *
+   * Categories like "schema" use Standard Schema API and are interchangeable,
+   * so we don't inject provider names. Other categories like "queries" may need
+   * implementation-specific resolution.
+   *
    * Examples:
    * - "queries:User:findById" → "queries:kysely:User:findById" (if kysely provides queries)
-   * - "schema:UserInsert" → "schema:zod:UserInsert" (if zod provides schema)
+   * - "schema:UserInsert" → "schema:UserInsert" (unchanged - Standard Schema is interchangeable)
    * - "queries:kysely:User:findById" → unchanged (already specific)
    * - "type:User" → unchanged (no category provider needed)
    */
@@ -299,6 +455,11 @@ export class SymbolRegistryImpl {
 
     const provider = this.categoryProviders.get(category);
     if (!provider) return capability; // No provider for this category
+
+    // Schema and type capabilities use the Standard Schema API - all implementations
+    // are interchangeable. Do NOT inject provider name for these categories so
+    // declarations remain stable across providers.
+    if (category === "schema" || category === "type") return capability;
 
     // Check if rest already starts with the provider name (already specific)
     if (rest.startsWith(`${provider}:`)) return capability;
@@ -314,9 +475,11 @@ export class SymbolRegistryImpl {
       // assume it's already specific. Simple heuristic: no uppercase, short.
       if (possibleProvider.length <= 15 && possibleProvider === possibleProvider.toLowerCase()) {
         // Check if we have this registered as ANY category provider
-        for (const [, p] of this.categoryProviders) {
-          if (p === possibleProvider) return capability; // Already specific
-        }
+        const isKnownProvider = pipe(
+          Arr.fromIterable(this.categoryProviders.values()),
+          Arr.some(p => p === possibleProvider),
+        );
+        if (isKnownProvider) return capability; // Already specific
       }
     }
 
@@ -503,13 +666,16 @@ export class SymbolRegistryImpl {
    * Called internally when SymbolHandle.ref() or .call() is invoked.
    */
   private recordReference(target: Capability): void {
-    for (const source of this.currentCapabilities) {
-      if (source === target) continue;
-      if (!this.references.has(source)) {
-        this.references.set(source, new Set());
-      }
-      this.references.get(source)!.add(target);
-    }
+    pipe(
+      this.currentCapabilities,
+      Arr.filter(source => source !== target),
+      Arr.forEach(source => {
+        if (!this.references.has(source)) {
+          this.references.set(source, new Set());
+        }
+        this.references.get(source)!.add(target);
+      }),
+    );
   }
 
   /**
@@ -525,11 +691,13 @@ export class SymbolRegistryImpl {
    * Maps: source capability -> capabilities it references
    */
   getAllReferences(): ReadonlyMap<Capability, readonly Capability[]> {
-    const result = new Map<Capability, readonly Capability[]>();
-    for (const [source, targets] of this.references) {
-      result.set(source, Array.from(targets));
-    }
-    return result;
+    return pipe(
+      Arr.fromIterable(this.references.entries()),
+      Arr.reduce(new Map<Capability, readonly Capability[]>(), (result, [source, targets]) => {
+        result.set(source, Arr.fromIterable(targets));
+        return result;
+      }),
+    );
   }
 
   /**
@@ -545,6 +713,7 @@ export class SymbolRegistryImpl {
       getMetadata: cap => this.getRenderedMetadata(cap),
       own: () => this.own(),
       forSymbol: <T>(cap: Capability, fn: () => T) => this.forSymbol(cap, fn),
+      storeRenderedSymbol: symbol => this.storeRenderedSymbol(symbol),
     };
   }
 }

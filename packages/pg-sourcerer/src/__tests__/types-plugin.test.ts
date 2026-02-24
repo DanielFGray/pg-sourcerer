@@ -16,7 +16,7 @@ import { emitFiles } from "../runtime/emit.js";
 import { defaultInflection } from "../services/inflection.js";
 import { emptyTypeHintRegistry } from "../services/type-hints.js";
 import { testIRFromFixture, testIRWithEntities } from "../testing.js";
-import type { TableEntity, Shape, Field, SemanticIR } from "../ir/semantic-ir.js";
+import type { TableEntity, Shape, Field, SemanticIR, Entity } from "../ir/semantic-ir.js";
 import { mockPgAttribute, mockPgClass, mockPgType } from "./mocks/pg-introspection.js";
 
 // =============================================================================
@@ -115,13 +115,13 @@ describe("Types Plugin - Declare", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
-      expect(result.declarations.length).toBeGreaterThan(0);
+      expect(result.rendered.length).toBeGreaterThan(0);
 
-      const capabilities = result.declarations.map(d => d.capability);
+      const capabilities = result.rendered.map(d => d.capability);
       expect(capabilities).toContain("type:User");
       expect(capabilities).toContain("type:Post");
 
-      const names = result.declarations.map(d => d.name);
+      const names = result.rendered.map(d => d.name);
       expect(names).toContain("User");
       expect(names).toContain("Post");
     }),
@@ -134,7 +134,7 @@ describe("Types Plugin - Declare", () => {
       const ir = testIRWithEntities([mockTableEntity("User", userFields)]);
 
       // Add an enum entity manually
-      (ir.entities as Map<string, any>).set("Status", {
+      (ir.entities as Map<string, Entity>).set("Status", {
         kind: "enum",
         name: "Status",
         pgName: "status",
@@ -146,9 +146,10 @@ describe("Types Plugin - Declare", () => {
 
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
-      // Should only have User, not Status
-      expect(result.declarations).toHaveLength(1);
-      expect(result.declarations[0]?.name).toBe("User");
+      // Types plugin declares enum types too, plus UserRow (not User)
+      expect(result.rendered).toHaveLength(2);
+      expect(result.rendered.some(d => d.name === "UserRow")).toBe(true);
+      expect(result.rendered.some(d => d.name === "Status")).toBe(true);
     }),
   );
 });
@@ -172,13 +173,14 @@ describe("Types Plugin - Render", () => {
       expect(result.rendered).toHaveLength(1);
 
       const rendered = result.rendered[0]!;
-      expect(rendered.name).toBe("User");
-      expect(rendered.capability).toBe("type:User");
+      // Row shape is named "UserRow"
+      expect(rendered.name).toBe("UserRow");
+      expect(rendered.capability).toBe("type:UserRow");
       expect(rendered.exports).toBe("named");
 
       // Verify AST structure
-      const code = recast.print(rendered.node as recast.types.ASTNode).code;
-      expect(code).toContain("interface User");
+      const code = recast.print(rendered.node!).code;
+      expect(code).toContain("interface UserRow");
       expect(code).toContain("readonly id: string");
       expect(code).toContain("readonly email: string");
       expect(code).toContain("readonly name: string | null");
@@ -198,7 +200,7 @@ describe("Types Plugin - Render", () => {
       const ir = testIRWithEntities([mockTableEntity("Item", fields)]);
       const result = yield* runPlugins({ ...testConfig(ir), plugins: [typesPlugin()] });
 
-      const code = recast.print(result.rendered[0]!.node as recast.types.ASTNode).code;
+      const code = recast.print(result.rendered[0]!.node!).code;
 
       expect(code).toContain("readonly id: string"); // uuid → string
       expect(code).toContain("readonly count: number"); // int4 → number

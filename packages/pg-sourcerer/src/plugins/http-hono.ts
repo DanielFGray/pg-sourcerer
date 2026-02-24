@@ -16,10 +16,12 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
+import { IRExtensions } from "../services/ir-extensions.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
@@ -27,18 +29,20 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilder, SchemaBuilderRequest } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import {
+  buildEntityQueriesMap,
   buildQueryInvocation,
   coerceParam,
   getBodySchemaName,
+  getHttpEligibleEntities,
+  getMethodCapabilitySuffix,
   getRoutePath,
   kindToHttpMethod,
   listByRouteFromName,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
 import { FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 
 const { b, stmt } = conjure;
@@ -184,40 +188,31 @@ function buildHandlerBody(
   };
 
   if (callSig.style === "positional") {
-    for (const param of method.params) {
-      args.push(paramExpr(param));
-    }
+    args.push(...method.params.map(paramExpr));
   } else {
     const bodyParam = method.params.find(p => p.source === "body");
     const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       if (nonBodyParams.length > 0) {
-        let objBuilder = conjure.obj();
-        for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-        objBuilder = objBuilder.spread(b.identifier("body"));
+        const objBuilder = nonBodyParams
+          .reduce((builder, param) => builder.prop(param.name, paramExpr(param)), conjure.obj())
+          .spread(b.identifier("body"));
         args.push(objBuilder.build());
       } else {
         args.push(b.identifier("body"));
       }
     } else if (bodyParam && callSig.bodyStyle === "property") {
-      let objBuilder = conjure.obj();
-      for (const param of method.params) {
-        if (param.source && param.source !== "body") {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-      }
-      objBuilder = objBuilder.prop(bodyParam.name, b.identifier("body"));
+      const objBuilder = method.params
+        .filter(p => p.source && p.source !== "body")
+        .reduce((builder, param) => builder.prop(param.name, paramExpr(param)), conjure.obj())
+        .prop(bodyParam.name, b.identifier("body"));
       args.push(objBuilder.build());
     } else {
-      let objBuilder = conjure.obj();
-      for (const param of method.params) {
-        if (param.source && param.source !== "body") {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-      }
+      const objBuilder = method.params
+        .filter(p => p.source && p.source !== "body")
+        .reduce((builder, param) => builder.prop(param.name, paramExpr(param)), conjure.obj());
+
       if (method.params.length > 0) {
         args.push(objBuilder.build());
       }
@@ -300,28 +295,26 @@ function buildRouteCall(
   const pathParams = method.params.filter(
     p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
   );
-  let hasParamValidation = false;
-  if (pathParams.length > 0 && schemaBuilder) {
-    const request: SchemaBuilderRequest = { variant: "params", params: pathParams };
-    const result = schemaBuilder.build(request);
-    if (result) {
-      validators.push(buildSValidator("param", result.ast));
-      schemaImports.push(toExternalImport(result.importSpec));
-      hasParamValidation = true;
-    }
+  const paramValidation =
+    pathParams.length > 0 && schemaBuilder
+      ? schemaBuilder.build({ variant: "params", params: pathParams })
+      : undefined;
+  if (paramValidation) {
+    validators.push(buildSValidator("param", paramValidation.ast));
+    schemaImports.push(toExternalImport(paramValidation.importSpec));
   }
+  const hasParamValidation = paramValidation != null;
 
   const queryParams = method.params.filter(p => p.source === "pagination");
-  let hasQueryValidation = false;
-  if (queryParams.length > 0 && schemaBuilder) {
-    const request: SchemaBuilderRequest = { variant: "query", params: queryParams };
-    const result = schemaBuilder.build(request);
-    if (result) {
-      validators.push(buildSValidator("query", result.ast));
-      schemaImports.push(toExternalImport(result.importSpec));
-      hasQueryValidation = true;
-    }
+  const queryValidation =
+    queryParams.length > 0 && schemaBuilder
+      ? schemaBuilder.build({ variant: "query", params: queryParams })
+      : undefined;
+  if (queryValidation) {
+    validators.push(buildSValidator("query", queryValidation.ast));
+    schemaImports.push(toExternalImport(queryValidation.importSpec));
   }
+  const hasQueryValidation = queryValidation != null;
 
   const bodySchemaName = getBodySchemaName(method, entityName);
   if (bodySchemaName) {
@@ -357,6 +350,7 @@ function buildRouteCall(
 
 /**
  * Generate Hono routes for an entity.
+ * Returns the init expression for the routes variable (not the full statement).
  */
 function generateHonoRoutes(
   entityName: string,
@@ -364,19 +358,17 @@ function generateHonoRoutes(
   config: ResolvedHttpHonoConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
-  externalImports: ExternalImport[];
+  initExpr: n.Expression;
+  imports: ExternalImport[];
   needsSValidator: boolean;
 } {
-  const routesVarName = inflection.variableName(entityName, "HonoRoutes");
-
-  let chainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
+  const initialChainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
   const schemaCapabilities: string[] = [];
   const schemaImports: ExternalImport[] = [];
-  const schemaBuilder = getSchemaBuilder(registry);
 
-  for (const method of queries.methods) {
+  const chainExpr = queries.methods.reduce((chain, method) => {
     const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
     const queryHandle = registry.import(methodCapability);
 
@@ -400,19 +392,13 @@ function generateHonoRoutes(
 
     const callArgs: n.Expression[] = [b.stringLiteral(path), ...validators, handler];
 
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier(httpMethod)),
+    return b.callExpression(
+      b.memberExpression(cast.toExpr(chain), b.identifier(httpMethod)),
       callArgs.map(cast.toExpr),
     );
-  }
+  }, initialChainExpr);
 
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routesVarName),
-    cast.toExpr(chainExpr),
-  );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
-  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
+  const imports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }, ...schemaImports];
   const needsSValidator =
     schemaCapabilities.length > 0 ||
     queries.methods.some(m =>
@@ -426,103 +412,60 @@ function generateHonoRoutes(
     );
 
   return {
-    statements: [variableDeclaration as n.Statement],
-    externalImports,
+    initExpr: chainExpr,
+    imports,
     needsSValidator,
   };
 }
 
-/**
- * Get the capability suffix for a query method.
- */
-function getMethodCapabilitySuffix(
-  method: QueryMethod,
-  entityName: string,
-  inflection: CoreInflection,
-): string {
-  switch (method.kind) {
-    case "read":
-      return "findById";
-    case "list":
-      const prefix = inflection.variableName(entityName, "");
-      if (method.name.startsWith(prefix)) {
-        const remainder = method.name.slice(prefix.length);
-        if (remainder.startsWith("ListBy")) {
-          const suffix = remainder.slice("ListBy".length);
-          if (suffix.length > 0) {
-            return `listBy${suffix}`;
-          }
-        }
-      }
-      return "list";
-    case "create":
-      return "create";
-    case "update":
-      return "update";
-    case "delete":
-      return "delete";
-    case "lookup":
-      if (method.lookupField) {
-        const pascalField = inflection.pascalCase(method.lookupField);
-        return `findBy${pascalField}`;
-      }
-      return "lookup";
-    case "function":
-      return method.name;
-  }
-}
 
 /**
- * Get the schema builder from registry if available.
+ * Generate the aggregator app init expression.
+ * Returns the init expression for the app variable (not the full statement).
  */
-function generateAggregator(
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpHonoConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
-  externalImports: ExternalImport[];
+  initExpr: n.Expression | null;
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { initExpr: null, imports: [] };
   }
 
-  let chainExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
   const basePath = config.basePath.replace(/^\/+|\/+$/g, "");
+  const baseExpr: n.Expression = b.newExpression(b.identifier("Hono"), []);
 
-  if (basePath) {
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier("basePath")),
-      [b.stringLiteral(`/${basePath}`)].map(cast.toExpr),
-    );
-  }
+  const withBasePath = basePath
+    ? b.callExpression(
+        b.memberExpression(cast.toExpr(baseExpr), b.identifier("basePath")),
+        [b.stringLiteral(`/${basePath}`)].map(cast.toExpr),
+      )
+    : baseExpr;
 
-  const externalImports: ExternalImport[] = [{ from: "hono", names: ["Hono"] }];
-
-  for (const [entityName] of entityEntries) {
-    const routesVarName = inflection.variableName(entityName, "HonoRoutes");
+  const chainExpr = entityEntries.reduce((chain, [entityName]) => {
+    const routesVarName = inflection.variableName(entityName, "Routes");
     const routeCapability = `http-routes:hono:${entityName}`;
-
     const prefix = inflection.entityRoutePath(entityName);
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier("route")),
-      [b.stringLiteral(prefix), b.identifier(routesVarName)].map(cast.toExpr),
-    );
 
     if (registry.has(routeCapability)) {
       registry.import(routeCapability).ref();
     }
-  }
 
-  const variableDeclarator = b.variableDeclarator(b.identifier("app"), cast.toExpr(chainExpr));
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
+    return b.callExpression(
+      b.memberExpression(cast.toExpr(chain), b.identifier("route")),
+      [b.stringLiteral(prefix), b.identifier(routesVarName)].map(cast.toExpr),
+    );
+  }, withBasePath);
 
   return {
-    statements: [variableDeclaration as n.Statement],
-    externalImports,
+    initExpr: chainExpr,
+    imports: [{ from: "hono", names: ["Hono"] }],
   };
 }
 
@@ -554,114 +497,58 @@ export function hono(config?: HttpHonoConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      const declarations: SymbolDeclaration[] = [];
-
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
-        if (entity.tags.omit === true) continue;
-
-        const hasAnyPermissions =
-          entity.permissions.canSelect ||
-          entity.permissions.canInsert ||
-          entity.permissions.canUpdate ||
-          entity.permissions.canDelete;
-
-        if (hasAnyPermissions) {
-          declarations.push({
-            name: inflection.variableName(entity.name, "HonoRoutes"),
-            capability: `http-routes:hono:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-        }
-      }
-
-      declarations.push({
-        name: "honoApp",
-        capability: "http-routes:hono:app",
-      });
-
-      return declarations;
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const rendered: RenderedSymbol[] = [];
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
-      const entityQueries = new Map<string, EntityQueriesExtension>();
-      const queryCapabilities = registry.query("queries:");
-
-      for (const decl of queryCapabilities) {
-        const parts = decl.capability.split(":");
-        if (parts.length !== 3) continue;
-
-        const entityName = parts[2]!;
-        const metadata = registry.getMetadata(decl.capability);
-        if (metadata && typeof metadata === "object" && "methods" in metadata) {
-          entityQueries.set(entityName, metadata as EntityQueriesExtension);
-        }
-      }
-
-      const allNeedsSValidator = new Set<string>();
-
-      for (const [entityName, queries] of entityQueries) {
+      // Generate routes for each entity
+      for (const [entityName, queries] of entityQueries.entries()) {
         const entity = ir.entities.get(entityName);
         if (!entity || !isTableEntity(entity)) continue;
 
         const capability = `http-routes:hono:${entityName}`;
-
-        const { statements, externalImports, needsSValidator } = registry.forSymbol(
-          capability,
-          () => generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection),
+        // Scope ref tracking to this capability
+        const { initExpr, imports, needsSValidator } = registry.forSymbol(capability, () =>
+          generateHonoRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
         );
 
-        if (needsSValidator) {
-          allNeedsSValidator.add(capability);
-        }
+        const finalImports = needsSValidator
+          ? [...imports, { from: "@hono/standard-validator", names: ["sValidator"] }]
+          : imports;
 
-        rendered.push({
-          name: inflection.variableName(entityName, "HonoRoutes"),
-          capability,
-          node: statements[0],
-          exports: "named",
-          externalImports,
-        });
+        const routeStmt = yield* cj.exp.const(
+          inflection.variableName(entityName, "Routes"),
+          initExpr,
+          { capability, imports: finalImports, baseEntityName: entityName },
+        );
+        statements.push(routeStmt);
       }
 
+      // Generate aggregator app if we have any routes
       if (entityQueries.size > 0) {
         const appCapability = "http-routes:hono:app";
-
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
+        // Scope ref tracking to this capability
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, resolvedConfig, registry, inflection),
         );
 
-        rendered.push({
-          name: "honoApp",
-          capability: appCapability,
-          node: statements[0],
-          exports: "named",
-          externalImports,
-        });
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const("honoApp", initExpr, {
+            capability: appCapability,
+            imports,
+          });
+          statements.push(appStmt);
+        }
       }
 
-      return rendered.map(r => {
-        const needsSValidator = allNeedsSValidator.has(r.capability);
-        return {
-          ...r,
-          externalImports: needsSValidator
-            ? [
-                ...(r.externalImports ?? []),
-                { from: "@hono/standard-validator", names: ["sValidator"] },
-              ]
-            : r.externalImports,
-        };
-      });
+      return statements;
     }),
   };
 }

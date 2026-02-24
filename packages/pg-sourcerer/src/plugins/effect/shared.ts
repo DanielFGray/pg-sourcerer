@@ -5,7 +5,7 @@ import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 
-import type { TableEntity, Field, EnumEntity } from "../../ir/semantic-ir.js";
+import type { TableEntity, Field, EnumEntity, DomainEntity } from "../../ir/semantic-ir.js";
 import { conjure } from "../../conjure/index.js";
 import type { FileNaming } from "../../runtime/file-assignment.js";
 import type { UserModuleRef } from "../../user-module.js";
@@ -58,6 +58,8 @@ export const EffectConfigSchema = S.Struct({
 
 export type ParsedEffectConfig = Omit<S.Schema.Type<typeof EffectConfigSchema>, "http"> & {
   http: false | ParsedHttpConfig;
+  /** Internal: set by effect() preset when models plugin is included */
+  modelsEnabled?: boolean;
 };
 
 /**
@@ -125,76 +127,104 @@ export interface EffectConfig {
 // =============================================================================
 
 export type EffectMapping =
-  | { kind: "schema"; schema: n.Expression; enumRef?: undefined }
-  | { kind: "enumRef"; enumRef: string; schema?: undefined };
+  | { kind: "schema"; schema: n.Expression; enumRef?: undefined; domainRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; schema?: undefined; domainRef?: undefined }
+  | { kind: "domainRef"; domainRef: string; schema?: undefined; enumRef?: undefined };
 
-export function fieldToEffectMapping(field: Field, enums: EnumEntity[]): EffectMapping {
+/**
+ * Build pipe arguments for field modifiers (Array, NullOr).
+ * Returns AST expressions for `.pipe()`: S.Array, S.NullOr as unary function refs.
+ */
+export function buildModifierPipeArgs(
+  field: { isArray: boolean; nullable: boolean },
+): n.Expression[] {
+  const args: n.Expression[] = [];
+  if (field.isArray) args.push(conjure.id("S").prop("Array").build());
+  if (field.nullable) args.push(conjure.id("S").prop("NullOr").build());
+  return args;
+}
+
+/**
+ * Apply pipe arguments to a base schema.
+ * Returns base as-is if pipeArgs is empty, otherwise base.pipe(...pipeArgs).
+ */
+export function withPipe(base: n.Expression, pipeArgs: n.Expression[]): n.Expression {
+  if (pipeArgs.length === 0) return base;
+  return conjure.chain(base).method("pipe", pipeArgs).build();
+}
+
+export function fieldToEffectMapping(
+  field: Field,
+  enums: EnumEntity[],
+  domains: readonly DomainEntity[] = [],
+): EffectMapping {
   const resolved = resolveFieldTypeInfo(field);
   if (!resolved) {
     return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
   }
-  const baseResult = baseTypeToEffectMapping(resolved.typeName, resolved.typeInfo, enums);
-
-  if (baseResult.kind === "enumRef") {
-    return baseResult;
-  }
-
-  let schema = baseResult.schema;
-
-  // S.Array(elementType) - static method, not chained
-  if (field.isArray) {
-    schema = conjure.id("S").method("Array", [schema]).build();
-  }
-
-  if (field.nullable) {
-    schema = conjure.id("S").method("NullOr", [schema]).build();
-  }
-
-  return { kind: "schema", schema };
+  // Return base mapping without modifiers — callers apply via pipe
+  return baseTypeToEffectMapping(resolved.typeName, resolved.typeInfo, enums, domains);
 }
+
+/**
+ * Build a schema mapping result
+ */
+const schemaMapping = (prop: string): EffectMapping => ({
+  kind: "schema",
+  schema: conjure.id("S").prop(prop).build(),
+});
 
 function baseTypeToEffectMapping(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
   enums: EnumEntity[],
+  domains: readonly DomainEntity[] = [],
 ): EffectMapping {
   const normalized = typeName.toLowerCase();
 
+  // Domain types
+  if (pgType.typtype === "d") {
+    const domainEntity = domains.find(d => d.pgType.typname === typeName);
+    if (domainEntity) {
+      return { kind: "domainRef", domainRef: domainEntity.name };
+    }
+    // If domain entity not found, fall through to handle base type
+  }
+
+  // String types
   if (PG_STRING_TYPES.has(normalized)) {
-    if (normalized === "uuid") {
-      return { kind: "schema", schema: conjure.id("S").prop("UUID").build() };
-    }
-    return { kind: "schema", schema: conjure.id("S").prop("String").build() };
+    return schemaMapping(normalized === "uuid" ? "UUID" : "String");
   }
 
+  // Number types
   if (PG_NUMBER_TYPES.has(normalized)) {
-    if (normalized === "bigint" || normalized === "int8") {
-      return { kind: "schema", schema: conjure.id("S").prop("BigInt").build() };
-    }
-    return { kind: "schema", schema: conjure.id("S").prop("Number").build() };
+    return schemaMapping(normalized === "bigint" || normalized === "int8" ? "BigInt" : "Number");
   }
 
+  // Boolean types
   if (PG_BOOLEAN_TYPES.has(normalized)) {
-    return { kind: "schema", schema: conjure.id("S").prop("Boolean").build() };
+    return schemaMapping("Boolean");
   }
 
+  // Date types
   if (PG_DATE_TYPES.has(normalized)) {
-    return { kind: "schema", schema: conjure.id("S").prop("DateFromSelf").build() };
+    return schemaMapping("DateFromSelf");
   }
 
+  // JSON types
   if (PG_JSON_TYPES.has(normalized)) {
-    return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
+    return schemaMapping("Unknown");
   }
 
+  // Enum types
   if (pgType.typtype === "e" || pgType.typcategory === "E") {
     const enumEntity = enums.find(e => e.pgType.typname === typeName);
-    if (enumEntity) {
-      return { kind: "enumRef", enumRef: enumEntity.name };
-    }
-    return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
+    return enumEntity
+      ? { kind: "enumRef", enumRef: enumEntity.name }
+      : schemaMapping("Unknown");
   }
 
-  return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
+  return schemaMapping("Unknown");
 }
 
 // =============================================================================

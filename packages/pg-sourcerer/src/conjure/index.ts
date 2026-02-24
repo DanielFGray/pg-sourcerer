@@ -33,7 +33,8 @@
  *   .build()
  * ```
  */
-import recast from "recast";
+import * as recast from "recast";
+import type { builders as Builders } from "ast-types/lib/gen/builders.js";
 import type { namedTypes as n } from "ast-types";
 import type {
   ExpressionKind,
@@ -56,7 +57,93 @@ import type {
   TSPropertySignatureKind,
 } from "ast-types/lib/gen/kinds.js";
 
-const b = recast.types.builders;
+const b: Builders = recast.types.builders;
+
+// =============================================================================
+// Symbol & Import Types (for new conjure.symbol.* API)
+// =============================================================================
+
+/**
+ * External import specification for RenderedSymbol
+ */
+export interface ExternalImport {
+  readonly from: string;
+  readonly names?: readonly string[];
+  readonly types?: readonly string[];
+  readonly default?: string;
+  readonly namespace?: string;
+}
+
+/**
+ * Options for conjure.symbol.* methods
+ */
+export interface SymbolOpts {
+  readonly imports?: ExternalImport[];
+  readonly metadata?: unknown;
+  readonly exports: "named" | "default" | false;
+}
+
+/**
+ * Complete symbol representation returned by conjure.symbol.*
+ * 
+ * This is what plugins should return from their render() methods.
+ * The runtime orchestrator consumes these to build the final output files.
+ */
+export interface RenderedSymbol {
+  readonly capability: string;
+  readonly name: string;
+  readonly node: n.Node | null; // null for virtual symbols
+  readonly exports: "named" | "default" | false;
+  readonly imports?: ExternalImport[];
+  readonly metadata?: unknown;
+  readonly refs?: readonly string[]; // extracted identifier names for cross-file tracking
+}
+
+/**
+ * Extract all identifier and type reference names from an AST node.
+ * Used for automatic cross-file import tracking.
+ * 
+ * Scans for:
+ * - Identifier nodes (variable/function refs)
+ * - TSTypeQuery nodes (typeof X)
+ * 
+ * Returns deduplicated array of identifier names.
+ * 
+ * @example
+ * const node = conjure.id("z").method("string").build();
+ * const refs = extractIdentifierRefs(node);
+ * // refs = ["z", "string"]
+ */
+export function extractIdentifierRefs(node: n.Node): string[] {
+  const refs: string[] = [];
+
+  const visit = (n: unknown) => {
+    if (!n || typeof n !== "object") return;
+    const obj = n as Record<string, unknown>;
+
+    // Identifier nodes
+    if (obj["type"] === "Identifier" && typeof obj["name"] === "string") {
+      refs.push(obj["name"]);
+    }
+
+    // TSTypeQuery (typeof X)
+    if (obj["type"] === "TSTypeQuery") {
+      const expr = (obj["exprName"] ?? obj["expr"]) as Record<string, unknown> | undefined;
+      if (expr?.["name"] && typeof expr["name"] === "string") {
+        refs.push(expr["name"]);
+      }
+    }
+
+    // Recurse into all properties
+    for (const v of Object.values(obj)) {
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+
+  visit(node);
+  return [...new Set(refs)]; // deduplicate
+}
 
 // =============================================================================
 // Recast Interop Types
@@ -137,51 +224,6 @@ export const cast = {
   /** Cast n.TSType to TSTypeKind */
   toTSType,
 } as const;
-
-// =============================================================================
-// Symbol Metadata Types
-// =============================================================================
-
-/**
- * Context for symbol registration - identifies what entity/shape this symbol represents.
- */
-export interface SymbolContext {
-  readonly capability: string;
-  readonly entity: string;
-  readonly shape?: string;
-}
-
-/**
- * Metadata attached to an exported symbol.
- */
-export interface SymbolMeta {
-  readonly name: string;
-  readonly capability: string;
-  readonly entity: string;
-  readonly shape?: string;
-  readonly isType: boolean;
-  readonly isDefault?: boolean;
-}
-
-/**
- * A statement with attached symbol metadata.
- * Used by exp.* helpers to track exports.
- */
-export interface SymbolStatement {
-  readonly _tag: "SymbolStatement";
-  readonly node: n.Statement;
-  readonly symbol: SymbolMeta;
-}
-
-/**
- * A program with extracted symbol metadata.
- * Returned by program() when SymbolStatements are included.
- */
-export interface SymbolProgram {
-  readonly _tag: "SymbolProgram";
-  readonly node: n.Program;
-  readonly symbols: readonly SymbolMeta[];
-}
 
 // =============================================================================
 // Chain Builder
@@ -375,6 +417,7 @@ function isFnRawParam(p: FnParam | FnRawParam): p is FnRawParam {
 interface FnConfig {
   params: (FnParam | FnRawParam)[];
   body: n.Statement[];
+  implicitReturn: n.Expression | null;
   returnType: n.TSType | null;
   isAsync: boolean;
   isArrow: boolean;
@@ -413,6 +456,9 @@ export interface FnBuilder {
 
   /** Set the function body */
   body(...statements: n.Statement[]): FnBuilder;
+
+  /** Set implicit return expression (arrow functions only) */
+  expr(expression: n.Expression): FnBuilder;
 
   /** Mark as async */
   async(): FnBuilder;
@@ -503,7 +549,11 @@ function createFn(config: FnConfig): FnBuilder {
     },
 
     body(...statements) {
-      return createFn({ ...config, body: statements });
+      return createFn({ ...config, body: statements, implicitReturn: null });
+    },
+
+    expr(expression) {
+      return createFn({ ...config, implicitReturn: expression, body: [] });
     },
 
     async() {
@@ -520,16 +570,27 @@ function createFn(config: FnConfig): FnBuilder {
 
     build() {
       const params = buildParams();
-      const block = b.blockStatement(config.body.map(toStmt));
 
       if (config.isArrow) {
-        const fn = b.arrowFunctionExpression(params, block, false);
-        fn.async = config.isAsync;
-        if (config.returnType) {
-          fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
+        // Arrow functions can have implicit returns (expression body)
+        if (config.implicitReturn) {
+          const fn = b.arrowFunctionExpression(params, toExpr(config.implicitReturn), true);
+          fn.async = config.isAsync;
+          if (config.returnType) {
+            fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
+          }
+          return fn;
+        } else {
+          const block = b.blockStatement(config.body.map(toStmt));
+          const fn = b.arrowFunctionExpression(params, block, false);
+          fn.async = config.isAsync;
+          if (config.returnType) {
+            fn.returnType = b.tsTypeAnnotation(toTSType(config.returnType));
+          }
+          return fn;
         }
-        return fn;
       } else {
+        const block = b.blockStatement(config.body.map(toStmt));
         const fn = b.functionExpression(null, params, block, config.isGenerator);
         fn.async = config.isAsync;
         if (config.returnType) {
@@ -1141,14 +1202,20 @@ const importHelpers = {
    * Default import: `import name from "source"`
    */
   default: (source: string, name: string): n.ImportDeclaration => {
-    return b.importDeclaration([b.importDefaultSpecifier(b.identifier(name))], b.stringLiteral(source));
+    return b.importDeclaration(
+      [b.importDefaultSpecifier(b.identifier(name))],
+      b.stringLiteral(source),
+    );
   },
 
   /**
    * Namespace import: `import * as name from "source"`
    */
   namespace: (source: string, name: string): n.ImportDeclaration => {
-    return b.importDeclaration([b.importNamespaceSpecifier(b.identifier(name))], b.stringLiteral(source));
+    return b.importDeclaration(
+      [b.importNamespaceSpecifier(b.identifier(name))],
+      b.stringLiteral(source),
+    );
   },
 
   /**
@@ -1166,8 +1233,9 @@ const importHelpers = {
 /**
  * Export statement builders for generating export declarations.
  * These produce plain statements without symbol metadata tracking.
- * For exports that need symbol tracking, use `exp.*` helpers instead.
+ * For exports that need symbol tracking, use `symbol.*` helpers instead.
  */
+
 const exportHelpers = {
   /**
    * Export const declaration: `export const name = init`
@@ -1178,7 +1246,7 @@ const exportHelpers = {
       id.typeAnnotation = b.tsTypeAnnotation(toTSType(type));
     }
     const decl = b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))]);
-    return b.exportNamedDeclaration(decl, []);
+    return b.exportNamedDeclaration(decl);
   },
 
   /**
@@ -1191,7 +1259,7 @@ const exportHelpers = {
   /**
    * Export default: `export default expr`
    */
-  default: (expr: n.Expression): n.ExportDefaultDeclaration => {
+  default: (expr: n.Expression) => {
     return b.exportDefaultDeclaration(toExpr(expr));
   },
 
@@ -1219,7 +1287,7 @@ const exportHelpers = {
   /**
    * Export type alias: `export type Name = Type`
    */
-  type: (name: string, type: n.TSType): n.ExportNamedDeclaration => {
+  type: (name: string, type: n.TSType) => {
     const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
     return b.exportNamedDeclaration(decl, []);
   },
@@ -1232,7 +1300,10 @@ const exportHelpers = {
     properties: { name: string; type: n.TSType; optional?: boolean; readonly?: boolean }[],
   ): n.ExportNamedDeclaration => {
     const members = properties.map((p): InterfaceBodyMember => {
-      const sig = b.tsPropertySignature(b.identifier(p.name), b.tsTypeAnnotation(toTSType(p.type)));
+      const key = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(p.name)
+        ? b.identifier(p.name)
+        : b.stringLiteral(p.name);
+      const sig = b.tsPropertySignature(key, b.tsTypeAnnotation(toTSType(p.type)));
       if (p.optional) sig.optional = true;
       if (p.readonly) sig.readonly = true;
       return sig;
@@ -1243,182 +1314,56 @@ const exportHelpers = {
 } as const;
 
 // =============================================================================
-// Export Helpers with Symbol Tracking (exp.*)
-// =============================================================================
-
-/**
- * Helper to create a SymbolStatement wrapper
- */
-function symbolStatement(node: n.Statement, symbol: SymbolMeta): SymbolStatement {
-  return { _tag: "SymbolStatement", node, symbol };
-}
-
-/**
- * Helper to create SymbolMeta with proper handling of optional shape
- */
-function createSymbolMeta(name: string, ctx: SymbolContext, isType: boolean): SymbolMeta {
-  const base = {
-    name,
-    capability: ctx.capability,
-    entity: ctx.entity,
-    isType,
-  };
-  return ctx.shape !== undefined ? { ...base, shape: ctx.shape } : base;
-}
-
-/**
- * TypeScript interface property signature
- */
-interface TSPropertySignature {
-  name: string;
-  type: n.TSType;
-  optional?: boolean;
-  readonly?: boolean;
-}
-
-/**
- * Build interface properties from property signature objects
- */
-function buildInterfaceProperties(props: TSPropertySignature[]): InterfaceBodyMember[] {
-  return props.map((p): InterfaceBodyMember => {
-    const sig = b.tsPropertySignature(b.identifier(p.name), b.tsTypeAnnotation(toTSType(p.type)));
-    if (p.optional) sig.optional = true;
-    if (p.readonly) sig.readonly = true;
-    return sig;
-  });
-}
-
-/**
- * Export helpers that produce statements with symbol metadata.
- * These are used for tracking exports across files for import resolution.
- */
-export const exp = {
-  /**
-   * Export interface declaration: `export interface Name { ... }`
-   */
-  interface: (
-    name: string,
-    ctx: SymbolContext,
-    properties: TSPropertySignature[],
-  ): SymbolStatement => {
-    const decl = b.tsInterfaceDeclaration(
-      b.identifier(name),
-      b.tsInterfaceBody(buildInterfaceProperties(properties)),
-    );
-    const exportDecl = b.exportNamedDeclaration(decl, []);
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
-  },
-
-  /**
-   * Export type alias: `export type Name = Type`
-   */
-  typeAlias: (name: string, ctx: SymbolContext, type: n.TSType): SymbolStatement => {
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
-    const exportDecl = b.exportNamedDeclaration(decl, []);
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
-  },
-
-  /**
-   * Export const declaration: `export const name = init`
-   */
-  const: (
-    name: string,
-    ctx: SymbolContext,
-    init: n.Expression,
-    typeAnnotation?: n.TSType,
-  ): SymbolStatement => {
-    const id = b.identifier(name);
-    if (typeAnnotation) {
-      id.typeAnnotation = b.tsTypeAnnotation(toTSType(typeAnnotation));
-    }
-    const decl = b.variableDeclaration("const", [b.variableDeclarator(id, toExpr(init))]);
-    const exportDecl = b.exportNamedDeclaration(decl, []);
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, false));
-  },
-
-  /**
-   * Export type alias for inferred types: `export type Name = typeof schema`
-   * Useful for exporting the inferred type alongside a schema constant.
-   */
-  type: (name: string, ctx: SymbolContext, type: n.TSType): SymbolStatement => {
-    // This is the same as typeAlias but semantically distinct -
-    // used for inferred types like `z.infer<typeof Schema>`
-    const decl = b.tsTypeAliasDeclaration(b.identifier(name), toTSType(type));
-    const exportDecl = b.exportNamedDeclaration(decl, []);
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
-  },
-
-  /**
-   * Export TypeScript enum declaration: `export enum Name { A = 'a', B = 'b' }`
-   *
-   * Member names are normalized: uppercase with non-alphanumeric chars replaced by underscore.
-   *
-   * @example
-   * exp.tsEnum("Status", { capability: "types", entity: "Status" }, ["active", "pending"])
-   * // export enum Status { ACTIVE = "active", PENDING = "pending" }
-   */
-  tsEnum: (name: string, ctx: SymbolContext, values: readonly string[]): SymbolStatement => {
-    const enumDecl = b.tsEnumDeclaration(
-      b.identifier(name),
-      values.map(v =>
-        b.tsEnumMember(
-          b.identifier(v.toUpperCase().replace(/[^A-Z0-9_]/g, "_")),
-          b.stringLiteral(v),
-        ),
-      ),
-    );
-    const exportDecl = b.exportNamedDeclaration(enumDecl, []);
-    return symbolStatement(exportDecl, createSymbolMeta(name, ctx, true));
-  },
-} as const;
-
-// =============================================================================
-// Program Builder
-// =============================================================================
-
-/**
- * Type guard for SymbolStatement
- */
-function isSymbolStatement(stmt: n.Statement | SymbolStatement): stmt is SymbolStatement {
-  return (
-    typeof stmt === "object" && stmt !== null && "_tag" in stmt && stmt._tag === "SymbolStatement"
-  );
-}
-
-/**
- * Create a SymbolProgram from statements, extracting symbol metadata.
- * Accepts both regular statements and SymbolStatements.
- */
-function createSymbolProgram(...statements: (n.Statement | SymbolStatement)[]): SymbolProgram {
-  const nodes: n.Statement[] = [];
-  const symbols: SymbolMeta[] = [];
-
-  for (const stmt of statements) {
-    if (isSymbolStatement(stmt)) {
-      nodes.push(stmt.node);
-      symbols.push(stmt.symbol);
-    } else {
-      nodes.push(stmt);
-    }
-  }
-
-  return {
-    _tag: "SymbolProgram",
-    node: b.program(nodes.map(toStmt)),
-    symbols,
-  };
-}
-
-// =============================================================================
 // Main API
 // =============================================================================
+
+export interface ConjureApi {
+  id: (name: string) => ReturnType<typeof createChain>;
+  chain: (expr: n.Expression) => ReturnType<typeof createChain>;
+  call: (callee: n.Expression | string, method: string, args?: n.Expression[]) => n.Expression;
+  obj: () => ReturnType<typeof createObj>;
+  arr: (...elements: n.Expression[]) => ReturnType<typeof createArr>;
+  arrExpr: (...elements: n.Expression[]) => n.ArrayExpression;
+  fn: () => ReturnType<typeof createFn>;
+  str: (value: string) => n.StringLiteral;
+  num: (value: number) => n.NumericLiteral;
+  bool: (value: boolean) => n.BooleanLiteral;
+  null: () => n.NullLiteral;
+  undefined: () => n.Identifier;
+  regex: (pattern: string, flags?: string) => n.RegExpLiteral;
+  template: (quasis: string[], ...expressions: n.Expression[]) => n.TemplateLiteral;
+  taggedTemplate: (
+    tag: string | n.Expression,
+    quasis: readonly string[],
+    expressions: readonly n.Expression[],
+    typeParams?: readonly n.TSType[],
+  ) => n.TaggedTemplateExpression;
+  op: typeof op;
+  stmt: typeof stmt;
+  import: typeof importHelpers;
+  export: typeof exportHelpers;
+  asyncFn: (
+    name: string,
+    params: (n.Identifier | n.ObjectPattern)[],
+    body: n.Statement[],
+  ) => n.FunctionDeclaration;
+  ts: typeof ts;
+  param: typeof param;
+  await: (expr: n.Expression) => n.AwaitExpression;
+  nonNull: (expr: n.Expression) => n.TSNonNullExpression;
+  asConst: (expr: n.Expression) => n.TSAsExpression;
+  spread: (expr: n.Expression) => n.SpreadElement;
+  print: (node: n.Node) => string;
+  program: (...statements: n.Statement[]) => n.Program;
+  b: typeof b;
+}
 
 /**
  * Conjure - AST Builder DSL
  *
  * A fluent, immutable API for constructing JavaScript/TypeScript AST nodes.
  */
-export const conjure = {
+export const conjure: ConjureApi = {
   // === Chain builders ===
 
   /** Start a chain from an identifier */
@@ -1461,13 +1406,15 @@ export const conjure = {
   arr: (...elements: n.Expression[]) => createArr(elements.map(e => toExpr(e) as ArrayElementLike)),
 
   /** Create an array expression directly (handles type casting) */
-  arrExpr: (...elements: n.Expression[]) => b.arrayExpression(elements.map(e => toExpr(e) as ArrayElementLike)),
+  arrExpr: (...elements: n.Expression[]) =>
+    b.arrayExpression(elements.map(e => toExpr(e) as ArrayElementLike)),
 
   /** Start a function builder */
   fn: () =>
     createFn({
       params: [],
       body: [],
+      implicitReturn: null,
       returnType: null,
       isAsync: false,
       isArrow: false,
@@ -1476,7 +1423,15 @@ export const conjure = {
 
   // === Literals ===
 
-  /** String literal */
+  /**
+   * String literal
+   *
+   * @example
+   * ```ts @import.meta.vitest
+   * const node = conjure.str("hello");
+   * expect(conjure.print(node)).toBe('"hello"');
+   * ```
+   */
   str: (value: string) => b.stringLiteral(value),
 
   /** Numeric literal */
@@ -1490,6 +1445,26 @@ export const conjure = {
 
   /** undefined */
   undefined: () => b.identifier("undefined"),
+
+  /**
+   * Regular expression literal
+   * 
+   * Note: Uses recast.parse() instead of b.regExpLiteral() because the latter
+   * has a bug where it prints `/undefined/` instead of the actual pattern.
+   * 
+   * @example
+   * ```ts @import.meta.vitest
+   * const node = conjure.regex("^test$", "i");
+   * expect(conjure.print(node)).toBe('/^test$/i');
+   * ```
+   */
+  regex: (pattern: string, flags = "") => {
+    // Escape forward slashes in the pattern for the regex literal
+    const escapedPattern = pattern.replace(/\//g, "\\/");
+    const code = `/${escapedPattern}/${flags}`;
+    const parsed = recast.parse(code);
+    return parsed.program.body[0].expression as n.RegExpLiteral;
+  },
 
   /** Template literal */
   template: (quasis: string[], ...expressions: n.Expression[]) => {
@@ -1570,9 +1545,6 @@ export const conjure = {
   // === Parameter helpers ===
   param,
 
-  // === Export helpers ===
-  exp,
-
   // === Helpers ===
 
   /** Await expression */
@@ -1581,26 +1553,45 @@ export const conjure = {
   /** Non-null assertion: `expr!` */
   nonNull: (expr: n.Expression) => b.tsNonNullExpression(toExpr(expr)),
 
+  /** Type assertion: `expr as const` */
+  asConst: (expr: n.Expression) =>
+    b.tsAsExpression(toExpr(expr), b.tsTypeReference(b.identifier("const"))),
+
   /** Spread expression (for use in arrays/calls) */
   spread: (expr: n.Expression) => b.spreadElement(toExpr(expr)),
 
   /** Print AST node to code string */
-  print: (node: n.Node) => recast.print(node).code,
+  print: (node: n.Node) =>
+    formatCode(
+      recast.print(node, {
+        trailingComma: true,
+        tabWidth: 2,
+      }).code,
+    ),
 
   /** Create a program from statements (backwards compatible) */
   program: (...statements: n.Statement[]) => b.program(statements.map(toStmt)),
-
-  /**
-   * Create a SymbolProgram from statements, extracting symbol metadata.
-   * Accepts both regular statements and SymbolStatements.
-   * Returns a SymbolProgram with the AST node and extracted symbols.
-   */
-  symbolProgram: createSymbolProgram,
 
   // === Raw builders (escape hatch) ===
 
   /** Raw recast builders for advanced use cases */
   b,
-} as const;
+};
+
+/**
+ * Format output code:
+ * - Ensure blank lines before exports
+ */
+function formatCode(code: string): string {
+  return code
+    .split("\n")
+    .reduce<string[]>((acc, line) => {
+      const prevLine = acc[acc.length - 1];
+      const needsBlankLine =
+        line.startsWith("export ") && prevLine !== undefined && prevLine !== "";
+      return needsBlankLine ? [...acc, "", line] : [...acc, line];
+    }, [])
+    .join("\n");
+}
 
 export default conjure;

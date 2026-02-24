@@ -9,31 +9,31 @@ This is a monorepo with two packages:
 
 ### Common Workflows
 
-**Making changes to pg-sourcerer:**
+**IMPORTANT: Always run commands from the project root** (`/home/dan/build/pg-sourcerer`), not from subdirectories. The monorepo's package.json delegates to the correct package.
+
 ```bash
-cd packages/pg-sourcerer
-bun run build          # Compile TypeScript
+# From project root - these all work:
+bun run build          # Build pg-sourcerer
 bun run test           # Run unit tests
+bun run typecheck      # Type check
+
+# For example package (still from root):
+bun run --cwd packages/example db:ensure    # Start DB
+bun run --cwd packages/example generate     # Run code generation
 ```
 
-**Testing changes end-to-end:**
-```bash
-cd packages/example
-bun db:ensure          # Start DB if needed (requires Docker)
-bun run generate       # Run code generation with your changes
-```
+**Do NOT cd into packages/\* directories** - this can cause PATH/environment issues.
 
 **Running integration tests** (requires database):
 ```bash
-cd packages/example && bun db:ensure
-cd packages/pg-sourcerer && bun run test:integration
+bun run --cwd packages/example db:ensure && bun run test:integration
 ```
 
 ### Environment Setup
 
 The example package needs a `.env` file with database credentials. If missing:
 ```bash
-cd packages/example && bun run init   # Creates .env, starts DB, runs migrations
+bun run --cwd packages/example init   # Creates .env, starts DB, runs migrations
 ```
 
 Scripts in `packages/example` use `bun --env-file=.env` to load environment variables.
@@ -82,7 +82,7 @@ Release-please walks the full git graph to generate changelogs. Regular merges f
 
 ```bash
 git checkout develop && git pull
-# Run tests locally: cd packages/pg-sourcerer && bun run test
+# Run tests locally: bun run test
 git checkout main && git pull origin main
 git merge --squash develop
 git commit -m "chore: merge develop"
@@ -122,10 +122,10 @@ effect-solutions search retry
 ### Running Tests
 
 ```bash
-cd packages/pg-sourcerer
-bun run test     # never `bun test`
-bun run test:watch  # Watch mode
-bun run typecheck   # Type check without emit
+# From project root:
+bun run test           # Run unit tests (never `bun test`)
+bun run test:watch     # Watch mode
+bun run typecheck      # Type check without emit
 ```
 
 ### Database for Integration Tests
@@ -133,7 +133,7 @@ bun run typecheck   # Type check without emit
 Some tests require the example PostgreSQL database. To start it:
 
 ```bash
-cd packages/example && bun db:ensure
+bun run --cwd packages/example db:ensure
 ```
 
 This runs Docker, initializes database, applies migrations, and post-migration hook runs the generate script. The database stays running for subsequent test runs.
@@ -301,6 +301,42 @@ import { Array, HashMap, Option } from "effect"
 import { Array as A } from "effect"  // NO
 ```
 
+## ⚠️ Documentation Protocol
+
+**Website docs are the source of truth** for API documentation. The `packages/website/` contains comprehensive docs built with Docusaurus.
+
+### Before Modifying Plugins
+
+Read the relevant Conjure documentation at `packages/website/docs/conjure/`:
+
+| File | When to Read |
+|------|--------------|
+| `intro.md` | First time working with Conjure |
+| `expressions.md` | Building any AST expressions |
+| `functions.md` | Generating function declarations |
+| `statements.md` | Control flow, variable declarations |
+| `typescript-types.md` | Type annotations |
+| `symbols.md` | Understanding RenderedSymbol, cross-file refs |
+| `plugin-guide.md` | Writing or modifying plugins |
+| `reference.md` | Quick lookup of any API |
+
+### After Making Changes
+
+If you modified any API that's documented:
+
+1. **Update the website docs** - Keep them in sync with source
+2. **Verify the build** - Run `bun run --cwd packages/website build`
+3. **Check for broken links** - Build will fail on broken internal links
+
+### Key Documentation Locations
+
+| Topic | Location |
+|-------|----------|
+| Architecture & Design | `./docs/ARCHITECTURE.md` |
+| Effect Style Guide | `./docs/EFFECT_STYLE.md` |
+| Conjure API | `packages/website/docs/conjure/` |
+| Design Decisions | `./docs/DECISIONS.md` |
+
 ## Reminders
 
 1. **Stub first** - Get the wiring right before implementing logic
@@ -308,8 +344,9 @@ import { Array as A } from "effect"  // NO
 3. **Think functionally** - Data transformations, not imperative steps
 4. **Test with @effect/vitest** - Use `it.effect` and `layer()`
 5. **Check ./docs/ARCHITECTURE.md** - For design decisions and open questions
-6. **Query Context7** - For Effect-ts API questions
-7. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
+6. **Read Conjure docs before plugin work** - `packages/website/docs/conjure/`
+7. **Query Context7** - For Effect-ts API questions
+8. **No barrel files** - Import directly from source files, not through index.ts re-exports. Barrel files slow down TypeScript.
 
 ## ⚠️ CRITICAL: Git Safety
 
@@ -322,6 +359,38 @@ git diff --cached --diff-filter=A | grep "^+Subproject"  # Should be empty
 ```
 
 **NEVER use `git stash`** without explicit user permission. Stashes can be compacted/lost, and subsequent agents may not know to pop them - resulting in work on the wrong working tree state. If you need to test baseline behavior, use `git diff` to save changes to a file, or ask the user first.
+
+## ⚠️ CRITICAL: NEVER Use `git checkout` to Revert Files
+
+**ABSOLUTELY FORBIDDEN: `git checkout <path>` or `git restore <path>`**
+
+These commands **PERMANENTLY DESTROY** uncommitted working tree changes. There is NO recovery - the changes are not in git's object database and cannot be retrieved.
+
+**If you need to undo changes:**
+
+1. **STOP** - Do not use checkout/restore
+2. **Save first** - Use `git diff > backup.patch` to save changes
+3. **Ask the user** - Confirm they want to discard the work
+4. **Only then** - User can manually run the command if they confirm
+
+**If you made a mistake with sed/find/etc:**
+
+```bash
+# ✅ CORRECT: Save changes first
+git diff packages/foo > /tmp/backup.patch
+
+# ✅ Then manually fix the issue with targeted edits
+# Use the Edit tool to fix specific files
+
+# ❌ WRONG: This destroys ALL uncommitted work
+git checkout packages/foo  # FORBIDDEN
+git restore packages/foo   # FORBIDDEN
+```
+
+**Real incident (2026-01-29):**
+An agent used `git checkout packages/pg-sourcerer/src/plugins` after a bad sed replacement, destroying hours of uncommitted plugin work (domain constraint validation, regex helpers, etc.). This was **irreversible data loss**.
+
+**The rule is absolute: NEVER use checkout/restore on working tree files. Save first, ask user, then let THEM decide.**
 
 ## ⚠️ CRITICAL: Decision Making
 
@@ -411,35 +480,38 @@ For interactive browsing: `prog tui` (or `prog ui`)
 
 ### Knowledge Base: `prog learn`
 
-When you research something that future sessions would benefit from, capture it:
+Log learnings at **session end during reflection**, not during active work. By then:
+- The learning is validated through implementation
+- You can synthesize related discoveries into one insight
+- You know what's signal vs noise
 
 ```bash
-# Log a learning linked to a concept
-prog learn "insight here" -c concept-name -p pg-sourcerer
-
-# Check existing learnings before researching
+# Check existing learnings before logging new ones
 prog concepts -p pg-sourcerer
 prog context -c concept-name -p pg-sourcerer --summary
+
+# Log a learning linked to a concept
+prog learn "insight here" -c concept-name -p pg-sourcerer --detail "full explanation"
 ```
 
-**What NOT to capture** (project state that can become stale):
+**Good learnings capture tacit knowledge:**
+- Gotchas and edge cases not obvious from reading code
+- Design rationale that isn't documented
+- External API quirks discovered through trial/error
+- Non-obvious patterns that took time to figure out
 
-- "QueryArtifact is in ir/query-artifact.ts" (file locations change)
-- Task status or progress
-- Implementation details of what you just built (use `prog log` instead)
+**Bad learnings (don't log these):**
+- Things already clear from reading the code
+- Implementation details you just wrote (the code documents itself)
+- File locations or project state (becomes stale)
+- Temporary workarounds (mark as stale instead)
 
-**The key test**: Would this help an agent working on a _different_ task in 6 months?
+**The key test**: Is this something NOT obvious from reading the code that would help an agent on a different task in 6 months?
 
-- YES → `prog learn` (e.g., "Effect has a Graph module at ~/.local/share/effect-solutions/effect/packages/effect/src/Graph.ts")
-- NO → `prog log` (e.g., "Created emit.ts with cross-file import tracking")
-
-**When to use:**
-
-- After researching a library API via Context7 or docs
-- After discovering a non-obvious pattern through trial/error
-- Before ending a session, if you learned something reusable
-
-Good learnings are **stable facts** that won't change with our code.
+- ✓ "Effect's Schema.optionalWith requires a thunk for defaults: `{ default: () => value }`"
+- ✓ "recast silently drops comments when cloning nodes - use visit() to preserve them"
+- ✗ "setRendered now accepts refs parameter" (obvious from reading code)
+- ✗ "Created emit.ts with cross-file import tracking" (use `prog log` instead)
 
 ## Priority Rules: Core > Plugins
 
@@ -453,3 +525,19 @@ Good learnings are **stable facts** that won't change with our code.
 | **P4**   | Nice-to-have cleanup                      | Experimental plugins               |
 
 When choosing between same-priority core vs plugin → Pick core.
+
+## Task Tracking
+
+This project uses **prog** for cross-session task management.
+Run `prog prime` for workflow context, or configure hooks for auto-injection.
+
+**Quick reference:**
+```
+prog ready              # Find unblocked work
+prog add "Title" -p X   # Create task
+prog start <id>         # Claim work
+prog log <id> "msg"     # Log progress
+prog done <id>          # Complete work
+```
+
+For full workflow: `prog prime`

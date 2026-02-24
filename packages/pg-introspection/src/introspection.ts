@@ -657,6 +657,14 @@ export interface PgConstraint {
    * @remarks Only in 11.x, 10.x
    */
   consrc?: string | null | undefined;
+
+  /* EXTRA FIELDS (added by pg-sourcerer fork) */
+
+  /**
+   * Human-readable constraint definition from pg_get_constraintdef().
+   * Available for all constraint types (check, foreign key, unique, primary key, etc.)
+   */
+  condef: string;
 }
 
 /**
@@ -1610,7 +1618,8 @@ with
   ),
 
   constraints as (
-    select pg_constraint.oid as _id, *
+    select pg_constraint.oid as _id, *,
+      pg_catalog.pg_get_constraintdef(pg_constraint.oid) as condef
     from pg_catalog.pg_constraint
     where connamespace in (select namespaces._id from namespaces where nspname <> 'information_schema' and nspname not like 'pg\\_%')
   ),

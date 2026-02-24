@@ -11,14 +11,12 @@ import dotenv from "dotenv";
 import { Prompt } from "@effect/cli";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { FileSystem, Terminal } from "@effect/platform";
-import { Effect, pipe, Array as A } from "effect";
+import { Effect } from "effect";
 import * as S from "effect/Schema";
 import { envSchema } from "../server/envSchema.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const DOTENV_PATH = path.resolve(".env");
-
-// --- Pure helpers ---
 
 const generatePassword = (len: number) =>
   crypto.randomBytes(len).toString("base64").replace(/\W/g, "_");
@@ -162,50 +160,37 @@ const readDotenv = Effect.gen(function* () {
   );
 });
 
-const formatEnvFile = (existing: Ctx, resolved: Ctx): string => {
-  // Merge: resolved fields take precedence, but preserve unknown keys from existing
-  const merged = { ...existing, ...resolved };
-
-  // Order: schema fields first (in fieldOrder), then any extra keys
-  const schemaKeys = new Set(fieldOrder);
-  const extraKeys = Object.keys(merged).filter(k => !schemaKeys.has(k));
-  const orderedKeys = [...fieldOrder, ...extraKeys].filter(k => merged[k] !== undefined);
-
-  return pipe(
-    orderedKeys,
-    A.map(k => `${k}=${merged[k]}`),
-    A.join("\n"),
-    s => s + "\n",
-  );
-};
-
-// --- Main ---
-
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const interactive = !process.env.NOCONFIRM;
 
   const existing = yield* readDotenv;
 
-  // Already valid? Done
   if (S.is(envSchema)(existing)) {
     yield* Effect.logInfo(".env already complete");
     return;
   }
 
-  // Build defaults with packageName
   const defaults: Ctx = { DATABASE_NAME: packageName };
 
-  // Resolve all fields
   const resolved = yield* resolveAllFields(existing, interactive, defaults);
 
-  // Write .env
-  const content = formatEnvFile(existing, resolved);
+  const merged = { ...existing, ...resolved };
+
+  const schemaKeys = new Set(fieldOrder);
+  const extraKeys = Object.keys(merged).filter(k => !schemaKeys.has(k));
+
+  const content = fieldOrder
+    .concat(extraKeys)
+    .filter(k => merged[k] !== undefined)
+    .map(k => `${k}=${merged[k]}`)
+    .join("\n")
+    .concat("\n");
+
   yield* fs.writeFileString(DOTENV_PATH, content);
 
   const action = Object.keys(existing).length > 0 ? "updated" : "created";
   yield* Effect.log(`.env ${action}`);
 });
 
-// Run with Node.js platform (provides Terminal for prompts, FileSystem for file I/O)
 program.pipe(Effect.provide(NodeContext.layer), NodeRuntime.runMain);

@@ -175,61 +175,56 @@ function analyzeColumnForFk(
   entities: Map<string, TableEntity>,
 ): ForeignKeySuggestion | null {
   const colLower = columnName.toLowerCase();
+  const idSuffixes = ["_id", "_ids", "id", "_by", "_at"];
+  const isLikelyFkColumn = idSuffixes.some(suffix => colLower.endsWith(suffix)) || colLower.includes("_ref_");
 
-  for (const [targetName, targetEntity] of entities) {
-    if (targetName === entityName) continue;
-    if (!isTableEntity(targetEntity)) continue;
+  if (!isLikelyFkColumn) return null;
 
-    const targetLower = targetName.toLowerCase();
-    const targetPk = targetEntity.primaryKey;
-    const targetPkColumn = targetPk?.columns[0];
-    if (!targetPkColumn) continue;
+  return pipe(
+    Arr.fromIterable(entities.entries()),
+    Arr.findFirst(([targetName, targetEntity]) => {
+      if (targetName === entityName) return false;
+      if (!isTableEntity(targetEntity)) return false;
 
-    const targetField = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
-    const targetType = targetField?.pgAttribute.getType()?.typname;
+      const targetPkColumn = targetEntity.primaryKey?.columns[0];
+      if (!targetPkColumn) return false;
 
-    const idSuffixes = ["_id", "_ids", "id", "_by", "_at"];
-    const isLikelyFkColumn = idSuffixes.some(suffix => colLower.endsWith(suffix)) || colLower.includes("_ref_");
+      const targetField = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
+      const targetType = targetField?.pgAttribute.getType()?.typname;
 
-    if (!isLikelyFkColumn) continue;
+      const targetLower = targetName.toLowerCase();
+      const singularTarget = inflect.singularize(targetLower);
+      const pluralTarget = inflect.pluralize(targetLower);
+      const possibleTargets = [targetLower, singularTarget, pluralTarget, targetName];
 
-    const singularTarget = inflect.singularize(targetLower);
-    const pluralTarget = inflect.pluralize(targetLower);
-    const possibleTargets = [targetLower, singularTarget, pluralTarget, targetName];
+      const matchingTarget = possibleTargets.find(t => {
+        const patterns = [`${t}_id`, `${t}id`, `${t}_ids`, `${t}_by`, `${t}_at`, `ref_${t}`];
+        return patterns.some(p => colLower === p || colLower.endsWith(`_${p}`));
+      });
 
-    const matchingTarget = possibleTargets.find(t => {
-      const patterns = [
-        `${t}_id`,
-        `${t}id`,
-        `${t}_ids`,
-        `${t}_by`,
-        `${t}_at`,
-        `ref_${t}`,
-      ];
-      return patterns.some(p => colLower === p || colLower.endsWith(`_${p}`));
-    });
+      if (!matchingTarget) return false;
+      if (columnType && targetType && !typesMatch(columnType, targetType)) return false;
 
-    if (!matchingTarget) continue;
+      return true;
+    }),
+    Option.map(([targetName, targetEntity]) => {
+      const targetPkColumn = targetEntity.primaryKey!.columns[0]!;
+      const targetField = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
+      const targetType = targetField?.pgAttribute.getType()?.typname;
+      const confidence = determineConfidence(columnName, targetName, columnType, targetType, targetField);
 
-    if (columnType && targetType && !typesMatch(columnType, targetType)) {
-      continue;
-    }
-
-    const targetFieldForColumn = targetEntity.shapes.row.fields.find(f => f.columnName === targetPkColumn);
-    const confidence = determineConfidence(columnName, targetName, columnType, targetType, targetFieldForColumn);
-
-    return {
-      column: columnName,
-      targetTable: targetName,
-      targetColumn: targetPkColumn,
-      confidence,
-      reason: confidence === "high"
-        ? `Column "${columnName}" matches ${targetName}.${targetPkColumn} by naming convention`
-        : `Column "${columnName}" may reference ${targetName}.${targetPkColumn}`,
-    };
-  }
-
-  return null;
+      return {
+        column: columnName,
+        targetTable: targetName,
+        targetColumn: targetPkColumn,
+        confidence,
+        reason: confidence === "high"
+          ? `Column "${columnName}" matches ${targetName}.${targetPkColumn} by naming convention`
+          : `Column "${columnName}" may reference ${targetName}.${targetPkColumn}`,
+      };
+    }),
+    Option.getOrNull,
+  );
 }
 
 // Manual singularize/pluralize removed - now using inflect helpers from inflection service
@@ -279,12 +274,11 @@ function determineConfidence(
  */
 export function createJoinGraph(ir: SemanticIR): JoinGraph {
   // Build entity map (tables/views only)
-  const entities = new Map<string, TableEntity>();
-  for (const [name, entity] of ir.entities) {
-    if (isTableEntity(entity)) {
-      entities.set(name, entity);
-    }
-  }
+  const entities = pipe(
+    Arr.fromIterable(ir.entities.entries()),
+    Arr.filter((entry): entry is [string, TableEntity] => isTableEntity(entry[1])),
+    entries => new Map(entries),
+  );
 
   // Pre-compute edges for each entity
   const edgeCache = new Map<string, readonly JoinEdge[]>();
@@ -383,69 +377,61 @@ export function createJoinGraph(ir: SemanticIR): JoinGraph {
 
   // Generate SQL JOIN clause
   const toJoinClause = (path: JoinPath): string => {
-    if (path.edges.length === 0) {
-      return `FROM ${entities.get(path.from)?.pgName ?? path.from} AS ${path.aliases[0]}`;
-    }
-
-    const clauses: string[] = [];
     const startEntity = entities.get(path.from);
-    clauses.push(`FROM ${startEntity?.pgName ?? path.from} AS ${path.aliases[0]}`);
+    const fromClause = `FROM ${startEntity?.pgName ?? path.from} AS ${path.aliases[0]}`;
 
-    for (let i = 0; i < path.edges.length; i++) {
-      const edge = path.edges[i]!;
-      const alias = path.aliases[i + 1]!;
-      const prevAlias = path.aliases[i]!;
-      const targetEntity = entities.get(edge.targetEntity);
-      const tableName = targetEntity?.pgName ?? edge.targetEntity;
+    if (path.edges.length === 0) return fromClause;
 
-      // Build ON clause
-      const onConditions = edge.columns.map(col => {
-        if (edge.direction === "forward") {
-          // We have the FK: our local column matches their foreign column
-          return `${prevAlias}.${col.local} = ${alias}.${col.foreign}`;
-        } else {
-          // They have FK to us: their foreign column matches our local column
-          return `${alias}.${col.foreign} = ${prevAlias}.${col.local}`;
-        }
-      });
+    const joinClauses = pipe(
+      path.edges,
+      Arr.map((edge, i) => {
+        const alias = path.aliases[i + 1]!;
+        const prevAlias = path.aliases[i]!;
+        const targetEntity = entities.get(edge.targetEntity);
+        const tableName = targetEntity?.pgName ?? edge.targetEntity;
 
-      // Use LEFT JOIN for one-to-many (reverse) to not filter out rows without children
-      const joinType = edge.direction === "reverse" ? "LEFT JOIN" : "JOIN";
+        // Build ON clause
+        const onConditions = edge.columns.map(col =>
+          edge.direction === "forward"
+            ? `${prevAlias}.${col.local} = ${alias}.${col.foreign}` // We have the FK
+            : `${alias}.${col.foreign} = ${prevAlias}.${col.local}`, // They have FK to us
+        );
 
-      clauses.push(`${joinType} ${tableName} AS ${alias} ON ${onConditions.join(" AND ")}`);
-    }
+        // Use LEFT JOIN for one-to-many (reverse) to not filter out rows without children
+        const joinType = edge.direction === "reverse" ? "LEFT JOIN" : "JOIN";
+        return `${joinType} ${tableName} AS ${alias} ON ${onConditions.join(" AND ")}`;
+      }),
+    );
 
-      return clauses.join("\n  ");
+    return [fromClause, ...joinClauses].join("\n  ");
   };
 
   const suggestForeignKeys = (entityName: string): readonly ForeignKeySuggestion[] => {
     const entity = entities.get(entityName);
     if (!entity) return [];
 
-    const suggestions: ForeignKeySuggestion[] = [];
-    const existingFkColumns = new Set<string>();
+    const existingFkColumns = new Set(
+      entity.relations
+        .filter(rel => rel.kind === "belongsTo")
+        .flatMap(rel => rel.columns.map(col => col.local)),
+    );
 
-    for (const rel of entity.relations) {
-      if (rel.kind === "belongsTo") {
-        for (const col of rel.columns) {
-          existingFkColumns.add(col.local);
-        }
-      }
-    }
+    const confidenceOrder: Record<"high" | "medium" | "low", number> = { high: 0, medium: 1, low: 2 };
 
-    for (const field of entity.shapes.row.fields) {
-      if (existingFkColumns.has(field.columnName)) continue;
-
-      const suggestion = analyzeColumnForFk(entityName, field.columnName, field.pgAttribute.getType()?.typname, entities);
-      if (suggestion) {
-        suggestions.push(suggestion);
-      }
-    }
-
-    return suggestions.sort((a, b) => {
-      const confidenceOrder = { high: 0, medium: 1, low: 2 };
-      return confidenceOrder[a.confidence] - confidenceOrder[b.confidence];
-    });
+    return pipe(
+      entity.shapes.row.fields,
+      Arr.filter(field => !existingFkColumns.has(field.columnName)),
+      Arr.filterMap(field => {
+        const suggestion = analyzeColumnForFk(
+          entityName,
+          field.columnName,
+          field.pgAttribute.getType()?.typname,
+          entities,
+        );
+        return Option.fromNullable(suggestion);
+      }),
+      suggestions => suggestions.sort((a, b) => confidenceOrder[a.confidence] - confidenceOrder[b.confidence]),
+    );
   };
 
   return {

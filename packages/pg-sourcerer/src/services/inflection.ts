@@ -92,7 +92,7 @@ export function createInflectionRegistry(): InflectionRegistry {
       const variants = byBaseEntity.get(info.baseEntity);
       if (variants) {
         // Replace existing variant of same kind, or add new
-        const idx = variants.findIndex((v) => v.variant === info.variant);
+        const idx = variants.findIndex(v => v.variant === info.variant);
         if (idx >= 0) {
           variants[idx] = info;
         } else {
@@ -295,7 +295,7 @@ export interface CoreInflection {
    * @example variableName("User", "Router") → "userRouter"
    * @example variableName("User", "ElysiaRoutes") → "userElysiaRoutes"
    */
-  readonly variableName: (entityName: string, suffix: string) => string;
+  readonly variableName: (entityName: string, suffix?: string) => string;
 
   // ---------------------------------------------------------------------------
   // IR Building (used during introspection)

@@ -1,6 +1,6 @@
 {
   "name": "@danielfgray/pg-sourcerer",
-  "version": "0.5.1",
+  "version": "0.5.0",
   "description": "PostgreSQL code generation framework with a plugin ecosystem",
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
     },
     "./plugins": {
       "types": "./dist/plugins/index.d.ts",
@@ -29,15 +33,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "bun run clean",
+    "prebuild": "bun run clean && bun run readme",
     "build": "tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
-    "prepublishOnly": "bun run clean && bun run build",
+    "readme": "bun scripts/compile-readme.ts",
+    "prepublishOnly": "bun run readme && bun run clean && bun run build",
     "test": "vitest run",
-    "test:all": "bun --env-file=../example/.env vitest run --config vitest.all.config.ts",
-    "test:unit": "vitest run",
-    "test:integration": "bun --env-file=../example/.env vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
@@ -71,13 +73,19 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@electric-sql/pglite": "^0.3.15",
+    "@mdx-js/mdx": "^3.1.1",
     "@opentui/core": "^0.1.73",
     "@types/bun": "^1.3.6",
+    "@types/diff": "^5.2.0",
     "@types/pg": "catalog:",
     "@vitest/coverage-v8": "3.2.4",
     "ast-types": "^0.16.1",
     "bun-types": "^1.3.6",
+    "codehike": "^1.0.7",
+    "diff": "^5.2.0",
     "typescript": "catalog:",
+    "vite-plugin-doctest": "^1.1.1",
     "vitest": "catalog:"
   }
 }

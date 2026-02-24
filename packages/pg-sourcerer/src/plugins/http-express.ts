@@ -15,11 +15,12 @@
 import { Effect, Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 
-import type { Plugin, SymbolDeclaration, RenderedSymbol, SymbolHandle } from "../runtime/types.js";
+import type { Plugin, SymbolHandle } from "../runtime/types.js";
 import { IR } from "../services/ir.js";
 import { Inflection, type CoreInflection } from "../services/inflection.js";
 import { inflect } from "../services/inflection.js";
 import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.js";
+import { Conjure } from "../services/conjure.js";
 import { isTableEntity } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import type {
@@ -27,19 +28,22 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import type { SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
+import { SCHEMA_BUILDER_KEY, type SchemaBuilder, type SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import {
+  buildEntityQueriesMap,
   buildQueryInvocation,
   coerceParam,
   getBodySchemaName,
+  getHttpEligibleEntities,
+  getMethodCapabilitySuffix,
   getRoutePath,
   kindToHttpMethod,
   needsCoercion,
   toExternalImport,
 } from "./shared/http-helpers.js";
-import { getSchemaBuilder } from "./shared/schema-builder.js";
+import { IRExtensions, type IRExtensionsService } from "../services/ir-extensions.js";
 
 const { b, stmt } = conjure;
 
@@ -203,40 +207,31 @@ function buildHandlerBody(
   };
 
   if (callSig.style === "positional") {
-    for (const param of method.params) {
-      args.push(paramExpr(param));
-    }
+    args.push(...method.params.map(paramExpr));
   } else {
     const bodyParam = method.params.find(p => p.source === "body");
     const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       if (nonBodyParams.length > 0) {
-        let objBuilder = conjure.obj();
-        for (const param of nonBodyParams) {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-        objBuilder = objBuilder.spread(b.identifier("body"));
+        const objBuilder = nonBodyParams.reduce(
+          (obj, param) => obj.prop(param.name, paramExpr(param)),
+          conjure.obj(),
+        ).spread(b.identifier("body"));
         args.push(objBuilder.build());
       } else {
         args.push(b.identifier("body"));
       }
     } else if (bodyParam && callSig.bodyStyle === "property") {
-      let objBuilder = conjure.obj();
-      for (const param of method.params) {
-        if (param.source && param.source !== "body") {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-      }
-      objBuilder = objBuilder.prop(bodyParam.name, b.identifier("body"));
+      const objBuilder = method.params
+        .filter(p => p.source && p.source !== "body")
+        .reduce((obj, param) => obj.prop(param.name, paramExpr(param)), conjure.obj())
+        .prop(bodyParam.name, b.identifier("body"));
       args.push(objBuilder.build());
     } else {
-      let objBuilder = conjure.obj();
-      for (const param of method.params) {
-        if (param.source && param.source !== "body") {
-          objBuilder = objBuilder.prop(param.name, paramExpr(param));
-        }
-      }
+      const objBuilder = method.params
+        .filter(p => p.source && p.source !== "body")
+        .reduce((obj, param) => obj.prop(param.name, paramExpr(param)), conjure.obj());
       if (method.params.length > 0) {
         args.push(objBuilder.build());
       }
@@ -267,22 +262,19 @@ function buildHandlerBody(
   }
 
   // Return response: res.json(result) or res.status(201).json(result) for create
-  let responseExpr: n.Expression;
-  if (method.kind === "create") {
-    responseExpr = b.callExpression(
-      b.memberExpression(
-        b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("status")), [
-          b.numericLiteral(201),
-        ]),
-        b.identifier("json"),
-      ),
-      [b.identifier("result")],
-    );
-  } else {
-    responseExpr = b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("json")), [
-      b.identifier("result"),
-    ]);
-  }
+  const responseExpr: n.Expression = method.kind === "create"
+    ? b.callExpression(
+        b.memberExpression(
+          b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("status")), [
+            b.numericLiteral(201),
+          ]),
+          b.identifier("json"),
+        ),
+        [b.identifier("result")],
+      )
+    : b.callExpression(b.memberExpression(b.identifier("res"), b.identifier("json")), [
+        b.identifier("result"),
+      ]);
   statements.push(b.returnStatement(cast.toExpr(responseExpr)));
 
   return statements;
@@ -313,13 +305,8 @@ function buildRouteCall(
 }
 
 /**
- * Generate Express routes for an entity.
- *
- * @param entityName - The entity name
- * @param queries - Query extension metadata
- * @param config - Plugin config
- * @param registry - Symbol registry for recording cross-references
- * @param inflection - Inflection service for naming
+ * Generate Express routes init expression for an entity.
+ * Returns the init expression (not the full statement).
  */
 function generateExpressRoutes(
   entityName: string,
@@ -327,167 +314,112 @@ function generateExpressRoutes(
   config: ResolvedHttpExpressConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
+  schemaBuilder: SchemaBuilder | undefined,
 ): {
-  statements: n.Statement[];
-  externalImports: ExternalImport[];
+  initExpr: n.Expression;
+  imports: ExternalImport[];
 } {
-  const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
+  const { chainExpr, schemaImports } = queries.methods.reduce<{
+    chainExpr: n.Expression;
+    schemaImports: ExternalImport[];
+  }>(
+    (acc, method) => {
+      const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
+      if (registry.has(methodCapability)) {
+        registry.import(methodCapability).ref();
+      }
 
-  let chainExpr: n.Expression = b.callExpression(b.identifier("Router"), []);
-  const schemaBuilder = getSchemaBuilder(registry);
-  const schemaImports: ExternalImport[] = [];
+      const pathParams = method.params.filter(
+        p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
+      );
+      const queryParams = method.params.filter(p => p.source === "pagination");
 
-  for (const method of queries.methods) {
-    const methodCapability = `queries:${entityName}:${getMethodCapabilitySuffix(method, entityName, inflection)}`;
-    if (registry.has(methodCapability)) {
-      registry.import(methodCapability).ref();
-    }
+      const paramSchema =
+        schemaBuilder && pathParams.length > 0
+          ? schemaBuilder.build({ variant: "params", params: pathParams })
+          : undefined;
 
-    const pathParams = method.params.filter(
-      p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
-    );
-    const queryParams = method.params.filter(p => p.source === "pagination");
+      const querySchema =
+        schemaBuilder && queryParams.length > 0
+          ? schemaBuilder.build({ variant: "query", params: queryParams })
+          : undefined;
 
-    const paramSchema =
-      schemaBuilder && pathParams.length > 0
-        ? schemaBuilder.build({ variant: "params", params: pathParams })
+      const bodySchemaName = getBodySchemaName(method, entityName);
+      const bodySchema =
+        bodySchemaName && registry.has(`schema:${bodySchemaName}`)
+          ? registry.import(`schema:${bodySchemaName}`)
+          : undefined;
+      const bodyConsume = bodySchema?.consume
+        ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
         : undefined;
-    if (paramSchema) {
-      schemaImports.push(toExternalImport(paramSchema.importSpec));
-    }
 
-    const querySchema =
-      schemaBuilder && queryParams.length > 0
-        ? schemaBuilder.build({ variant: "query", params: queryParams })
-        : undefined;
-    if (querySchema) {
-      schemaImports.push(toExternalImport(querySchema.importSpec));
-    }
+      const queryHandle = registry.import(methodCapability);
+      const { httpMethod, path, handler } = buildRouteCall(
+        method,
+        entityName,
+        inflection,
+        { paramSchema, querySchema, bodyConsume },
+        queryHandle,
+      );
 
-    const bodySchemaName = getBodySchemaName(method, entityName);
-    const bodySchema =
-      bodySchemaName && registry.has(`schema:${bodySchemaName}`)
-        ? registry.import(`schema:${bodySchemaName}`)
-        : undefined;
-    const bodyConsume = bodySchema?.consume
-      ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
-      : undefined;
-
-    const queryHandle = registry.import(methodCapability);
-    const { httpMethod, path, handler } = buildRouteCall(
-      method,
-      entityName,
-      inflection,
-      {
-        paramSchema,
-        querySchema,
-        bodyConsume,
-      },
-      queryHandle,
-    );
-
-    chainExpr = b.callExpression(
-      b.memberExpression(cast.toExpr(chainExpr), b.identifier(httpMethod)),
-      [b.stringLiteral(path), handler],
-    );
-  }
-
-  const variableDeclarator = b.variableDeclarator(
-    b.identifier(routesVarName),
-    cast.toExpr(chainExpr),
+      return {
+        chainExpr: b.callExpression(
+          b.memberExpression(cast.toExpr(acc.chainExpr), b.identifier(httpMethod)),
+          [b.stringLiteral(path), handler],
+        ),
+        schemaImports: [
+          ...acc.schemaImports,
+          ...(paramSchema ? [toExternalImport(paramSchema.importSpec)] : []),
+          ...(querySchema ? [toExternalImport(querySchema.importSpec)] : []),
+        ],
+      };
+    },
+    { chainExpr: b.callExpression(b.identifier("Router"), []), schemaImports: [] },
   );
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
-
-  const externalImports: ExternalImport[] = [
-    { from: "express", names: ["Router"] },
-    ...schemaImports,
-  ];
 
   return {
-    statements: [variableDeclaration as n.Statement],
-    externalImports,
+    initExpr: chainExpr,
+    imports: [{ from: "express", names: ["Router"] }, ...schemaImports],
   };
 }
 
-/**
- * Get the capability suffix for a query method.
- * E.g., "findById", "list", "create", "update", "delete", "findByEmail"
- */
-function getMethodCapabilitySuffix(
-  method: QueryMethod,
-  entityName: string,
-  inflection: CoreInflection,
-): string {
-  switch (method.kind) {
-    case "read":
-      return "findById";
-    case "list":
-      const prefix = inflection.variableName(entityName, "");
-      if (method.name.startsWith(prefix)) {
-        const remainder = method.name.slice(prefix.length);
-        if (remainder.startsWith("ListBy")) {
-          const suffix = remainder.slice("ListBy".length);
-          if (suffix.length > 0) {
-            return `listBy${suffix}`;
-          }
-        }
-      }
-      return "list";
-    case "create":
-      return "create";
-    case "update":
-      return "update";
-    case "delete":
-      return "delete";
-    case "lookup":
-      if (method.lookupField) {
-        const pascalField = inflection.pascalCase(method.lookupField);
-        return `findBy${pascalField}`;
-      }
-      return "lookup";
-    case "function":
-      return method.name;
-  }
-}
 
-function generateAggregator(
+/**
+ * Generate aggregator init expression.
+ * Returns the init expression (not the full statement).
+ */
+function generateAggregatorExpr(
   entities: Map<string, EntityQueriesExtension>,
   config: ResolvedHttpExpressConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
 ): {
-  statements: n.Statement[];
-  externalImports: ExternalImport[];
+  initExpr: n.Expression | null;
+  imports: ExternalImport[];
 } {
   const entityEntries = Array.from(entities.entries());
 
   if (entityEntries.length === 0) {
-    return { statements: [], externalImports: [] };
+    return { initExpr: null, imports: [] };
   }
 
-  let chainExpr: n.Expression = b.callExpression(b.identifier("Router"), []);
-
-  const externalImports: ExternalImport[] = [{ from: "express", names: ["Router"] }];
-
-  for (const [entityName, queries] of entityEntries) {
-    const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
-
-    chainExpr = b.callExpression(b.memberExpression(cast.toExpr(chainExpr), b.identifier("use")), [
-      b.identifier(routesVarName),
-    ]);
-
-    const routeCapability = `http-routes:express:${entityName}`;
-    if (registry.has(routeCapability)) {
-      registry.import(routeCapability).ref();
-    }
-  }
-
-  const variableDeclarator = b.variableDeclarator(b.identifier("api"), cast.toExpr(chainExpr));
-  const variableDeclaration = b.variableDeclaration("const", [variableDeclarator]);
+  const chainExpr = entityEntries.reduce<n.Expression>(
+    (chain, [entityName]) => {
+      const routesVarName = `${inflect.uncapitalize(entityName)}Routes`;
+      const routeCapability = `http-routes:express:${entityName}`;
+      if (registry.has(routeCapability)) {
+        registry.import(routeCapability).ref();
+      }
+      return b.callExpression(b.memberExpression(cast.toExpr(chain), b.identifier("use")), [
+        b.identifier(routesVarName),
+      ]);
+    },
+    b.callExpression(b.identifier("Router"), []),
+  );
 
   return {
-    statements: [variableDeclaration as n.Statement],
-    externalImports,
+    initExpr: chainExpr,
+    imports: [{ from: "express", names: ["Router"] }],
   };
 }
 
@@ -519,96 +451,51 @@ export function express(config?: HttpExpressConfig): Plugin {
       },
     ],
 
-    declare: Effect.gen(function* () {
-      const ir = yield* IR;
-      const inflection = yield* Inflection;
-
-      const declarations: SymbolDeclaration[] = [];
-
-      for (const entity of ir.entities.values()) {
-        if (!isTableEntity(entity)) continue;
-        if (entity.tags.omit === true) continue;
-
-        const hasAnyPermissions =
-          entity.permissions.canSelect ||
-          entity.permissions.canInsert ||
-          entity.permissions.canUpdate ||
-          entity.permissions.canDelete;
-
-        if (hasAnyPermissions) {
-          declarations.push({
-            name: `${inflect.uncapitalize(entity.name)}Routes`,
-            capability: `http-routes:express:${entity.name}`,
-            baseEntityName: entity.name,
-          });
-        }
-      }
-
-      declarations.push({
-        name: "api",
-        capability: "http-routes:express:app",
-      });
-
-      return declarations;
-    }),
-
     render: Effect.gen(function* () {
       const ir = yield* IR;
       const registry = yield* SymbolRegistry;
       const inflection = yield* Inflection;
+      const extensions = yield* IRExtensions;
+      const cj = yield* Conjure;
 
-      const rendered: RenderedSymbol[] = [];
+      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
+      const entityQueries = buildEntityQueriesMap(extensions);
+      const statements: n.Statement[] = [];
 
-      const entityQueries = new Map<string, EntityQueriesExtension>();
-      const queryCapabilities = registry.query("queries:");
-
-      for (const decl of queryCapabilities) {
-        const parts = decl.capability.split(":");
-        if (parts.length !== 3) continue;
-
-        const entityName = parts[2]!;
-        const metadata = registry.getMetadata(decl.capability);
-        if (metadata && typeof metadata === "object" && "methods" in metadata) {
-          entityQueries.set(entityName, metadata as EntityQueriesExtension);
-        }
-      }
-
-      for (const [entityName, queries] of entityQueries) {
+      for (const [entityName, queries] of entityQueries.entries()) {
         const entity = ir.entities.get(entityName);
         if (!entity || !isTableEntity(entity)) continue;
 
         const capability = `http-routes:express:${entityName}`;
-
-        const { statements, externalImports } = registry.forSymbol(capability, () =>
-          generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection),
+        const { initExpr, imports } = registry.forSymbol(capability, () =>
+          generateExpressRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
         );
 
-        rendered.push({
-          name: `${inflect.uncapitalize(entityName)}Routes`,
-          capability,
-          node: statements[0],
-          exports: "named",
-          externalImports,
-        });
+        const routeStmt = yield* cj.exp.const(
+          `${inflect.uncapitalize(entityName)}Routes`,
+          initExpr,
+          { capability, imports, baseEntityName: entityName },
+        );
+        statements.push(routeStmt);
       }
 
+      // Generate aggregator app if we have any routes
       if (entityQueries.size > 0) {
         const appCapability = "http-routes:express:app";
-
-        const { statements, externalImports } = registry.forSymbol(appCapability, () =>
-          generateAggregator(entityQueries, resolvedConfig, registry, inflection),
+        const { initExpr, imports } = registry.forSymbol(appCapability, () =>
+          generateAggregatorExpr(entityQueries, resolvedConfig, registry, inflection),
         );
 
-        rendered.push({
-          name: "api",
-          capability: appCapability,
-          node: statements[0],
-          exports: "named",
-          externalImports,
-        });
+        if (initExpr) {
+          const appStmt = yield* cj.exp.const("api", initExpr, {
+            capability: appCapability,
+            imports,
+          });
+          statements.push(appStmt);
+        }
       }
 
-      return rendered;
+      return statements;
     }),
   };
 }
