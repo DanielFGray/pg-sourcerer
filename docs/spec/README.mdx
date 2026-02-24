@@ -217,12 +217,7 @@ export const User = type({
 
 export type User = typeof User.infer;
 
-export const UserUpdate = type({
-  username: Username,
-  name: "string | null?",
-  avatar_url: Url.or(type("null")),
-  bio: "string <= 4000?",
-});
+export const UserUpdate = User.pick("username", "name", "avatar_url", "bio").partial();
 
 export type UserUpdate = typeof UserUpdate.infer;
 ```
@@ -284,19 +279,19 @@ export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 The unified `kysely` plugin generates both type definitions and query functions:
 
 ```typescript !expected
+import type { ColumnType } from "kysely";
+
 export type Generated<T> = T extends ColumnType<infer S, infer I, infer U>
   ? ColumnType<S, I | undefined, U>
   : ColumnType<T, T | undefined, T>;
-
-import type { ColumnType } from "kysely";
 
 export type UserRole = "admin" | "moderator" | "user";
 
 export interface User {
   id: Generated<string>;
-  username: string;
-  name: string | null;
-  avatar_url: string | null;
+  username: Generated<string>;
+  name: Generated<string | null>;
+  avatar_url: Generated<string | null>;
   role: Generated<UserRole>;
   bio: Generated<string>;
   is_verified: Generated<boolean>;
@@ -305,7 +300,7 @@ export interface User {
 }
 
 export interface DB {
-  users: User;
+  "app_public.users": User;
 }
 ```
 
@@ -420,16 +415,11 @@ Set `repoModel: false` (or `repos: false` for legacy configs) to skip `Model.mak
 and expose query functions from the active `queries` plugin (kysely/sql-queries).
 
 ```typescript !expected
-import { Model } from "@effect/sql";
-import { Schema as S, Effect, Layer, Option } from "effect";
-import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
-import { UserRole } from "./userRole.js";
-
 export class User extends Model.Class<User>("users")({
   id: Model.Generated(S.UUID),
-  username: S.String,
+  username: Username,
   name: S.NullOr(S.String),
-  avatar_url: S.NullOr(S.String),
+  avatar_url: S.NullOr(Url),
   role: UserRole,
   bio: S.String,
   is_verified: S.Boolean,
@@ -450,7 +440,14 @@ export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
     };
   }),
 }) {}
+```
 
+### !!claim effect-http-entity `effect` -- Effect HTTP API per entity
+!plugin effect
+!source #what-gets-generated
+!file generated/effect/user.ts
+
+```typescript !expected
 export class UserNotFound extends S.TaggedError<UserNotFound>()("UserNotFound", {
   id: S.UUID,
 }) {}
@@ -474,47 +471,19 @@ export const UserApiGroup = HttpApiGroup.make("users").prefix("/api/users").add(
 );
 
 export const UserApi = HttpApi.make("UserApi").add(UserApiGroup);
+```
 
-export const UserApiGroupLive = HttpApiBuilder.group(UserApi, "users", handlers => Effect.gen(function*() {
-  const repo = yield* UserRepo;
+### !!claim effect-http-server `effect` -- Effect HTTP server aggregation
+!plugin effect
+!source #what-gets-generated
+!file generated/effect/server.ts
 
-  return handlers.handle("findById", (
-    {
-      path: {
-        id,
-      },
-    },
-  ) => repo.findById(id).pipe(Effect.flatMap(Option.match({
-    onNone: () => Effect.fail(new UserNotFound({
-      id: id,
-    })),
+```typescript !expected
+import { HttpApiBuilder, HttpServer } from "@effect/platform";
+import { Layer } from "effect";
+import { UserApiLive } from "./user.js";
 
-    onSome: Effect.succeed,
-  })))).handle("insert", (
-    {
-      payload,
-    },
-  ) => repo.insert(payload)).handle("update", (
-    {
-      path: {
-        id,
-      },
-
-      payload,
-    },
-  ) => repo.update({
-    ...payload,
-    id,
-  })).handle("delete", (
-    {
-      path: {
-        id,
-      },
-    },
-  ) => repo.delete(id));
-}));
-
-export const UserApiLive = HttpApiBuilder.api(UserApi).pipe(Layer.provide(UserApiGroupLive), Layer.provide(UserRepo.Default));
+export const ServerLive = HttpApiBuilder.serve().pipe(Layer.provide([UserApiLive]), HttpServer.withLogAddress);
 ```
 
 ### !!claim http-elysia `httpElysia` -- Elysia REST Routes

@@ -181,12 +181,7 @@ export const User = type({
 
 export type User = typeof User.infer;
 
-export const UserUpdate = type({
-  username: Username,
-  name: "string | null?",
-  avatar_url: Url.or(type("null")),
-  bio: "string <= 4000?",
-});
+export const UserUpdate = User.pick("username", "name", "avatar_url", "bio").partial();
 
 export type UserUpdate = typeof UserUpdate.infer;
 ```
@@ -236,19 +231,19 @@ export type UserUpdate = v.InferOutput<typeof UserUpdate>;
 ```
 
 ```typescript
+import type { ColumnType } from "kysely";
+
 export type Generated<T> = T extends ColumnType<infer S, infer I, infer U>
   ? ColumnType<S, I | undefined, U>
   : ColumnType<T, T | undefined, T>;
-
-import type { ColumnType } from "kysely";
 
 export type UserRole = "admin" | "moderator" | "user";
 
 export interface User {
   id: Generated<string>;
-  username: string;
-  name: string | null;
-  avatar_url: string | null;
+  username: Generated<string>;
+  name: Generated<string | null>;
+  avatar_url: Generated<string | null>;
   role: Generated<UserRole>;
   bio: Generated<string>;
   is_verified: Generated<boolean>;
@@ -257,7 +252,7 @@ export interface User {
 }
 
 export interface DB {
-  users: User;
+  "app_public.users": User;
 }
 ```
 
@@ -354,16 +349,11 @@ with `sqlQueries({ sqlStyle: "tag" })`
 not using tagged templates? got you covered with `sqlQueries({ sqlStyle: "string" })`
 
 ```typescript
-import { Model } from "@effect/sql";
-import { Schema as S, Effect, Layer, Option } from "effect";
-import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
-import { UserRole } from "./userRole.js";
-
 export class User extends Model.Class<User>("users")({
   id: Model.Generated(S.UUID),
-  username: S.String,
+  username: Username,
   name: S.NullOr(S.String),
-  avatar_url: S.NullOr(S.String),
+  avatar_url: S.NullOr(Url),
   role: UserRole,
   bio: S.String,
   is_verified: S.Boolean,
@@ -384,7 +374,14 @@ export class UserRepo extends Effect.Service<UserRepo>()("UserRepo", {
     };
   }),
 }) {}
+```
 
+The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
+
+Set `repoModel: false` (or `repos: false` for legacy configs) to skip `Model.makeRepository`
+and expose query functions from the active `queries` plugin (kysely/sql-queries).
+
+```typescript
 export class UserNotFound extends S.TaggedError<UserNotFound>()("UserNotFound", {
   id: S.UUID,
 }) {}
@@ -408,53 +405,15 @@ export const UserApiGroup = HttpApiGroup.make("users").prefix("/api/users").add(
 );
 
 export const UserApi = HttpApi.make("UserApi").add(UserApiGroup);
-
-export const UserApiGroupLive = HttpApiBuilder.group(UserApi, "users", handlers => Effect.gen(function*() {
-  const repo = yield* UserRepo;
-
-  return handlers.handle("findById", (
-    {
-      path: {
-        id,
-      },
-    },
-  ) => repo.findById(id).pipe(Effect.flatMap(Option.match({
-    onNone: () => Effect.fail(new UserNotFound({
-      id: id,
-    })),
-
-    onSome: Effect.succeed,
-  })))).handle("insert", (
-    {
-      payload,
-    },
-  ) => repo.insert(payload)).handle("update", (
-    {
-      path: {
-        id,
-      },
-
-      payload,
-    },
-  ) => repo.update({
-    ...payload,
-    id,
-  })).handle("delete", (
-    {
-      path: {
-        id,
-      },
-    },
-  ) => repo.delete(id));
-}));
-
-export const UserApiLive = HttpApiBuilder.api(UserApi).pipe(Layer.provide(UserApiGroupLive), Layer.provide(UserRepo.Default));
 ```
 
-The `effect` plugin generates Model classes, optional Repositories, and optional HTTP APIs.
+```typescript
+import { HttpApiBuilder, HttpServer } from "@effect/platform";
+import { Layer } from "effect";
+import { UserApiLive } from "./user.js";
 
-Set `repoModel: false` (or `repos: false` for legacy configs) to skip `Model.makeRepository`
-and expose query functions from the active `queries` plugin (kysely/sql-queries).
+export const ServerLive = HttpApiBuilder.serve().pipe(Layer.provide([UserApiLive]), HttpServer.withLogAddress);
+```
 
 ```typescript
 import { Elysia } from "elysia";

@@ -1,10 +1,25 @@
 {
   "permissions": {
     "allow": [
-      "Bash(prog context:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(prog learn:*)",
-      "Bash(prog concepts:*)"
+      "Bash(bun run build:*)",
+      "Bash(bun run typecheck:*)",
+      "Bash(bun vitest run:*)",
+      "Bash(npx vitest:*)",
+      "Bash(bun run test)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(find:*)",
+      "Bash(bun run test:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(prog:*)",
+      "Bash(bun typecheck:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "WebSearch",
+      "WebFetch(domain:codehike.org)",
+      "Bash(tail:*)"
     ]
   }
 }

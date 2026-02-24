@@ -24,7 +24,8 @@ export default defineConfig({
     kysely({
       dbImport: userModule("./db.ts", { named: ["db"] }),
     }),
-    zod(),
-    elysia(),
+    effect(),
+    // zod(),
+    // elysia(),
   ],
 });
