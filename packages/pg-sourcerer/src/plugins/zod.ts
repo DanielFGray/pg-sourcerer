@@ -449,12 +449,33 @@ export function zod(config?: ZodConfig): Plugin {
         });
 
       // Render a shape (baseEntityName is the parent entity's name)
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>, baseEntityName: string) =>
+      const renderShape = (
+        shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>,
+        baseEntityName: string,
+        checkConstraints: readonly import("../ir/semantic-ir.js").CheckConstraint[],
+      ) =>
         Effect.gen(function* () {
           const capability = `schema:zod:${shape.name}`;
-          const schemaInit = registry.forSymbol(capability, () =>
-            shapeToZodObject(shape, [...enums], [...domains], registry),
-          );
+          const schemaInit = registry.forSymbol(capability, () => {
+            if (shape.kind === "update") {
+              const rowCapability = `schema:zod:${baseEntityName}`;
+              if (registry.has(rowCapability)) {
+                const rowHandle = registry.import(rowCapability);
+                const pickShape = b.objectExpression(
+                  shape.fields.map(field =>
+                    b.objectProperty(b.identifier(field.name), b.booleanLiteral(true)),
+                  ),
+                );
+                const picked = b.callExpression(
+                  b.memberExpression(cast.toExpr(rowHandle.ref() as n.Expression), b.identifier("pick")),
+                  [pickShape],
+                );
+                return b.callExpression(b.memberExpression(picked, b.identifier("partial")), []);
+              }
+            }
+
+            return shapeToZodObject(shape, [...enums], [...domains], registry, checkConstraints);
+          });
 
           const schemaStmt = yield* cj.exp.const(shape.name, schemaInit, {
             capability,
@@ -484,7 +505,9 @@ export function zod(config?: ZodConfig): Plugin {
       const enumStmts = yield* Effect.forEach(enums, renderEnum);
       const domainStmts = yield* Effect.forEach(domains, renderDomain);
       const tableStmts = yield* Effect.forEach(tables, entity =>
-        Effect.forEach(getEntityShapes(entity), shape => renderShape(shape, entity.name)),
+        Effect.forEach(getEntityShapes(entity), shape =>
+          renderShape(shape, entity.name, entity.checkConstraints),
+        ),
       );
 
       return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(Arr.flatten(tableStmts))];

@@ -19,9 +19,10 @@ import { SymbolRegistry, type SymbolRegistryService } from "../runtime/registry.
 import { IR } from "../services/ir.js";
 import { IRExtensions } from "../services/ir-extensions.js";
 import { Conjure } from "../services/conjure.js";
-import type { Field, EnumEntity, DomainEntity } from "../ir/semantic-ir.js";
+import type { Field, EnumEntity, DomainEntity, CheckConstraint } from "../ir/semantic-ir.js";
 import { conjure, cast } from "../conjure/index.js";
 import { SCHEMA_BUILDER_KEY, type SchemaBuilder } from "../ir/extensions/schema-builder.js";
+import { parseCheckConstraint, type ConstraintValidation } from "../lib/check-constraint-parser.js";
 import {
   PG_STRING_TYPES,
   PG_NUMBER_TYPES,
@@ -74,6 +75,7 @@ function fieldToValibotMapping(
   field: Field,
   enums: readonly EnumEntity[],
   domains: readonly DomainEntity[],
+  checkConstraints: readonly CheckConstraint[] = [],
 ): ValibotMapping {
   const resolved = resolveFieldTypeInfo(field);
   if (!resolved) {
@@ -86,9 +88,20 @@ function fieldToValibotMapping(
     return baseResult;
   }
 
+  const fieldConstraints = checkConstraints.filter(c => c.columns.includes(field.columnName));
+
+  const validators = fieldConstraints.flatMap(c =>
+    parseCheckConstraint(c.definition, field.columnName).flatMap(validationToValibotValidator),
+  );
+
+  const withConstraints =
+    validators.length === 0
+      ? baseResult.schema!
+      : conjure.id("v").method("pipe", [baseResult.schema!, ...validators]).build();
+
   const withArray = field.isArray
-    ? conjure.id("v").method("array", [baseResult.schema!]).build()
-    : baseResult.schema!;
+    ? conjure.id("v").method("array", [withConstraints]).build()
+    : withConstraints;
 
   const modifiers = [
     field.nullable && "nullable",
@@ -101,6 +114,35 @@ function fieldToValibotMapping(
   );
 
   return { kind: "schema", schema };
+}
+
+function validationToValibotValidator(v: ConstraintValidation): n.Expression[] {
+  return Match.value(v).pipe(
+    Match.when({ kind: "minLength" }, v => [
+      conjure.id("v").method("minLength", [conjure.num(v.value)]).build(),
+    ]),
+    Match.when({ kind: "maxLength" }, v => [
+      conjure.id("v").method("maxLength", [conjure.num(v.value)]).build(),
+    ]),
+    Match.when({ kind: "lengthRange" }, v => [
+      conjure.id("v").method("minLength", [conjure.num(v.min)]).build(),
+      conjure.id("v").method("maxLength", [conjure.num(v.max)]).build(),
+    ]),
+    Match.when({ kind: "min" }, v => [
+      conjure.id("v").method("minValue", [conjure.num(v.value)]).build(),
+    ]),
+    Match.when({ kind: "max" }, v => [
+      conjure.id("v").method("maxValue", [conjure.num(v.value)]).build(),
+    ]),
+    Match.when({ kind: "range" }, v => [
+      conjure.id("v").method("minValue", [conjure.num(v.min)]).build(),
+      conjure.id("v").method("maxValue", [conjure.num(v.max)]).build(),
+    ]),
+    Match.when({ kind: "regex" }, v => [
+      conjure.id("v").method("regex", [conjure.regex(v.pattern, v.flags ?? "")]).build(),
+    ]),
+    Match.orElse(() => []),
+  );
 }
 
 function baseTypeToValibotMapping(
@@ -238,9 +280,10 @@ function shapeToValibotObject(
   enums: readonly EnumEntity[],
   domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
+  checkConstraints: readonly CheckConstraint[] = [],
 ): n.Expression {
   const properties = shape.fields.map(field => {
-    const mapping = fieldToValibotMapping(field, enums, domains);
+    const mapping = fieldToValibotMapping(field, enums, domains, checkConstraints);
 
     const value: n.Expression = pipe(
       Match.value(mapping.kind),
@@ -423,11 +466,15 @@ export function valibot(config?: ValibotConfig): Plugin {
         });
 
       // Render a shape (baseEntityName is the parent entity's name)
-      const renderShape = (shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>, baseEntityName: string) =>
+      const renderShape = (
+        shape: NonNullable<(typeof tables)[number]["shapes"]["row"]>,
+        baseEntityName: string,
+        checkConstraints: readonly CheckConstraint[],
+      ) =>
         Effect.gen(function* () {
           const capability = `schema:valibot:${shape.name}`;
           const schemaInit = registry.forSymbol(capability, () =>
-            shapeToValibotObject(shape, enums, domains, registry),
+            shapeToValibotObject(shape, enums, domains, registry, checkConstraints),
           );
 
           const schemaStmt = yield* cj.exp.const(shape.name, schemaInit, {
@@ -458,7 +505,9 @@ export function valibot(config?: ValibotConfig): Plugin {
       const enumStmts = yield* Effect.forEach(enums, renderEnum);
       const domainStmts = yield* Effect.forEach(domains, renderDomain);
       const tableStmts = yield* Effect.forEach(tables, entity =>
-        Effect.forEach(getEntityShapes(entity), shape => renderShape(shape, entity.name)),
+        Effect.forEach(getEntityShapes(entity), shape =>
+          renderShape(shape, entity.name, entity.checkConstraints),
+        ),
       );
 
       return [...Arr.flatten(enumStmts), ...Arr.flatten(domainStmts), ...Arr.flatten(Arr.flatten(tableStmts))];
