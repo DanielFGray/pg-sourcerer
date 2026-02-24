@@ -9,6 +9,7 @@ import type { namedTypes as n } from "ast-types";
 
 import type { Plugin } from "../runtime/types.js";
 import { Conjure, type ExpOpts } from "../services/conjure.js";
+import type { ExternalImport } from "../runtime/emit.js";
 import { IRExtensions } from "../services/ir-extensions.js";
 import type { FileNaming } from "../runtime/file-assignment.js";
 import { normalizeFileNaming } from "../runtime/file-assignment.js";
@@ -323,6 +324,19 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
         params: readonly n.Expression[],
       ): n.TaggedTemplateExpression => conjure.taggedTemplate("sql", parts, [...params]);
 
+      /** Build sql<Entity[]>`...` typed template literal */
+      const buildTypedTemplateLiteralWithParams = (
+        parts: readonly string[],
+        params: readonly n.Expression[],
+        entityName: string,
+      ): n.TaggedTemplateExpression =>
+        conjure.taggedTemplate("sql", parts, [...params], [ts.array(ts.ref(entityName))]);
+
+      /** Import for entity type from typesPlugin output */
+      const entityTypeImport = (entityName: string): ExternalImport[] => [
+        { from: "types.ts", types: [entityName] },
+      ];
+
       const generateFindById = (
         entity: TableEntity,
         entityName: string,
@@ -344,14 +358,15 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           callSignature: { style: "named" },
         };
 
-        const templateLiteral = buildTemplateLiteral([
-          `${selectClause} ${fromClause} where ${pkColumn} = `,
-          "",
-        ]);
+        const templateLiteral = buildTypedTemplateLiteralWithParams(
+          [`${selectClause} ${fromClause} where ${pkColumn} = `, ""],
+          [b.identifier(pkField.name)],
+          entityName,
+        );
         const initExpr = fn()
-          .rawParam(buildDestructuredParam([pkParam]))
+          .rawParam(param.pick([pkField.name], entityName))
           .arrow()
-          .body(conjure.stmt.return(templateLiteral))
+          .expr(templateLiteral)
           .build();
 
         return {
@@ -364,6 +379,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               opts: {
                 metadata: { consume: createQueryConsume(method) },
                 userImports: queryUserImports,
+                imports: entityTypeImport(entityName),
               },
             },
           ],
@@ -415,7 +431,6 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               initExpr,
               opts: {
                 metadata: { consume: createQueryConsume(method) },
-                imports: [{ from: queriesFilePath, types: [entityName] }],
                 userImports: queryUserImports,
               },
             },
@@ -441,6 +456,9 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
         const pkField = entity.shapes.row.fields.find(f => f.columnName === pkColumn);
         if (!pkField) return emptyResult;
 
+        const updatableFields = entity.shapes.update.fields.filter(f => f.permissions.canUpdate);
+        if (updatableFields.length === 0) return emptyResult;
+
         const pkParam = buildPkParam(pkField);
         const bodyParam = buildBodyParam(entityName, "update");
         const method: QueryMethod = {
@@ -448,27 +466,44 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           kind: "update",
           params: [pkParam, bodyParam],
           returns: buildReturnType(entityName, false, true),
-          callSignature: { style: "named", bodyStyle: "property" },
+          callSignature: { style: "named", bodyStyle: "spread" },
         };
 
-        const updatableFields = entity.shapes.update.fields.filter(f => f.permissions.canUpdate);
-        const templateParts = [
-          `update ${tableName} set `,
-          ...updatableFields.map((f, i) => (i === 0 ? `${f.columnName} = ` : `, ${f.columnName} = `)),
-          ` where ${pkColumn} = `,
-          " returning *",
-        ];
+        // Build { id, ...fields }: Pick<User, "id"> & Partial<Pick<User, "col1" | "col2" | ...>>
+        const pkProp = b.objectProperty(b.identifier(pkField.name), b.identifier(pkField.name));
+        pkProp.shorthand = true;
+        const destructuredParam = b.objectPattern([pkProp, b.restElement(b.identifier("fields"))]);
+        const pickPkType = ts.ref("Pick", [ts.ref(entityName), ts.literal(pkField.name)]);
+        const partialPickType = ts.ref("Partial", [
+          ts.ref("Pick", [
+            ts.ref(entityName),
+            updatableFields.length === 1
+              ? ts.literal(updatableFields[0]!.name)
+              : ts.union(...updatableFields.map(f => ts.literal(f.name))),
+          ]),
+        ]);
+        destructuredParam.typeAnnotation = b.tsTypeAnnotation(
+          b.tsIntersectionType([pickPkType, partialPickType]),
+        );
 
-        const paramExprs = [
-          ...updatableFields.map(f =>
-            b.memberExpression(b.identifier("data"), b.identifier(f.name)),
+        // Build: sql`update ... set ${sql(fields, Object.keys(fields))} where id = ${id}`
+        const sqlFieldsCall = b.callExpression(b.identifier("sql"), [
+          b.identifier("fields"),
+          b.callExpression(
+            b.memberExpression(b.identifier("Object"), b.identifier("keys")),
+            [b.identifier("fields")],
           ),
-          b.identifier(pkField.name),
-        ];
+        ]);
+
+        const templateLiteral = buildTemplateLiteralWithParams(
+          [`update ${tableName} set `, ` where ${pkColumn} = `, ""],
+          [sqlFieldsCall, b.identifier(pkField.name)],
+        );
+
         const initExpr = fn()
-          .rawParam(buildDestructuredParam([pkParam, bodyParam]))
+          .rawParam(destructuredParam)
           .arrow()
-          .body(conjure.stmt.return(buildTemplateLiteralWithParams(templateParts, paramExprs)))
+          .expr(templateLiteral)
           .build();
 
         return {
@@ -480,8 +515,8 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               initExpr,
               opts: {
                 metadata: { consume: createQueryConsume(method) },
-                imports: [{ from: queriesFilePath, types: [entityName] }],
                 userImports: queryUserImports,
+                imports: entityTypeImport(entityName),
               },
             },
           ],
@@ -510,14 +545,14 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           callSignature: { style: "named" },
         };
 
+        const templateLiteral = buildTemplateLiteralWithParams(
+          [`delete from ${tableName} where ${pkColumn} = `, ""],
+          [b.identifier(pkField.name)],
+        );
         const initExpr = fn()
-          .rawParam(buildDestructuredParam([pkParam]))
+          .rawParam(param.pick([pkField.name], entityName))
           .arrow()
-          .body(
-            conjure.stmt.return(
-              buildTemplateLiteral([`delete from ${tableName} where ${pkColumn} = `, ""]),
-            ),
-          )
+          .expr(templateLiteral)
           .build();
 
         return {
@@ -530,6 +565,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
               opts: {
                 metadata: { consume: createQueryConsume(method) },
                 userImports: queryUserImports,
+                imports: entityTypeImport(entityName),
               },
             },
           ],
@@ -575,14 +611,15 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
                   callSignature: { style: "named" },
                 };
 
+                const templateLiteral = buildTypedTemplateLiteralWithParams(
+                  [`${selectClause} ${fromClause} where ${columnName} = `, ""],
+                  [b.identifier(field.name)],
+                  entityName,
+                );
                 const initExpr = fn()
-                  .rawParam(buildDestructuredParam([lookupParam]))
+                  .rawParam(param.pick([field.name], entityName))
                   .arrow()
-                  .body(
-                    conjure.stmt.return(
-                      buildTemplateLiteral([`${selectClause} ${fromClause} where ${columnName} = `, ""]),
-                    ),
-                  )
+                  .expr(templateLiteral)
                   .build();
 
                 return {
@@ -595,6 +632,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
                       opts: {
                         metadata: { consume: createQueryConsume(method) },
                         userImports: queryUserImports,
+                        imports: entityTypeImport(entityName),
                       },
                     },
                   ],
@@ -606,7 +644,8 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
         );
       };
 
-      const generateCursorPagination = (
+      /** Generate offset-based pagination for indexed order-by columns */
+      const generateOffsetPagination = (
         entity: TableEntity,
         entityName: string,
         selectClause: string,
@@ -614,81 +653,64 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
       ): QueryGenResult =>
         pipe(
           getCursorPaginationCandidates(entity),
-          Arr.filterMap(candidate =>
-            pipe(
-              entity.shapes.row.fields.find(f => f.name === candidate.pkColumn),
-              Option.fromNullable,
-              Option.map(pkField => {
-                const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
-                const pkParamType = pgTypeToTsType(getResolvedTypeName(pkField));
+          Arr.filterMap(candidate => {
+            const pascalColumn = inflection.pascalCase(candidate.cursorColumnName);
+            const orderDirection = candidate.desc ? "desc" : "asc";
 
-                const cursorParam = {
-                  name: inflection.camelCase(`cursor_${candidate.cursorColumnName}`),
-                  type: "Date",
-                  required: false,
-                  source: "pagination" as const,
-                };
-                const cursorPkParam = {
-                  name: inflection.camelCase(`cursor_${candidate.pkColumnName}`),
-                  type: pkParamType,
-                  required: false,
-                  source: "pagination" as const,
-                };
-                const limitParam = {
-                  name: "limit",
-                  type: "number",
-                  required: false,
-                  defaultValue: resolvedConfig.defaultLimit,
-                  source: "pagination" as const,
-                };
+            const limitParam: PaginationParam = {
+              name: "limit",
+              type: "number",
+              required: false,
+              defaultValue: resolvedConfig.defaultLimit,
+              source: "pagination",
+            };
+            const offsetParam: PaginationParam = {
+              name: "offset",
+              type: "number",
+              required: false,
+              defaultValue: 0,
+              source: "pagination",
+            };
 
-                const method: QueryMethod = {
-                  name: buildListByName(inflection, entityName, candidate.cursorColumnName),
-                  kind: "list",
-                  params: [cursorParam, cursorPkParam, limitParam],
-                  returns: buildReturnType(entityName, true, false),
-                  callSignature: { style: "named" },
-                };
+            const method: QueryMethod = {
+              name: buildListByName(inflection, entityName, candidate.cursorColumnName),
+              kind: "list",
+              params: [limitParam, offsetParam],
+              returns: buildReturnType(entityName, true, false),
+              callSignature: { style: "named" },
+            };
 
-                const operator = candidate.desc ? "<" : ">";
-                const orderDirection = candidate.desc ? "DESC" : "ASC";
-                const templateParts = [
-                  `${selectClause} ${fromClause} where ($`,
-                  `::timestamptz IS NULL OR (${candidate.cursorColumnName}, ${candidate.pkColumnName}) ${operator} ($`,
-                  `, `,
-                  `)) order by ${candidate.cursorColumnName} ${orderDirection}, ${candidate.pkColumnName} ${orderDirection} limit `,
-                ];
+            const templateLiteral = buildTypedTemplateLiteralWithParams(
+              [
+                `${selectClause} ${fromClause} order by ${candidate.cursorColumnName} ${orderDirection} limit `,
+                ` offset `,
+                "",
+              ],
+              [b.identifier("limit"), b.identifier("offset")],
+              entityName,
+            );
 
-                const initExpr = fn()
-                  .rawParam(buildDestructuredParam([cursorParam, cursorPkParam, limitParam]))
-                  .arrow()
-                  .body(
-                    conjure.stmt.return(
-                      buildTemplateLiteralWithParams(templateParts, [
-                        b.identifier(cursorParam.name),
-                        b.identifier(cursorPkParam.name),
-                        b.identifier("limit"),
-                      ]),
-                    ),
-                  )
-                  .build();
+            const initExpr = fn()
+              .rawParam(buildDestructuredParam([limitParam, offsetParam]))
+              .arrow()
+              .expr(templateLiteral)
+              .build();
 
-                return {
-                  methods: [method],
-                  symbolInfos: [
-                    {
-                      name: method.name,
-                      capability: `queries:sql:${entityName}:listBy${pascalColumn}`,
-                      initExpr,
-                      opts: {
-                        userImports: queryUserImports,
-                      },
-                    },
-                  ],
-                } satisfies QueryGenResult;
-              }),
-            ),
-          ),
+            return Option.some({
+              methods: [method],
+              symbolInfos: [
+                {
+                  name: method.name,
+                  capability: `queries:sql:${entityName}:listBy${pascalColumn}`,
+                  initExpr,
+                  opts: {
+                    userImports: queryUserImports,
+                    imports: entityTypeImport(entityName),
+                  },
+                },
+              ],
+            } satisfies QueryGenResult);
+          }),
           combineResults,
         );
 
@@ -704,7 +726,7 @@ export function sqlQueries(config?: SqlQueriesConfig): Plugin {
           generateUpdate(entity, entityName, tableName),
           generateDelete(entity, entityName, tableName),
           generateFindByIndexes(entity, entityName, selectClause, fromClause),
-          generateCursorPagination(entity, entityName, selectClause, fromClause),
+          generateOffsetPagination(entity, entityName, selectClause, fromClause),
         ]);
       };
 

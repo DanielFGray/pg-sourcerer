@@ -456,10 +456,9 @@ export class SymbolRegistryImpl {
     const provider = this.categoryProviders.get(category);
     if (!provider) return capability; // No provider for this category
 
-    // Schema and type capabilities use the Standard Schema API - all implementations
-    // are interchangeable. Do NOT inject provider name for these categories so
-    // declarations remain stable across providers.
-    if (category === "schema" || category === "type") return capability;
+    // Type capabilities are registered without provider prefix (e.g., type:User).
+    // Do NOT inject provider name so lookups work directly.
+    if (category === "type") return capability;
 
     // Check if rest already starts with the provider name (already specific)
     if (rest.startsWith(`${provider}:`)) return capability;

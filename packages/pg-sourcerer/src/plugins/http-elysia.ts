@@ -28,13 +28,11 @@ import type {
   QueryMethodParam,
   EntityQueriesExtension,
 } from "../ir/extensions/queries.js";
-import { SCHEMA_BUILDER_KEY, type SchemaBuilder, type SchemaBuilderResult } from "../ir/extensions/schema-builder.js";
 import type { ExternalImport } from "../runtime/emit.js";
 import { type FileNaming, normalizeFileNaming } from "../runtime/file-assignment.js";
 import {
   buildEntityQueriesMap,
   buildQueryInvocation,
-  coerceParam,
   defaultHttpMethodMap,
   getBodySchemaName,
   getHttpEligibleEntities,
@@ -42,8 +40,6 @@ import {
   getRoutePath,
   kindToHttpMethod,
   listByRouteFromName,
-  needsCoercion,
-  toExternalImport,
 } from "./shared/http-helpers.js";
 
 const { b, stmt } = conjure;
@@ -98,64 +94,29 @@ interface ResolvedHttpElysiaConfig {
 // - inflection.elysiaRoutesName() for route variable names
 // - inflection.entityRoutePath() for entity path segments
 
+/**
+ * Build handler body for Elysia routes.
+ *
+ * With Elysia-native validation, params and body are pre-validated via route options.
+ * Handler accesses params.field and body directly (no inline parsing needed).
+ */
 function buildHandlerBody(
   method: QueryMethod,
-  schemas: ValidationSchemas,
   queryHandle: SymbolHandle,
 ): n.Statement[] {
   const callSig = method.callSignature ?? { style: "named" };
-  const statements: n.Statement[] = [];
   const args: n.Expression[] = [];
-  const paramConsume = schemas.paramSchema?.consume;
-  const queryConsume = schemas.querySchema?.consume;
-  const bodyConsume = schemas.bodyConsume;
-
-  const pathParams = method.params.filter(
-    p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
-  );
-  const queryParams = method.params.filter(p => p.source === "pagination");
-
-  if (pathParams.length > 0 && paramConsume) {
-    statements.push(stmt.const("parsedParams", paramConsume(b.identifier("params"))));
-  }
-
-  if (queryParams.length > 0 && queryConsume) {
-    statements.push(stmt.const("parsedQuery", queryConsume(b.identifier("query"))));
-  }
-
-  const needsBody =
-    method.params.some(p => p.source === "body") ||
-    method.kind === "create" ||
-    method.kind === "update" ||
-    (method.kind === "function" && method.params.some(p => !p.source));
-
-  if (needsBody && bodyConsume) {
-    statements.push(stmt.const("parsedBody", bodyConsume(b.identifier("body"))));
-  }
 
   const paramExpr = (param: QueryMethodParam): n.Expression => {
     if (param.source === "body") {
-      return bodyConsume ? b.identifier("parsedBody") : b.identifier("body");
+      return b.identifier("body");
     }
-
     if (param.source === "pagination") {
-      if (queryConsume) {
-        return b.memberExpression(b.identifier("parsedQuery"), b.identifier(param.name));
-      }
-      return needsCoercion(param)
-        ? coerceParam(param.name, param.type)
-        : b.memberExpression(b.identifier("query"), b.identifier(param.name));
+      return b.memberExpression(b.identifier("query"), b.identifier(param.name));
     }
-
     if (param.source === "pk" || param.source === "fk" || param.source === "lookup") {
-      if (paramConsume) {
-        return b.memberExpression(b.identifier("parsedParams"), b.identifier(param.name));
-      }
-      return needsCoercion(param)
-        ? coerceParam(param.name, param.type)
-        : b.memberExpression(b.identifier("params"), b.identifier(param.name));
+      return b.memberExpression(b.identifier("params"), b.identifier(param.name));
     }
-
     return b.memberExpression(b.identifier("body"), b.identifier(param.name));
   };
 
@@ -164,22 +125,21 @@ function buildHandlerBody(
   } else {
     const bodyParam = method.params.find(p => p.source === "body");
     const nonBodyParams = method.params.filter(p => p.source && p.source !== "body");
-    const bodyExpr = bodyConsume ? b.identifier("parsedBody") : b.identifier("body");
 
     if (bodyParam && callSig.bodyStyle === "spread") {
       if (nonBodyParams.length > 0) {
         const objBuilder = nonBodyParams
           .reduce((builder, param) => builder.prop(param.name, paramExpr(param)), conjure.obj())
-          .spread(bodyExpr);
+          .spread(b.identifier("body"));
         args.push(objBuilder.build());
       } else {
-        args.push(bodyExpr);
+        args.push(b.identifier("body"));
       }
     } else if (bodyParam && callSig.bodyStyle === "property") {
       const objBuilder = method.params
         .filter(p => p.source && p.source !== "body")
         .reduce((builder, param) => builder.prop(param.name, paramExpr(param)), conjure.obj())
-        .prop(bodyParam.name, bodyConsume ? b.identifier("parsedBody") : b.identifier("body"));
+        .prop(bodyParam.name, b.identifier("body"));
       args.push(objBuilder.build());
     } else {
       const objBuilder = method.params
@@ -205,10 +165,10 @@ function buildHandlerBody(
       b.unaryExpression("!", b.identifier("result")),
       b.returnStatement(statusCall),
     );
-    return [...statements, resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
+    return [resultDecl, notFoundCheck, b.returnStatement(b.identifier("result"))];
   }
 
-  return [...statements, resultDecl, b.returnStatement(b.identifier("result"))];
+  return [resultDecl, b.returnStatement(b.identifier("result"))];
 }
 
 const elysiaMethodMap = {
@@ -216,26 +176,19 @@ const elysiaMethodMap = {
   update: "patch",
 };
 
-type ConsumeFn = (input: n.Expression) => n.Expression;
-
-interface ValidationSchemas {
-  readonly paramSchema?: SchemaBuilderResult;
-  readonly querySchema?: SchemaBuilderResult;
-  readonly bodyConsume?: ConsumeFn;
-}
-
 function buildRouteCall(
   method: QueryMethod,
   entityName: string,
   inflection: CoreInflection,
   queryHandle: SymbolHandle,
-  schemas: ValidationSchemas,
+  registry: SymbolRegistryService,
 ): {
   httpMethod: string;
   path: string;
   handler: n.ArrowFunctionExpression;
   needsBody: boolean;
   bodySchemaName: string | null;
+  paramsSchemaExpr: n.Expression | null;
   options: n.ObjectExpression | null;
 } {
   const httpMethod = kindToHttpMethod(method.kind, elysiaMethodMap);
@@ -281,20 +234,50 @@ function buildRouteCall(
 
   const handlerParamPattern = b.objectPattern(handlerProps);
 
-  const handlerBody = buildHandlerBody(method, schemas, queryHandle);
+  const handlerBody = buildHandlerBody(method, queryHandle);
   const handler = b.arrowFunctionExpression(
     [handlerParamPattern],
     b.blockStatement(handlerBody.map(cast.toStmt)),
   );
   handler.async = true;
 
-  // Build route options with body schema validation
+  // Build Elysia-native validation options
   const bodySchemaName = getBodySchemaName(method, entityName);
-  const options: n.ObjectExpression | null = bodySchemaName
-    ? conjure.obj().prop("body", b.identifier(bodySchemaName)).build()
-    : null;
+  let paramsSchemaExpr: n.Expression | null = null;
 
-  return { httpMethod, path, handler, needsBody, bodySchemaName, options };
+  // Build params schema: EntitySchema.pick({ field: true }) for Elysia-native validation
+  if (pathParams.length > 0) {
+    const entitySchemaCapability = `schema:${entityName}`;
+    if (registry.has(entitySchemaCapability)) {
+      const entitySchemaHandle = registry.import(entitySchemaCapability);
+      entitySchemaHandle.ref();
+      let pickObj = conjure.obj();
+      for (const p of pathParams) {
+        pickObj = pickObj.prop(p.name, b.booleanLiteral(true));
+      }
+      paramsSchemaExpr = b.callExpression(
+        b.memberExpression(b.identifier(entitySchemaHandle.name), b.identifier("pick")),
+        [pickObj.build()],
+      );
+    }
+  }
+
+  // Build route options object
+  let optBuilder = conjure.obj();
+  let hasOptions = false;
+
+  if (bodySchemaName) {
+    optBuilder = optBuilder.prop("body", b.identifier(bodySchemaName));
+    hasOptions = true;
+  }
+  if (paramsSchemaExpr) {
+    optBuilder = optBuilder.prop("params", paramsSchemaExpr);
+    hasOptions = true;
+  }
+
+  const options: n.ObjectExpression | null = hasOptions ? optBuilder.build() : null;
+
+  return { httpMethod, path, handler, needsBody, bodySchemaName, paramsSchemaExpr, options };
 }
 
 /**
@@ -313,7 +296,6 @@ function generateElysiaRoutes(
   config: ResolvedHttpElysiaConfig,
   registry: SymbolRegistryService,
   inflection: CoreInflection,
-  schemaBuilder: SchemaBuilder | undefined,
 ): {
   initExpr: n.Expression;
   imports: ExternalImport[];
@@ -328,8 +310,6 @@ function generateElysiaRoutes(
   const initialChainExpr: n.Expression = b.newExpression(b.identifier("Elysia"), [
     conjure.obj().prop("prefix", b.stringLiteral(fullPrefix)).build(),
   ]);
-  const schemaImports: ExternalImport[] = [];
-
   const chainExpr = queries.methods.reduce((chain, method) => {
     // Record cross-reference for this query method via registry
     // This allows emit phase to generate the import automatically
@@ -339,36 +319,6 @@ function generateElysiaRoutes(
       registry.import(methodCapability).ref();
     }
 
-    const pathParams = method.params.filter(
-      p => p.source === "pk" || p.source === "fk" || p.source === "lookup",
-    );
-    const queryParams = method.params.filter(p => p.source === "pagination");
-
-    const paramSchema =
-      schemaBuilder && pathParams.length > 0
-        ? schemaBuilder.build({ variant: "params", params: pathParams })
-        : undefined;
-    if (paramSchema) {
-      schemaImports.push(toExternalImport(paramSchema.importSpec));
-    }
-
-    const querySchema =
-      schemaBuilder && queryParams.length > 0
-        ? schemaBuilder.build({ variant: "query", params: queryParams })
-        : undefined;
-    if (querySchema) {
-      schemaImports.push(toExternalImport(querySchema.importSpec));
-    }
-
-    const bodySchemaName = getBodySchemaName(method, entityName);
-    const bodySchema =
-      bodySchemaName && registry.has(`schema:${bodySchemaName}`)
-        ? registry.import(`schema:${bodySchemaName}`)
-        : undefined;
-    const bodyConsume = bodySchema?.consume
-      ? (input: n.Expression) => bodySchema.consume!(input) as n.Expression
-      : undefined;
-
     const queryHandle = registry.import(methodCapability);
     const {
       httpMethod,
@@ -376,11 +326,7 @@ function generateElysiaRoutes(
       handler,
       bodySchemaName: routeBodySchema,
       options,
-    } = buildRouteCall(method, entityName, inflection, queryHandle, {
-      paramSchema,
-      querySchema,
-      bodyConsume,
-    });
+    } = buildRouteCall(method, entityName, inflection, queryHandle, registry);
 
     if (routeBodySchema) {
       // Use registry to import schema - this ensures correct relative path resolution
@@ -406,7 +352,6 @@ function generateElysiaRoutes(
   // Only external package imports go here; query and schema imports are handled via cross-references
   const imports: ExternalImport[] = [
     { from: "elysia", names: ["Elysia"] },
-    ...schemaImports,
   ];
 
   return {
@@ -491,7 +436,6 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
       const extensions = yield* IRExtensions;
       const cj = yield* Conjure;
 
-      const schemaBuilder = extensions.get<SchemaBuilder>(SCHEMA_BUILDER_KEY);
       const entityQueries = buildEntityQueriesMap(extensions);
       const statements: n.Statement[] = [];
 
@@ -503,7 +447,7 @@ export function elysia(config?: HttpElysiaConfig): Plugin {
         const capability = `http-routes:elysia:${entityName}`;
         // Scope ref tracking to this capability
         const { initExpr, imports } = registry.forSymbol(capability, () =>
-          generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection, schemaBuilder),
+          generateElysiaRoutes(entityName, queries, resolvedConfig, registry, inflection),
         );
 
         const routeStmt = yield* cj.exp.const(

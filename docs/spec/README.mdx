@@ -312,8 +312,24 @@ export interface DB {
 Kysely also generates type-safe query builder functions:
 
 ```typescript !expected
-import type { Updateable } from "kysely";
 import type { User } from "./DB.js";
+import type { Updateable } from "kysely";
+
+export const userFindById = (
+  {
+    id,
+  }: Pick<User, "id">,
+) => db.selectFrom("app_public.users").select([
+  "id",
+  "username",
+  "name",
+  "avatar_url",
+  "role",
+  "bio",
+  "is_verified",
+  "created_at",
+  "updated_at",
+]).where("id", "=", id);
 
 export const userListByCreatedAt = (
   {
@@ -325,7 +341,7 @@ export const userListByCreatedAt = (
     cursorId?: string;
     limit?: number;
   },
-) => db.selectFrom("users").select([
+) => db.selectFrom("app_public.users").select([
   "id",
   "username",
   "name",
@@ -348,13 +364,13 @@ export const userUpdate = (
     id,
     ...data
   }: Pick<User, "id"> & Omit<Updateable<User>, "id">,
-) => db.updateTable("users").set(data).where("id", "=", id).returningAll();
+) => db.updateTable("app_public.users").set(data).where("id", "=", id).returningAll();
 
 export const userFindByUsername = (
   {
     username,
   }: Pick<User, "username">,
-) => db.selectFrom("users").select([
+) => db.selectFrom("app_public.users").select([
   "id",
   "username",
   "name",
@@ -375,9 +391,6 @@ export const userFindByUsername = (
 with `sqlQueries({ sqlStyle: "tag" })`
 
 ```typescript !expected
-import { sql } from "../../db.js";
-import type { User } from "../types/User.js";
-
 export const userUpdate = (
   {
     id,
@@ -390,6 +403,12 @@ export const userFindByUsername = (
     username,
   }: Pick<User, "username">,
 ) => sql<User[]>`select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at from app_public.users where username = ${username}`;
+
+export const userFindByCreatedAt = (
+  {
+    created_at,
+  }: Pick<User, "created_at">,
+) => sql<User[]>`select id, username, name, avatar_url, role, bio, is_verified, created_at, updated_at from app_public.users where created_at = ${created_at}`;
 
 export const userListByCreatedAt = (
   {
@@ -418,8 +437,8 @@ and expose query functions from the active `queries` plugin (kysely/sql-queries)
 export class User extends Model.Class<User>("users")({
   id: Model.Generated(S.UUID),
   username: Username,
-  name: S.NullOr(S.String),
-  avatar_url: S.NullOr(Url),
+  name: S.String.pipe(S.NullOr),
+  avatar_url: Url.pipe(S.NullOr),
   role: UserRole,
   bio: S.String,
   is_verified: S.Boolean,
@@ -492,42 +511,91 @@ export const ServerLive = HttpApiBuilder.serve().pipe(Layer.provide([UserApiLive
 !file generated/elysia/routes.ts
 
 ```typescript !expected
-import { Elysia } from "elysia";
-import { z } from "zod";
-import { findUserById, findUserManys, getUserByUsername } from "../queries/User.js";
-import { User, UserUpdate } from "../schemas/User.js";
+import { User, UserUpdate } from "./schemas.js";
 
 export const userRoutes = new Elysia({
   prefix: "/users",
-})
-  .patch(
-    "/:id",
-    async ({ params, body }) => {
-      const result = await userUpdate({
-        id: params.id,
-        ...body,
-      }).executeTakeFirstOrThrow();
+}).get("/:id", async (
+  {
+    params,
+    status,
+  },
+) => {
+  const result = await userFindById({
+    id: params.id,
+  }).executeTakeFirst();
 
-      return result;
-    },
-    {
-      body: UserUpdate,
-      params: User.pick({ id: true }),
-    },
-  )
-  .get(
-    "/by-username/:username",
-    async ({ params, status }) => {
-      const result = await userFindByUsername({ username: params.username, }).executeTakeFirst();
-      if (!result) return status(404, "Not found");
-      return result;
-    },
-    {
-      params: User.pick({ username: true }),
-    }
-  );
+  if (!result)
+    return status(404, "Not found");
 
+  return result;
+}, {
+  params: User.pick({
+    id: true,
+  }),
+}).get("/by-created-at", async (
+  {
+    query,
+  },
+) => {
+  const result = await userListByCreatedAt({
+    cursorCreatedAt: query.cursorCreatedAt,
+    cursorId: query.cursorId,
+    limit: query.limit,
+  }).execute();
 
+  return result;
+}).patch("/:id", async (
+  {
+    params,
+    body,
+  },
+) => {
+  const result = await userUpdate({
+    id: params.id,
+    ...body,
+  }).executeTakeFirstOrThrow();
+
+  return result;
+}, {
+  body: UserUpdate,
+
+  params: User.pick({
+    id: true,
+  }),
+}).get("/by-username/:username", async (
+  {
+    params,
+    status,
+  },
+) => {
+  const result = await userFindByUsername({
+    username: params.username,
+  }).executeTakeFirst();
+
+  if (!result)
+    return status(404, "Not found");
+
+  return result;
+}, {
+  params: User.pick({
+    username: true,
+  }),
+}).get("/by-created-at/:created_at", async (
+  {
+    params,
+  },
+) => {
+  const result = await userFindByCreatedAt({
+    created_at: params.created_at,
+  }).execute();
+
+  return result;
+}, {
+  params: User.pick({
+    created_at: true,
+  }),
+});
 ```
 
 ### !!claim http-express `httpExpress` -- Express REST Routes
