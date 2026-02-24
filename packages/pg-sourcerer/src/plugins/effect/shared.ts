@@ -5,7 +5,7 @@ import { Schema as S } from "effect";
 import type { namedTypes as n } from "ast-types";
 import type { ExpressionKind } from "ast-types/lib/gen/kinds.js";
 
-import type { TableEntity, Field, EnumEntity } from "../../ir/semantic-ir.js";
+import type { TableEntity, Field, EnumEntity, DomainEntity } from "../../ir/semantic-ir.js";
 import { conjure } from "../../conjure/index.js";
 import type { FileNaming } from "../../runtime/file-assignment.js";
 import type { UserModuleRef } from "../../user-module.js";
@@ -58,6 +58,8 @@ export const EffectConfigSchema = S.Struct({
 
 export type ParsedEffectConfig = Omit<S.Schema.Type<typeof EffectConfigSchema>, "http"> & {
   http: false | ParsedHttpConfig;
+  /** Internal: set by effect() preset when models plugin is included */
+  modelsEnabled?: boolean;
 };
 
 /**
@@ -125,35 +127,43 @@ export interface EffectConfig {
 // =============================================================================
 
 export type EffectMapping =
-  | { kind: "schema"; schema: n.Expression; enumRef?: undefined }
-  | { kind: "enumRef"; enumRef: string; schema?: undefined };
+  | { kind: "schema"; schema: n.Expression; enumRef?: undefined; domainRef?: undefined }
+  | { kind: "enumRef"; enumRef: string; schema?: undefined; domainRef?: undefined }
+  | { kind: "domainRef"; domainRef: string; schema?: undefined; enumRef?: undefined };
 
 /**
- * Apply array and nullable wrappers to a schema expression
+ * Build pipe arguments for field modifiers (Array, NullOr).
+ * Returns AST expressions for `.pipe()`: S.Array, S.NullOr as unary function refs.
  */
-const applyFieldModifiers = (
-  schema: n.Expression,
+export function buildModifierPipeArgs(
   field: { isArray: boolean; nullable: boolean },
-): n.Expression => {
-  const withArray = field.isArray
-    ? conjure.id("S").method("Array", [schema]).build()
-    : schema;
+): n.Expression[] {
+  const args: n.Expression[] = [];
+  if (field.isArray) args.push(conjure.id("S").prop("Array").build());
+  if (field.nullable) args.push(conjure.id("S").prop("NullOr").build());
+  return args;
+}
 
-  return field.nullable
-    ? conjure.id("S").method("NullOr", [withArray]).build()
-    : withArray;
-};
+/**
+ * Apply pipe arguments to a base schema.
+ * Returns base as-is if pipeArgs is empty, otherwise base.pipe(...pipeArgs).
+ */
+export function withPipe(base: n.Expression, pipeArgs: n.Expression[]): n.Expression {
+  if (pipeArgs.length === 0) return base;
+  return conjure.chain(base).method("pipe", pipeArgs).build();
+}
 
-export function fieldToEffectMapping(field: Field, enums: EnumEntity[]): EffectMapping {
+export function fieldToEffectMapping(
+  field: Field,
+  enums: EnumEntity[],
+  domains: readonly DomainEntity[] = [],
+): EffectMapping {
   const resolved = resolveFieldTypeInfo(field);
   if (!resolved) {
     return { kind: "schema", schema: conjure.id("S").prop("Unknown").build() };
   }
-  const baseResult = baseTypeToEffectMapping(resolved.typeName, resolved.typeInfo, enums);
-
-  return baseResult.kind === "enumRef"
-    ? baseResult
-    : { kind: "schema", schema: applyFieldModifiers(baseResult.schema, field) };
+  // Return base mapping without modifiers — callers apply via pipe
+  return baseTypeToEffectMapping(resolved.typeName, resolved.typeInfo, enums, domains);
 }
 
 /**
@@ -168,8 +178,18 @@ function baseTypeToEffectMapping(
   typeName: string,
   pgType: { typcategory?: string | null; typtype?: string | null },
   enums: EnumEntity[],
+  domains: readonly DomainEntity[] = [],
 ): EffectMapping {
   const normalized = typeName.toLowerCase();
+
+  // Domain types
+  if (pgType.typtype === "d") {
+    const domainEntity = domains.find(d => d.pgType.typname === typeName);
+    if (domainEntity) {
+      return { kind: "domainRef", domainRef: domainEntity.name };
+    }
+    // If domain entity not found, fall through to handle base type
+  }
 
   // String types
   if (PG_STRING_TYPES.has(normalized)) {

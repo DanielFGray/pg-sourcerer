@@ -13,12 +13,14 @@ import { IR } from "../../services/ir.js";
 import {
   isTableEntity,
   isEnumEntity,
+  isDomainEntity,
   type TableEntity,
   type EnumEntity,
+  type DomainEntity,
   type Field,
 } from "../../ir/semantic-ir.js";
 import { conjure, cast } from "../../conjure/index.js";
-import { fieldToEffectMapping, isDbGenerated, getAutoTimestamp, toExpr } from "./shared.js";
+import { fieldToEffectMapping, buildModifierPipeArgs, withPipe, isDbGenerated, getAutoTimestamp, toExpr } from "./shared.js";
 
 const b = conjure.b;
 
@@ -27,13 +29,14 @@ const modelImports = [
   { from: "effect", names: ["Schema as S"] },
 ];
 
-/**
- * Build the schema expression for a single field
- */
+const isModelEligible = (entity: TableEntity): boolean =>
+  entity.permissions.canSelect && entity.shapes.row.fields.length > 0;
+
 const buildFieldSchema = (
   field: Field,
   entity: TableEntity,
   enums: EnumEntity[],
+  domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
 ): n.ObjectProperty => {
   // Check for auto-timestamp patterns first
@@ -44,28 +47,25 @@ const buildFieldSchema = (
     Match.when("insert", () => conjure.id("Model").prop("DateTimeInsertFromDate").build()),
     Match.when("update", () => conjure.id("Model").prop("DateTimeUpdateFromDate").build()),
     Match.orElse(() => {
-      const mapping = fieldToEffectMapping(field, enums);
+      const mapping = fieldToEffectMapping(field, enums, domains);
 
       const baseSchema = pipe(
         Match.value(mapping),
-        Match.when({ kind: "enumRef" }, ({ enumRef }) => {
-          const enumHandle = registry.import(`effect:schema:${enumRef}`);
-          const enumValue = enumHandle.ref() as n.Expression;
-          const withArray = field.isArray
-            ? conjure.id("S").method("Array", [enumValue]).build()
-            : enumValue;
-          return field.nullable
-            ? conjure.id("S").method("NullOr", [withArray]).build()
-            : withArray;
-        }),
+        Match.when({ kind: "enumRef" }, ({ enumRef }) =>
+          registry.import(`effect:schema:${enumRef}`).ref() as n.Expression),
+        Match.when({ kind: "domainRef" }, ({ domainRef }) =>
+          registry.import(`effect:schema:${domainRef}`).ref() as n.Expression),
         Match.when({ kind: "schema" }, ({ schema }) => schema),
         Match.exhaustive,
       );
 
+      // Apply field modifiers (Array, NullOr) via pipe
+      const withModifiers = withPipe(baseSchema, buildModifierPipeArgs(field));
+
       // Wrap in Model.Generated if field is auto-generated
       return isDbGenerated(field, entity)
-        ? conjure.id("Model").method("Generated", [baseSchema]).build()
-        : baseSchema;
+        ? conjure.id("Model").method("Generated", [withModifiers]).build()
+        : withModifiers;
     }),
   );
 
@@ -75,6 +75,7 @@ const buildFieldSchema = (
 function buildModelClassNode(
   entity: TableEntity,
   enums: EnumEntity[],
+  domains: readonly DomainEntity[],
   registry: SymbolRegistryService,
 ): n.ClassDeclaration {
   const entityName = entity.name;
@@ -82,7 +83,7 @@ function buildModelClassNode(
   const shape = entity.shapes.row;
 
   const properties = shape.fields.map(field =>
-    buildFieldSchema(field, entity, enums, registry),
+    buildFieldSchema(field, entity, enums, domains, registry),
   );
 
   const fieldsObj = b.objectExpression(properties);
@@ -129,15 +130,17 @@ export function effectModels(): Plugin {
       const registry = yield* SymbolRegistry;
       const cj = yield* Conjure;
 
-      const enums = [...ir.entities.values()].filter(isEnumEntity);
-      const tables = [...ir.entities.values()].filter(isTableEntity);
+      const entities = [...ir.entities.values()];
+      const enums = entities.filter(isEnumEntity);
+      const domains = entities.filter(isDomainEntity);
+      const tables = entities.filter(isTableEntity).filter(isModelEligible);
 
       return yield* Effect.forEach(tables, entity => {
         const capability = `effect:model:${entity.name}`;
 
-        // Scope cross-references (enum imports) to this specific capability
+        // Scope cross-references (enum/domain imports) to this specific capability
         const classNode = registry.forSymbol(capability, () =>
-          buildModelClassNode(entity, enums, registry),
+          buildModelClassNode(entity, enums, domains, registry),
         );
 
         return cj.exp.class(entity.name, classNode, {

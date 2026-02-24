@@ -40,7 +40,10 @@ const b = conjure.b;
  * Check if entity is eligible for HTTP API generation
  */
 const isHttpEligible = (entity: TableEntity): boolean =>
-  entity.tags.omit !== true && hasSingleColumnPrimaryKey(entity);
+  entity.tags.omit !== true &&
+  entity.permissions.canSelect &&
+  entity.shapes.row.fields.length > 0 &&
+  hasSingleColumnPrimaryKey(entity);
 
 // =============================================================================
 // PK Schema Type Detection

@@ -35,7 +35,7 @@ const DEFAULT_SERVER_FILE = "server.ts";
 const parseConfig = (config?: EffectConfig): ParsedEffectConfig => {
   const schemaValidated = S.decodeSync(EffectConfigSchema)(config ?? {});
   const repoModel = config?.repos === false ? false : (config?.repoModel ?? schemaValidated.repoModel);
-  const reposEnabled = config?.repos === false ? true : schemaValidated.repos;
+  const reposEnabled = config?.repos === false ? false : schemaValidated.repos;
 
   return {
     ...schemaValidated,
@@ -82,7 +82,8 @@ export function effect(config?: EffectConfig): Plugin[] {
   const parsed = parseConfig(config);
 
   // Base plugins: schemas first (models depend on enum schemas), then models
-  const basePlugins: Plugin[] = [effectSchemas(parsed), effectModels()];
+  // Tell schemas that models are active so it skips row shapes (Model.Class covers them)
+  const basePlugins: Plugin[] = [effectSchemas({ ...parsed, modelsEnabled: true }), effectModels()];
 
   // Conditional plugins based on config
   const repoPlugins = parsed.repos ? [effectRepos(parsed)] : [];

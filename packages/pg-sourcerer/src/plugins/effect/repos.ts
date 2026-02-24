@@ -27,6 +27,8 @@ const b = conjure.b;
  * Check if an entity is eligible for repo generation
  */
 const isRepoEligible = (entity: TableEntity): boolean =>
+  entity.permissions.canSelect &&
+  entity.shapes.row.fields.length > 0 &&
   hasSingleColumnPrimaryKey(entity);
 
 /**
