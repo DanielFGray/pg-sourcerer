@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/DanielFGray/pg-sourcerer/compare/v0.5.1...v0.5.2) (2026-02-25)
+
+
+### Bug Fixes
+
+* **plugins:** align kysely, sql-queries, elysia output with README spec ([285fa49](https://github.com/DanielFGray/pg-sourcerer/commit/285fa49b5210184ba6537a824843042b3e4f1c88))
+
 ## [0.5.1](https://github.com/DanielFGray/pg-sourcerer/compare/v0.5.0...v0.5.1) (2026-01-25)
 
 
